@@ -31,6 +31,11 @@ pub struct Transaction {
     pub description: Option<String>,
     pub transaction_type: Option<String>,
     pub transaction_type_display: Option<String>,
+    /// The type the receipt is stored with, where `transaction_type` is what
+    /// the server reads off the receipt again for every answer. The workbook
+    /// words «Операция» by the stored one. A server from before the field
+    /// does not send it, and `transaction_type` stands in.
+    pub stored_transaction_type: Option<String>,
     #[serde(deserialize_with = "de_decimal")]
     pub balance_after: Option<String>,
     pub receiver_name: Option<String>,
@@ -157,6 +162,44 @@ mod tests {
         // The cache writes the field out even when empty: that is how a cache from before it is told apart.
         assert!(serde_json::to_value(&absent).unwrap().as_object().unwrap().contains_key("excel_bank"));
         assert_eq!(serde_json::from_value::<Transaction>(serde_json::to_value(&given).unwrap()).unwrap(), given);
+    }
+
+    #[test]
+    fn the_stored_type_is_optional() {
+        // A server from before the field, one that sends null, one that sends it.
+        let absent: Transaction = serde_json::from_str(r#"{"id":1,"transaction_type":"DEBIT","transaction_type_display":"Списание"}"#).unwrap();
+        assert_eq!((absent.stored_transaction_type.as_deref(), absent.transaction_type.as_deref()), (None, Some("DEBIT")));
+        let null: Transaction = serde_json::from_str(r#"{"id":2,"transaction_type":"DEBIT","stored_transaction_type":null,"excel_bank":null}"#).unwrap();
+        assert_eq!((null.stored_transaction_type.as_deref(), null.excel_bank.as_deref(), null.transaction_type.as_deref()), (None, None, Some("DEBIT")));
+        let sent: Transaction =
+            serde_json::from_str(r#"{"id":3,"transaction_type":"DEBIT","transaction_type_display":"Изменение счета","stored_transaction_type":"CREDIT","excel_bank":"HUMO Card"}"#).unwrap();
+        assert_eq!(sent.stored_transaction_type.as_deref(), Some("CREDIT"));
+        // It comes beside the server's own reading and wording, not instead of them.
+        assert_eq!((sent.transaction_type.as_deref(), sent.transaction_type_display.as_deref(), sent.excel_bank.as_deref()), (Some("DEBIT"), Some("Изменение счета"), Some("HUMO Card")));
+        // The cache writes the field out even when empty: that is how a cache from before it is told apart.
+        assert!(serde_json::to_value(&absent).unwrap().as_object().unwrap().contains_key("stored_transaction_type"));
+        for tx in [absent, null, sent] {
+            assert_eq!(serde_json::from_value::<Transaction>(serde_json::to_value(&tx).unwrap()).unwrap(), tx);
+        }
+    }
+
+    #[test]
+    fn a_page_reads_with_the_new_fields_and_without_them() {
+        // An older server's page, then the same rows from one that knows both fields.
+        let old = r#"{"ok":true,"total":2,"page":1,"page_size":1000,"has_more":false,"items":[
+            {"id":1,"transaction_type":"DEBIT","amount":"5000.00"},
+            {"id":2,"transaction_type":"CREDIT","amount":"7000.00"}]}"#;
+        let new = r#"{"ok":true,"total":2,"page":1,"page_size":1000,"has_more":false,"items":[
+            {"id":1,"transaction_type":"DEBIT","amount":"5000.00","stored_transaction_type":"DEBIT","excel_bank":null},
+            {"id":2,"transaction_type":"CREDIT","amount":"7000.00","stored_transaction_type":null,"excel_bank":"CardXabar"}]}"#;
+        let (old, new): (TransactionPage, TransactionPage) = (serde_json::from_str(old).unwrap(), serde_json::from_str(new).unwrap());
+        let fields = |page: &TransactionPage| page.items.iter().map(|tx| (tx.id, tx.stored_transaction_type.clone(), tx.excel_bank.clone())).collect::<Vec<_>>();
+        assert_eq!(fields(&old), [(1, None, None), (2, None, None)]);
+        assert_eq!(fields(&new), [(1, Some("DEBIT".to_string()), None), (2, None, Some("CardXabar".to_string()))]);
+        // Everything else in the rows is the same either way.
+        for (before, after) in old.items.iter().zip(&new.items) {
+            assert_eq!(Transaction { stored_transaction_type: None, excel_bank: None, ..after.clone() }, *before);
+        }
     }
 
     #[test]

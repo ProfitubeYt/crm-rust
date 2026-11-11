@@ -97,6 +97,15 @@ pub fn headline(raw: &str) -> Option<&str> {
     (!FIELD_MARKERS.contains(&lead)).then_some(first)
 }
 
+/// The type «Операция» is worded by. The workbook goes by the type a receipt
+/// is stored with, so that one is taken whenever the server sends it.
+/// `transaction_type` is the server's reading of the receipt for this answer,
+/// which is what «Тип» shows; a server from before `stored_transaction_type`
+/// sends only that, and it stands in as it did.
+fn stored_kind(tx: &Transaction) -> &str {
+    tx.stored_transaction_type.as_deref().or(tx.transaction_type.as_deref()).unwrap_or("")
+}
+
 /// The text of the «Операция» cell: the headline as the bank wrote it, or a
 /// mark and a label for the type, written the way the row's bank writes them.
 pub fn display(tx: &Transaction) -> String {
@@ -104,7 +113,7 @@ pub fn display(tx: &Transaction) -> String {
     if let Some(line) = headline(raw) {
         return line.to_string();
     }
-    let kind = tx.transaction_type.as_deref().unwrap_or("");
+    let kind = stored_kind(tx);
     let upper = raw.to_uppercase();
     let notice = upper.contains("СЧЕТ ПО КАРТЕ ИЗМЕН") || upper.contains("СЧЁТ ПО КАРТЕ ИЗМЕН");
     let label = if notice {
@@ -411,6 +420,77 @@ mod tests {
             assert_eq!(given(other, "CardXabar"), format!("{DOT} Списание"), "{other}");
             assert_eq!(given(other, "HUMO Card"), format!("{PAID} Списание"), "{other}");
         }
+    }
+
+    /// A receipt without a headline: stored with one type, read by the server as another.
+    fn kept(stored: Option<&str>, read: Option<&str>, source: &str) -> Transaction {
+        Transaction { stored_transaction_type: stored.map(Into::into), transaction_type: read.map(Into::into), ..row("[Photo]", source) }
+    }
+
+    /// What a HUMO receipt of each type reads as without a headline.
+    fn humo_cells() -> [(&'static str, String); 4] {
+        [("DEBIT", format!("{PAID} Списание")), ("CREDIT", format!("{TOPPED_UP} Пополнение")), ("CONVERSION", format!("{EXCHANGED} Конверсия")), ("REVERSAL", format!("{UNDONE} Отмена"))]
+    }
+
+    #[test]
+    fn the_stored_type_words_the_operation_when_the_server_sends_it() {
+        // Stored as a top-up and read again as a debit: the workbook has the stored one, and so has the cell.
+        assert_eq!(display(&kept(Some("CREDIT"), Some("DEBIT"), "HUMO Card")), format!("{TOPPED_UP} Пополнение"));
+        assert_eq!(display(&kept(Some("CREDIT"), Some("DEBIT"), "CardXabar")), format!("{DOT} Пополнение"));
+        assert_eq!(display(&kept(Some("DEBIT"), Some("CREDIT"), "CardXabar")), format!("{DOT} Списание"));
+        // Whatever the server's own reading says, and also when it says nothing.
+        for (stored, cell) in humo_cells() {
+            for read in [Some("DEBIT"), Some("CREDIT"), Some("CONVERSION"), Some("REVERSAL"), Some(""), None] {
+                assert_eq!(display(&kept(Some(stored), read, "HUMO Card")), cell, "{stored} stored, {read:?} read");
+            }
+        }
+        // A stored type the workbook has no word for is worded as the workbook words it, not swapped for the reading.
+        assert_eq!(display(&kept(Some("HOLD"), Some("CREDIT"), "HUMO Card")), format!("{INFO} Списание"));
+        assert_eq!(display(&kept(Some(""), Some("CREDIT"), "HUMO Card")), format!("{INFO} Списание"));
+    }
+
+    #[test]
+    fn an_older_server_leaves_the_operation_to_the_type_it_sends() {
+        // No `stored_transaction_type` in the answer: the cell is what it was before the field.
+        for (read, cell) in humo_cells() {
+            assert_eq!(display(&kept(None, Some(read), "HUMO Card")), cell, "{read}");
+            assert_eq!(display(&kept(None, Some(read), "HUMO Card")), display(&typed(read, "HUMO Card")), "{read}");
+            assert_eq!(display(&kept(None, Some(read), "CardXabar")), display(&typed(read, "CardXabar")), "{read}");
+        }
+        // Neither type sent: the workbook's own last resort, as before.
+        assert_eq!(display(&kept(None, None, "HUMO Card")), format!("{INFO} Списание"));
+        assert_eq!(display(&kept(None, None, "CardXabar")), format!("{DOT} Списание"));
+    }
+
+    #[test]
+    fn a_withdrawal_is_told_by_the_stored_type() {
+        let atm = |stored: Option<&str>, read: &str| display(&Transaction { operator_raw: Some("ATM 0001".into()), ..kept(stored, Some(read), "HUMO Card") });
+        // A receipt stored as a debit at a cash machine is a withdrawal, whatever the server reads it as.
+        assert_eq!(atm(Some("DEBIT"), "CREDIT"), format!("{CASH} Списание"));
+        assert_eq!(atm(Some("DEBIT"), "DEBIT"), format!("{CASH} Списание"));
+        // Only a debit can be one, and it is the stored type that says which it is.
+        assert_eq!(atm(Some("CREDIT"), "DEBIT"), format!("{TOPPED_UP} Пополнение"));
+        assert_eq!(atm(Some("REVERSAL"), "DEBIT"), format!("{UNDONE} Отмена"));
+        // An older server: the type it sends decides, as before.
+        assert_eq!(atm(None, "DEBIT"), format!("{CASH} Списание"));
+        assert_eq!(atm(None, "CREDIT"), format!("{TOPPED_UP} Пополнение"));
+    }
+
+    #[test]
+    fn the_stored_type_leaves_the_headline_the_notice_and_the_bank_alone() {
+        // A headline is the receipt's own line, whatever either type says.
+        let headed = Transaction { stored_transaction_type: Some("CREDIT".into()), ..row("\u{1f534} Platezh\n➖ 5 000.00 UZS", "HUMO Card") };
+        assert_eq!(display(&headed), format!("{DOT} Platezh"));
+        // A notice of a changed account is one by its text.
+        let notice = |source: &str| display(&Transaction { stored_transaction_type: Some("CREDIT".into()), ..row("Счет по карте изменен", source) });
+        assert_eq!(notice("HUMO Card"), format!("{INFO} Изменение счета"));
+        assert_eq!(notice("CardXabar"), format!("{DOT} Изменение счета"));
+        // The bank given in the workbook still outranks the source, with the stored type as with the read one.
+        let given = |bank: &str, source: &str| display(&Transaction { excel_bank: Some(bank.into()), ..kept(Some("REVERSAL"), Some("DEBIT"), source) });
+        assert_eq!(given("HUMO Card", "CardXabar"), format!("{UNDONE} Отмена"));
+        assert_eq!(given("HUMO Card", "Ручной"), format!("{UNDONE} Отмена"));
+        assert_eq!(given("CardXabar", "HUMO Card"), format!("{DOT} Отмена"));
+        assert_eq!(given("Kapital", "HUMO Card"), format!("{UNDONE} Отмена"));
     }
 
     #[test]

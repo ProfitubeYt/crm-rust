@@ -126,6 +126,43 @@ Known limits of the pictures:
 Not changed on purpose: a parked draft is still discarded (now with a toast) when
 the table filters change elsewhere, rather than merged with the change.
 
+## Milestone 3 — «Операция» goes by the stored type (owner request, 2026-11-11)
+
+Contract given by the owner after the backend branch was ready, and consumed in
+`tbs-core` only:
+
+- Transaction responses may carry `stored_transaction_type: string | null` and
+  `excel_bank: string | null`.
+- «Операция», when the receipt has no headline of its own, is worded by
+  `stored_transaction_type` when it is non-null, otherwise by `transaction_type`
+  (`operation::stored_kind`). The cash-withdrawal mark follows the same type.
+- The bank still comes from `excel_bank` when it is `CardXabar` or `HUMO Card`,
+  otherwise from `source_display`. Unchanged.
+- «Тип», the type filter and the quick type chips are unchanged: they read
+  `transaction_type_display` / `transaction_type`.
+- An older server that omits the field, and a server that sends `null`, give
+  exactly the cells they gave before.
+- A non-null stored type is used as it is, also one the workbook has no word
+  for (`""`, an unknown code): the cell is then the workbook's own last resort,
+  not the server's reading.
+
+Side effect to know at integration: the local cache stamp is derived from the
+fields of `Transaction`, so the first start of a build with this field drops the
+local row cache once and reads the rows from the server again.
+
+Tests added (`tbs-core`, 108 → 116 lib tests):
+
+| Kind | Tests |
+| --- | --- |
+| Deserialization | `model::tests::the_stored_type_is_optional`, `model::tests::a_page_reads_with_the_new_fields_and_without_them` |
+| Fallback | `operation::tests::the_stored_type_words_the_operation_when_the_server_sends_it`, `an_older_server_leaves_the_operation_to_the_type_it_sends`, `a_withdrawal_is_told_by_the_stored_type`, `the_stored_type_leaves_the_headline_the_notice_and_the_bank_alone` |
+| Display | `columns::tests::the_operation_goes_by_the_stored_type_and_the_type_keeps_the_servers_word`, `query::tests::the_stored_type_reaches_the_cell_the_search_and_the_sort` |
+| Cache | `store::tests::a_cache_from_a_build_with_other_fields_is_dropped` now also requires the new field in the stamp |
+
+Not verified here: the backend branch itself. It is in the other session's
+repository and was not fetched or merged; the field names are the owner's.
+A live check against a server that sends the fields belongs to integration.
+
 ## Plan of this session
 
 1. P3 filters: verify the existing implementation, add the missing checks
@@ -140,6 +177,7 @@ the table filters change elsewhere, rather than merged with the change.
 
 - [x] Baseline verified on a clean clone (milestone 1).
 - [x] P3 filters completed and verified (milestone 2).
+- [x] «Операция» fallback by `stored_transaction_type` with tests (milestone 3).
 - [ ] P4 View implemented and verified.
 - [ ] Final desktop checks (clean-clone tests, Windows cross-build, headless run).
 
@@ -149,3 +187,5 @@ the table filters change elsewhere, rather than merged with the change.
 | --- | --- | --- | --- | --- |
 | 2026-11-11 18:47 | `a83b044` | clean clone | `cargo test -p tbs-core --locked` | 108 + 1 + 1 passed, exit 0 |
 | 2026-11-11 18:59 | `a83b044` | clean clone | `cargo test -p tbs-app --features devtools --locked` | 235 passed, exit 0 |
+| 2026-11-11 19:13 | `62c86e6` | clean clone | `cargo test -p tbs-core --locked` | 108 + 1 + 1 passed, exit 0 |
+| 2026-11-11 19:13 | `62c86e6` | clean clone | `cargo test -p tbs-app --features devtools --locked` | 243 passed, exit 0 |
