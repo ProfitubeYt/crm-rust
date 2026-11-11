@@ -22,7 +22,9 @@ from typing import Any, Optional
 from urllib.parse import quote, urlsplit
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -43,7 +45,25 @@ from services.root_access_config_service import (
 from services.user_service import build_permissions_snapshot
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/excel", tags=["Excel"])
+
+
+class _QuietValidationRoute(APIRoute):
+    """A validation error of these routes does not repeat what was sent: it may be a workbook password."""
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def quiet(request: Request) -> Response:
+            try:
+                return await handler(request)
+            except RequestValidationError as exc:
+                errors = [{key: value for key, value in error.items() if key != "input"} for error in exc.errors()]
+                raise RequestValidationError(errors) from None
+
+        return quiet
+
+
+router = APIRouter(prefix="/api/excel", tags=["Excel"], route_class=_QuietValidationRoute)
 _dashboard_user = dependencies.require_tab_access("dashboard")
 GRANT_ENDPOINTS = frozenset({"/api/excel/v1/snapshot", "/api/excel/v1/sync", "/api/excel/v1/device",
                              "/api/excel/v1/activate"})
@@ -217,10 +237,11 @@ async def create_grant(
     if active_count >= MAX_ACTIVE_GRANTS:
         raise HTTPException(409, "too_many_excel_connections_revoke_unused")
     token = "excel_" + secrets.token_urlsafe(32)
+    now = _now()  # one reading: the term runs from the moment of creation
     grant = ExcelSyncGrant(user_id=uid, name=name, token_hash=hashlib.sha256(token.encode()).hexdigest(),
                            permissions_version=user["permissions_version"], scope=_capture_scope(db, scope),
-                           created_at=_now(), expires_at=(
-                               _now() + timedelta(days=payload.expires_in_days)
+                           created_at=now, expires_at=(
+                               now + timedelta(days=payload.expires_in_days)
                                if payload.expires_in_days is not None else None
                            ))
     db.add(grant)
@@ -418,6 +439,14 @@ def _refused(status: int, code: str, message: str) -> HTTPException:
     return HTTPException(status, {"error": code, "message": message})
 
 
+def _request_address(request: Request) -> tuple[str, Optional[int]]:
+    """Host and explicit port this request was addressed to; no host when its Host header is unusable."""
+    try:
+        return (request.url.hostname or "").lower(), request.url.port
+    except ValueError:  # an unbalanced bracket or a port that is not a number
+        return "", None
+
+
 def _workbook_server_url(request: Request, requested: Optional[str]) -> str:
     """The address written into a workbook file.
 
@@ -441,8 +470,12 @@ def _workbook_server_url(request: Request, requested: Optional[str]) -> str:
     except workbook_builder.InvalidServerUrl as exc:
         raise _refused(422, "invalid_server_url", f"The workbook cannot use this server address: {exc}.")
     # A crafted link must not aim someone's workbook, and the password typed
-    # into it, at another server.
-    if urlsplit(url).hostname != (request.url.hostname or "").lower():
+    # into it, at another server. A proxy may drop the port from Host, so only
+    # a port that is there has to agree.
+    host, port = _request_address(request)
+    target = urlsplit(url)
+    if not host or target.hostname != host or (
+            port is not None and port != (target.port or (443 if target.scheme == "https" else 80))):
         raise _refused(422, "invalid_server_url", "server_url must be the address of this server.")
     return url
 
