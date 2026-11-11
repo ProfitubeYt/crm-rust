@@ -11,9 +11,8 @@ Runs inside the image of linux-dev.Dockerfile with these added as root:
 and a client built with `cargo build -p tbs-app --locked`. `CLIENT` names
 another one, a command line included: `CLIENT="wine …/tbsparcer.exe"` runs the
 Windows build, which keeps its session in Wine's own credential store, so the
-keyring is not needed there; `TBS_DATA_DIR` then spells the data folder the
-Windows way. `STUB` adds options for the stub, `SETTLE` and `PATIENCE` give a
-slow start more time.
+keyring is not needed there; the README says what Wine needs first. `STUB` adds
+options for the stub, `SETTLE` and `PATIENCE` give a slow start more time.
 
     window-check.py up              the screen, the keyring and the stub
     window-check.py start           the client; `stop` ends it, the session stays saved
@@ -91,8 +90,7 @@ def up(_):
 
 
 def start(_):
-    data = os.environ.get("TBS_DATA_DIR", str(ROOM / "data"))
-    spawn("client.log", *shlex.split(CLIENT), TBS_DATA_DIR=data, TBS_API_BASE_URL=f"http://127.0.0.1:{PORT}")
+    spawn("client.log", *shlex.split(CLIENT), TBS_DATA_DIR=str(ROOM / "data"), TBS_API_BASE_URL=f"http://127.0.0.1:{PORT}")
     for _ in range(int(os.environ.get("PATIENCE", "60"))):
         if window():
             break

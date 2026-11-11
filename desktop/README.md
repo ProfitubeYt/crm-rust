@@ -48,12 +48,17 @@ mouse and the keyboard. The pictures are of that screen, not of the test
 simulator. `window-check.py` lists what it needs installed and every step.
 
 The same steps drive the Windows build under Wine, which stands in for Windows
-without being it:
+without being it. Two things first: the client reads `C:\windows\Fonts` itself
+and a new Wine prefix has none there, so its window comes up without a word;
+and left to itself it draws through DX12, whose shaders Wine cannot compile, so
+it is told to use Vulkan.
 
+    python3 tools/window-check.py up
+    DISPLAY=:99 wineboot --init
+    cp /usr/share/fonts/truetype/dejavu/*.ttf ~/.wine/drive_c/windows/Fonts/
     CLIENT="wine $CARGO_TARGET_DIR/x86_64-pc-windows-gnu/debug/tbsparcer.exe" \
-    TBS_DATA_DIR='Z:\tmp\tbs-window-check\data' WGPU_BACKEND=vulkan \
-    WINEDLLOVERRIDES='mscoree,mshtml=' WINEDEBUG=-all PATIENCE=240 SETTLE=12 \
-        python3 tools/window-check.py up start shot first-launch
+    WGPU_BACKEND=vulkan WINEDEBUG=-all SETTLE=12 \
+        python3 tools/window-check.py start shot first-launch
 
 ## Setup
 

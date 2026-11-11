@@ -164,9 +164,9 @@ dragged), `05` (scrolled sideways: the pinned columns and the darker line after
 them stay, the others pass under), `11` and `12` (dark, and dark scrolled), `13`
 (a selected cell keeps its frame and the lines run on), `14` (the rail folded).
 
-The second run, once the tools were finished: a container made anew from the
-image with only `apt-get install -y xdotool gnome-keyring` added, as
-`window-check.py` says, the tools as committed in `8a21cb2`, the stub slow to
+The second run, once the tools could be slow to confirm a session and drive
+another client: a container made anew from the image with only `apt-get install
+-y xdotool gnome-keyring` added, as `window-check.py` says, the stub slow to
 confirm a saved session (`--refresh-delay 12`). First launch, sign-in (one
 `POST /api/auth/login`), «Главный экран», «Открыть Чеки» (the entitlement and
 the table, no sign-in), closed and started again: five seconds after its window
@@ -176,6 +176,11 @@ then «Вход выполнен», and the workspace row opened the table. The 
 the start window had a short run of its own in the same container, the first
 press having missed the link: `POST 200 /api/auth/logout`, the sign-in; closed
 and started again, no request, the sign-in.
+
+The tools changed in small ways after that run: a variable renamed in the stub,
+an option of `window-check.py` taken out again. The stub's delay was then tried
+by itself (`200` after 1.51 s for 1.5 asked, the spent token `401`), and the
+first launch on Linux came out the same to the pixel as in that run.
 
 The client's stderr (`client.log`) was empty in every one of these runs.
 
@@ -203,10 +208,22 @@ imagemagick python3 mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri
 fonts-dejavu-core fonts-noto-core procps`), on an Xvfb screen of 1600×1000,
 drawn by Mesa's software Vulkan (`WGPU_BACKEND=vulkan`), against the same stub
 and driven by the same `window-check.py` with `CLIENT="wine …/tbsparcer.exe"`
-(`desktop/README.md` has the whole line).
+(`desktop/README.md` has the steps).
 **Wine is not Windows.** This shows that the Windows build starts, draws and
 keeps its session through the Windows calls as Wine answers them. Nothing here
 was run on Windows itself.
+
+Two things Wine needed, both found by running without them. The client reads
+`C:\windows\Fonts` itself and a new prefix has none there: its window came up
+with every shape and not one word, so the container's DejaVu fonts were copied
+in, and theirs are the letters in the pictures. And without
+`WGPU_BACKEND=vulkan` the client takes DX12 there and panics at its start,
+Wine's shader compiler stopping on the renderer's shaders (`Shader model 5.1+
+resource array`, not implemented). The renderer and its shaders are the
+dependencies 2.0.1 has, `Cargo.lock` being untouched; all the same, no run
+here went through DX12. The README's steps were then run as written in a new
+prefix: the table after signing in and the start window after a restart came
+out the same to the pixel as in the runs below.
 
 The debug build:
 
@@ -259,10 +276,11 @@ signed out, and `client.log` stayed empty.
 
 - **Not run on Windows.** Wine answered for it. Not seen on a real machine: the
   Credential Manager itself (under Wine the same calls keep the entry in Wine's
-  registry), drawing through a graphics driver (here Mesa's software Vulkan
-  drew), Windows' fonts and scaling, WebView2 and the Telegram section, the
-  setup and the update. A run of the installed program on Windows is still owed
-  before a release.
+  registry), drawing through a graphics driver and through DX12 at all (here
+  Mesa's software Vulkan drew; under Wine the DX12 path does not start),
+  Windows' fonts and scaling, WebView2 and the Telegram section, the setup and
+  the update. A run of the installed program on Windows is still owed before a
+  release.
 - **The pictures are not Windows' look.** They have the DejaVu and Noto fonts of
   the containers, so text is wider or narrower than it will be. The square
   before each operation's name is an emoji those fonts lack; `operation.rs`
