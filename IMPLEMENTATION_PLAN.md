@@ -2,7 +2,22 @@
 
 Legend: `- [ ]` ☐ not started · `- [x]` ☑ implemented **and** verified. A task is ticked only after its test or check listed under "Verification" has actually passed.
 
-Branch: `hoplite/kyzikos-dda212ec` · Started: 2026-11-11
+Branch: `hoplite/barke-6b3e18a3` (third session; continues `hoplite/kyzikos-dda212ec` and the interrupted snapshot `b9d3020`) · Started: 2026-11-11
+
+## 0. Continuation after the interrupted second session
+
+The second session ran out of credits. Its commit `b9d3020` held only tracked modifications: new files were lost and the snapshot did not build (`docs/handoff/RECOVERY_STATUS.md`). This session restores them against the preserved call sites and tests, then finishes P2–P4. Nothing from the old sessions is re-applied or rewritten.
+
+| Lost or missing | State |
+|---|---|
+| `tbs-core/src/operation.rs` | Recovered from the transcript before this session (`d56409d`). |
+| `transactions/facets.rs`, `transactions/fixtures/*`, the wiring `filters.rs` expects in `transactions/mod.rs` and `menus.rs` | Restored in `1c8ddb5`; verification in §5. |
+| `backend/services/excel_workbook_builder.py`, migration `20261111_0032`, `backend/tests/test_excel_workbook_{api,builder}.py` | Restored under P2.1; state in §3 and §5. |
+
+Rules of this session:
+
+- Rust runs only in a container built from `desktop/tools/linux-dev.Dockerfile` (base `rust:1.99.1-bookworm` pinned by digest; approved by the owner on 2026-11-11). Nothing is installed on the host.
+- A milestone is verified on a clean checkout of its commit and then pushed. Work that is not verified is pushed only under a commit that says WIP; `hoplite/barke-6b3e18a3-wip` holds a safety snapshot taken mid-edit and is not a milestone.
 
 ## 1. What was studied
 
@@ -77,6 +92,12 @@ Same flow in Electron (`ExcelSyncPanel.tsx`), so this is not a Rust regression; 
   - *Acceptance:* tests with a stub server: an edit invisible to the manifest reaches the table on the next verify; an unchanged server costs no dataset rebuild; a cache written under another stamp is discarded.
 - [x] **P1.4 Search covers the ledger fields** (`tbs-core/src/query.rs`) — «Подробности», receiver, receiver card, description and the article label are searchable.
 - [x] **P1.5 Verify against production data** — compare what the client would render for the reference workbook's rows with the workbook itself (same ids). Result in §5.
+- [x] **P1.6 «Операция» as a column of its own** (`tbs-core/src/operation.rs`, `columns.rs`, `query.rs`, `export.rs`) — the workbook's `OperationDisplay` rule (the receipt's own headline, else a fallback from type and bank) next to «Тип», which keeps the server's wording. Source recovered from the transcript with its 16 unit tests.
+  - *Acceptance:* the recovered tests pass on the restored tree; «Тип» and «Операция» stay two columns in the layout, the search, the sort and the export. (Copying the cell has no test of its own.)
+- [ ] **P1.7 Inputs of «Операция»** (`backend/api/routes/transactions.py`, `tbs-core/src/model.rs`, `operation.rs`, `query.rs`)
+  - The API sends an inferred type where the workbook uses the stored one; it does not send `excel_bank`; the server export ignores `sort_by=operation` and silently sorts by date.
+  - Server: `stored_transaction_type` and `excel_bank` in `TransactionResponse`, `sort_by=operation` honoured by the export. Client: the fallback reads the stored type when the server sends it and keeps working with a server that does not. An absent field stays absent; nothing is filled from another field.
+  - *Acceptance:* backend and core tests for the three gaps; how many production rows the difference touches, read-only.
 
 ### P2 — High: Excel workbook that configures itself
 
@@ -148,6 +169,15 @@ Same flow in Electron (`ExcelSyncPanel.tsx`), so this is not a Rust regression; 
   Method: the workbook was read with openpyxl, production with one read-only `SELECT` per table through the tunnel, and the client's rules (`Column::display`) were applied to the production values; the rules themselves are covered by the unit tests above. So the server holds exactly what the ledger shows, and the columns that looked empty («Приложение», «Получатель», «Карта получателя») are empty in the ledger too — 84–93 % of the receipts simply have no such value. What was wrong in the client was the presentation (RC-1, RC-2) and the freshness of its snapshot (RC-3).
 - **Known difference, left as is.** The workbook's «Операция» is the receipt's own first line («💸 Оплата», «ℹ️ Счет по карте изменен»), which the macro takes from the raw text. Both clients show the server's wording of the type instead («Списание», «Изменение счета»); the Rust client now takes that wording from the server like Electron does. The client's label occurs in the workbook's headline in 206 of 1 637 rows; elsewhere the headline is another text. The two columns are not the same thing and were not reconciled.
 
+### Session 3 — the build restored (2026-11-11)
+
+Commit `1c8ddb5`, run on a clean checkout of that commit in the container (rustc 1.99.1), not on a working tree that was still being edited:
+
+- `cargo test -p tbs-core --locked`: 108 unit tests pass, 16 of them the recovered `operation` tests; `the_operation_is_the_receipts_own_line_and_is_not_edited`, `the_operation_is_searched_and_sorted_as_shown` and `the_operation_goes_out_as_the_text_of_its_cell` cover the column, the search and sort, and the export. `live_backend` and `live_writes` each report one passing test but return at once without `TBS_E2E_*`: they are no coverage.
+- `cargo test -p tbs-app --features devtools --locked`: 235 pass, 0 fail, the layout migration tests among them. The live UI suite and the screenshot test also return at once without their environment.
+- One preserved test was stale and was corrected without dropping an assertion: `the_counter_says_when_the_draft_cannot_be_counted` typed into a field of a folded group. The reason is in the commit message.
+- Not covered by this milestone: the Windows target, a real window, the live suites, anything in the backend.
+
 ## 6. Deployment notes
 
 _Filled in as tasks complete._
@@ -158,7 +188,8 @@ _Filled in as tasks complete._
 - PostgreSQL role `hoplite_ro`: SELECT on the transaction, reference and annotation tables and on non-secret columns of `users` / `excel_sync_*`; expires after 14 days.
 - Revoke: `userdel -r hoplite-ro; rm -f /usr/local/bin/hoplite-ro-gate` and `DROP OWNED BY hoplite_ro; DROP ROLE hoplite_ro;`.
 - Nothing was written to production.
+- Third session: keys of earlier sessions do not carry over. A new ED25519 session key (fingerprint `SHA256:N37nlcLOzWtgi3XXfwmyNslah+9kJSkMuz0Sie0Eqtw`, private part outside the repository) was handed to the owner with one `authorized_keys` line: `restrict,port-forwarding,permitopen="127.0.0.1:9990",command="/usr/local/bin/hoplite-ro-gate",expiry-time="20261125"`. The server's host key was pinned after comparing it with the verified fingerprint. Whether the key was installed, and what was read through it, is recorded in §5.
 
 ## 8. Status
 
-_In progress._
+_In progress._ Recovery of the build: done (§0). P2 backend, P3 filters: in work. P4, P1.7: not started.
