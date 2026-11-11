@@ -13,8 +13,8 @@ Status words used below: **verified** = a check listed under "Verification" ran 
 | # | Content | State |
 |---|---|---|
 | 1 | Workbook API audited and hardened, `test_excel_workbook_api.py` written, migration 0032 round trips | verified, pushed as `5d4156e` |
-| 2 | `docs/EXCEL_SYNC.md`: prepared-workbook flow, contract, deployment proposal; loopback HTTP run; gate test | verified, pushed |
-| 3 | Operation parity (plan P1.7): additive transaction fields, export sort, contract note | pending |
+| 2 | `docs/EXCEL_SYNC.md`: prepared-workbook flow, contract, deployment proposal; loopback HTTP run; gate test | verified, pushed as `4f6995e` |
+| 3 | Operation parity (plan P1.7): `stored_transaction_type` and `excel_bank` in the transaction API, export honours `sort_by=operation`, contract note | verified, pushed |
 
 ## Environment (nothing of it is in git)
 
@@ -79,10 +79,13 @@ All commands from `backend/` with the environment above.
 | New API tests | `pytest tests/test_excel_workbook_api.py` | 123 passed |
 | Migration 0032, SQLite | `pytest tests/test_excel_workbook_migration.py` | 2 passed |
 | Excel suites together | `pytest tests/test_excel_workbook_api.py tests/test_excel_workbook_builder.py tests/test_excel_workbook_migration.py tests/test_excel_sync_api.py tests/test_excel_sync_service.py tests/test_excel_vba_package.py` | 481 passed (480 + 1 skipped without `oletools`) |
-| Whole backend | `pytest tests` | 1084 passed, 0 failed, 0 skipped |
+| Operation parity | `pytest tests/test_transaction_operation_parity.py` | 9 passed |
+| Export and layout suites next to it | `pytest tests/test_export_client_layout.py tests/test_transactions_export.py` | 101 passed |
+| Whole backend | `pytest tests` | 1093 passed, 0 failed, 0 skipped |
 | Migration 0032, PostgreSQL 16 | alembic CLI, see below | passed |
 | New API tests on PostgreSQL 16 | same test module, `db_session` bound to the migrated database | 123 passed |
 | Existing sync API tests on PostgreSQL 16 | `tests/test_excel_sync_api.py`, same harness | 107 passed |
+| Operation parity on PostgreSQL 16 | `tests/test_transaction_operation_parity.py`, same harness | 9 passed |
 | The flow over a real socket | `tools/excel_sync/test_server.py` (uvicorn, `127.0.0.1:8767`) + an httpx client, see below | 34 of 34 checks |
 
 What `test_excel_workbook_api.py` covers: the create reply and stored record (hash only, audit entry, no grant);
@@ -135,7 +138,10 @@ while `/v1/activate` and `/v1/snapshot` of a prepared workbook still work.
 
 ## Contract for the UI session
 
-No change to any existing method, path or field. Milestone 1 only adds or tightens:
+No existing method, path or field changed. Everything below is additive or tightening, and none of it has to be
+present for the desktop client to work: an older server simply does not send the new fields.
+
+### Excel workbooks (milestones 1–2)
 
 - `POST /api/excel/workbooks` replies `201 {"workbook": {...}, "server_url": "<address written into the file>"}`.
   `server_url` is additional to what the Rust client reads and may be ignored.
@@ -145,9 +151,55 @@ No change to any existing method, path or field. Milestone 1 only adds or tighte
 The full contract (fields, codes, address rules, compatibility, deployment proposal) is in `docs/EXCEL_SYNC.md`,
 section «Готовая книга с сервера: 11.11.2026».
 
+### «Операция» inputs and export order (milestone 3, plan P1.7)
+
+Two fields were added to `TransactionResponse`, so to `GET /api/transactions/` (`items[]`),
+`GET /api/transactions/{id}`, `POST /api/transactions/` and `transaction` of the process-receipt reply:
+
+| Wire name | JSON type | Value |
+|---|---|---|
+| `stored_transaction_type` | `string \| null` | the row's `transaction_type` as stored: `DEBIT`, `CREDIT`, `CONVERSION` or `REVERSAL`; identical to `records[].fields.transaction_type` of the Excel snapshot |
+| `excel_bank` | `string \| null` | the bank assigned to the row in the workbook: `CardXabar`, `HUMO Card` or `null`; identical to `records[].fields.excel_bank` of the Excel snapshot |
+
+`transaction_type` (the type inferred from the stored one and the receipt text) and `transaction_type_display`
+keep their meaning and values. Expected consumption, which this branch does not implement: the «Операция»
+fallback takes `stored_transaction_type` when the key is present and not null, otherwise `transaction_type`; an
+absent field stays absent. The Rust model already has `excel_bank: Option<String>` and `operation::display`
+already prefers it, so the **current** client starts honouring assigned banks as soon as a server with this change
+answers it. No Rust struct uses `deny_unknown_fields`, so `stored_transaction_type` is ignored until it is modelled.
+
+`GET /api/transactions/export` now honours `sort_by=operation` (it used to fall back to date silently), in both
+layouts:
+
+- key: the text of the «Операция» cell the export itself writes in the client layout — the bank's headline from
+  the first line of the receipt, else mark and label of the **inferred** type in the style of the **source's** bank;
+- comparison: lower-cased, by Unicode code point (what `Key::Text(cell.to_lowercase())` does in `query.rs`);
+- equal keys: by date, then id, ascending, in both directions — the order `fetch_all` receives rows in, which the
+  client's stable sort keeps;
+- `№ опер.` counts downward only for date-descending, as before; every other `sort_by` is unchanged and
+  `GET /api/transactions/` does not sort by `operation`.
+
+Where the orders can differ, so that nobody has to guess: for a row whose receipt has a bank headline the text is
+the same in the workbook, the client and the export. For a row without one, the export uses the inferred type and
+the source's bank; the workbook uses the stored type and `excel_bank`; the client uses `transaction_type` today
+plus `excel_bank` once it arrives. Such rows therefore sit at another place in the exported file than on screen
+when they carry an `excel_bank`, and — after the client moves to `stored_transaction_type` — when stored and
+inferred types differ. The export's cell was left alone on purpose: its label and its sign column are both built
+on the inferred type and it ignores assigned banks altogether. **Decision for integration:** whether the export's
+«Операция» should follow the workbook's rule (stored type, assigned bank). That changes exported content for those
+rows and was not done here.
+
 ## Remaining
 
-- Milestone 3 as in the table above.
+- **Not done: the production count asked for by plan P1.7** ("how many production rows the difference touches").
+  It needs the read-only tunnel, which this sandbox does not have. Method for whoever has it, one connection, no
+  writes: read `id, transaction_type, raw_message, excel_bank` of `transactions`, and count the rows for which
+  `services.excel_client_layout.operation_from_raw(raw_message)` is `None` (no bank headline) and either
+  `api.routes.transactions.infer_transaction_type(transaction_type, raw_message) != transaction_type` or
+  `excel_bank` is not null. Those are exactly the rows where workbook, client and export can disagree.
+- Not done, outside this scope: consumption of `stored_transaction_type` in the Rust client; the decision about
+  the export's «Операция» cell described above; a run of the native Excel suites and of the Rust live suite
+  against this backend.
 - Deployment proposal (not executed, needs separate authorization): `alembic upgrade head` (adds one nullable
   column, reversible), optional `EXCEL_SYNC_PUBLIC_URL=https://<public host>` in the server's `.env` (the backend
   service already reads `.env`; no compose change), then restart of the backend. A commented entry for

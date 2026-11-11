@@ -445,6 +445,20 @@ def operation_label(
     return f"{_TYPE_EMOJI.get(transaction_type, 'ℹ️')} {display_label}"
 
 
+def operation_text(
+    *,
+    source_display: str,
+    transaction_type: str,
+    type_display: str,
+    operator_raw: str,
+    raw_message: str,
+) -> str:
+    """The Операция cell: the bank's own headline first; our label only when there isn't one."""
+    return operation_from_raw(raw_message) or operation_label(
+        transaction_type, type_display, f"{operator_raw} {raw_message}", style_for_source(source_display),
+    )
+
+
 def direction_sign(transaction_type: str) -> str:
     """Their sign column: `-` for money out, `+` for money in."""
     if transaction_type in {"CREDIT", "REVERSAL"}:
@@ -569,9 +583,9 @@ def build_row_values(
     return {
         "date_time": transaction_date,
         "source": source_display,
-        # The bank's own headline first; our label only when there isn't one.
-        "operation": operation_from_raw(raw_message) or operation_label(
-            transaction_type, type_display, f"{operator_raw} {raw_message}", style,
+        "operation": operation_text(
+            source_display=source_display, transaction_type=transaction_type, type_display=type_display,
+            operator_raw=operator_raw, raw_message=raw_message,
         ),
         "operator": operator_raw,
         # Their lookup writes a zero rather than leaving the cell empty.

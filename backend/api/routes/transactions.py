@@ -277,6 +277,11 @@ class TransactionResponse(BaseModel):
     application_mapped: Optional[str]
     transaction_type: str
     transaction_type_display: str
+    # The two inputs the Excel workbook's «Операция» takes from the row itself,
+    # as the Excel snapshot sends them. `transaction_type` above stays the type
+    # inferred from the stored one and the receipt's text.
+    stored_transaction_type: Optional[str] = None
+    excel_bank: Optional[str] = None
     balance_after: Optional[str]
     receiver_name: Optional[str] = None
     receiver_card: Optional[str] = None
@@ -549,6 +554,8 @@ def build_transaction_response(
         application_mapped=app_mapped,
         transaction_type=canonical_type,
         transaction_type_display=display,
+        stored_transaction_type=getattr(c, "transaction_type", None),
+        excel_bank=getattr(c, "excel_bank", None),
         balance_after=normalize_optional_amount_for_response(balance_val),
         receiver_name=getattr(c, "receiver_name", None),
         receiver_card=getattr(c, "receiver_card", None),
@@ -1548,6 +1555,48 @@ def _resolve_transactions_sort_column(sort_by: str):
     return sort_map.get(sort_by, Transaction.transaction_date)
 
 
+def _export_operation_text(tx, source_meta_map: Optional[Dict[int, Dict[str, Any]]]) -> str:
+    """The «Операция» cell the client-layout export writes for this row."""
+    from services.excel_client_layout import operation_text
+
+    raw_message = getattr(tx, "raw_message", None) or ""
+    canonical_type = infer_transaction_type(tx.transaction_type, raw_message)
+    return operation_text(
+        source_display=_resolve_transaction_source_fields(tx, source_meta_map)["source_display"] or "Прочее",
+        transaction_type=canonical_type,
+        type_display=get_transaction_type_display(canonical_type, raw_message),
+        operator_raw=tx.operator_raw or "",
+        raw_message=raw_message,
+    )
+
+
+def _transactions_in_operation_order(
+    db: Session, query, source_meta_map: Optional[Dict[int, Dict[str, Any]]], *, descending: bool,
+):
+    """
+    Rows ordered by their «Операция» cell, for ``sort_by=operation``.
+
+    No column holds that text, so it is derived here and compared the way the
+    desktop client compares its own column: lower-cased, by code point, and
+    under equal cells oldest first in either direction (a stable sort over the
+    order the client receives rows in: by date, then id). Only keys and ids are
+    held while sorting.
+    """
+    inputs = query.with_entities(
+        Transaction.id, Transaction.raw_message, Transaction.transaction_type, Transaction.operator_raw,
+        Transaction.source_type, Transaction.source_chat_id,
+    ).order_by(asc(Transaction.transaction_date), asc(Transaction.id)).yield_per(1000)
+    keyed = [(_export_operation_text(row, source_meta_map).lower(), int(row.id)) for row in inputs]
+    keyed.sort(key=lambda item: item[0], reverse=descending)
+    ids = [row_id for _key, row_id in keyed]
+    for start in range(0, len(ids), 500):
+        page = ids[start:start + 500]
+        found = {int(row.id): row for row in db.query(Transaction).filter(Transaction.id.in_(page))}
+        for row_id in page:
+            if row_id in found:
+                yield found[row_id]
+
+
 def _build_filtered_transactions_query(
     db: Session,
     *,
@@ -2292,6 +2341,7 @@ async def export_transactions(
     )
 
     max_rows = _transactions_export_max_rows()
+    source_meta_map = _load_source_meta_map(db)
     if query is None:
         total_rows = 0
         ordered_query = []
@@ -2306,12 +2356,16 @@ async def export_transactions(
                     "total": total_rows,
                 },
             )
-        sort_column = _resolve_transactions_sort_column(sort_by)
-        order_fn = desc if sort_dir.lower() == "desc" else asc
-        tie_breaker = desc(Transaction.id) if sort_dir.lower() == "desc" else asc(Transaction.id)
-        ordered_query = query.order_by(order_fn(sort_column), tie_breaker).yield_per(1000)
+        if sort_by == "operation":
+            ordered_query = _transactions_in_operation_order(
+                db, query, source_meta_map, descending=sort_dir.lower() == "desc",
+            )
+        else:
+            sort_column = _resolve_transactions_sort_column(sort_by)
+            order_fn = desc if sort_dir.lower() == "desc" else asc
+            tie_breaker = desc(Transaction.id) if sort_dir.lower() == "desc" else asc(Transaction.id)
+            ordered_query = query.order_by(order_fn(sort_column), tie_breaker).yield_per(1000)
 
-    source_meta_map = _load_source_meta_map(db)
     operation_number_desc = sort_by == "transaction_date" and sort_dir.lower() == "desc"
     if layout == "client":
         export_stream = _build_client_layout_export_stream(
