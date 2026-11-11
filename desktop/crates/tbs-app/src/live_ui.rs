@@ -455,6 +455,20 @@ async fn sign_in(d: &mut Drive, c: &Creds) {
     d.until("the rows", |app| app.tx.as_ref().is_some_and(|tx| tx.peek().loaded && tx.peek().total > 0)).await;
 }
 
+/// Out to the start window and back in: the session is the same one, and
+/// nobody is asked to sign in again.
+async fn start_window_and_back(d: &mut Drive) {
+    let api = d.api();
+    d.click(HUB);
+    d.until("the start window", |app| matches!(app.phase, Phase::Login(_))).await;
+    assert!(d.sees("Вход выполнен") && !d.sees("Войти"), "the start window asks a signed-in user to sign in");
+    assert!(api.me().await.is_ok(), "going back to the start window ended the session");
+    d.click("Открыть Чеки");
+    d.until("the main screen again", |app| matches!(app.phase, Phase::Main)).await;
+    d.until("the rows again", |app| app.tx.as_ref().is_some_and(|tx| tx.peek().loaded && tx.peek().total > 0)).await;
+    println!("ok    start window and back: {:?}", d.tx().peek());
+}
+
 async fn add_row(d: &mut Drive, operator: &str, amount: &str) {
     d.click("Добавить");
     assert!(d.sees("Создать"), "the add form did not open: {:?}", d.screen_text());
@@ -979,6 +993,7 @@ async fn the_screens_do_what_their_buttons_say() {
     let mut d = Drive::new(&c.url);
     sign_in(&mut d, &c).await;
     println!("ok    sign in: {:?}", d.tx().peek());
+    start_window_and_back(&mut d).await;
     table(&mut d).await;
     filters(&mut d).await;
     export(&mut d).await;

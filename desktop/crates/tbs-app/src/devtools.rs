@@ -7,7 +7,7 @@
 //! - `TBS_SHOT=<png>` saves a screenshot once data is on screen, then quits.
 //! - `TBS_CMD=<file>` runs the lines put in that file, one per tick, through the
 //!   app's own update: `goto <route>`, `open <panel>`, `theme <dark|light>`,
-//!   `toast <text>`, `logout`. It reaches the user's desktop in no way.
+//!   `toast <text>`, `hub`, `logout`. It reaches the user's desktop in no way.
 
 use std::time::Duration;
 
@@ -88,6 +88,7 @@ fn run_command(app: &mut App, line: &str) -> Task<Message> {
     match verb {
         "goto" => route(value).map_or_else(Task::none, |target| app.go_to(target)),
         "open" => probe(value).map_or_else(Task::none, Task::done),
+        "hub" => Task::done(Message::Hub),
         "logout" => Task::done(Message::Logout),
         "theme" => {
             app.ctx_for_test().prefs.theme = Some(value.to_owned());
@@ -115,7 +116,7 @@ pub fn update(app: &mut App, message: Msg) -> Task<Message> {
                 app.dev.logged = true;
                 return task;
             }
-            // The sign-in window has no data to wait for, and nothing to go to.
+            // The start window has no data to wait for, and nothing to go to.
             if app.on_login()
                 && let Some(line) = app.dev.commands.as_deref().and_then(next_command)
             {

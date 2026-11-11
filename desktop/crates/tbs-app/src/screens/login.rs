@@ -1,6 +1,8 @@
-//! The sign-in window: the brand and the workspace to open on the left, the
-//! account on the right. The right half also carries the two-factor steps, the
-//! Telegram QR and the few settings that have to work before anyone has signed in.
+//! The start window, where every launch opens: the brand and the workspaces on
+//! the left, the account on the right. With a session the right half says who
+//! is signed in and opens the workspace on it; without one it is the sign-in,
+//! with the two-factor steps, the Telegram QR and the few settings that have to
+//! work before anyone has signed in.
 
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -9,13 +11,14 @@ use iced::keyboard::{self, Key, key::Named};
 use iced::widget::{Column, Id, Space, button, column, container, mouse_area, opaque, operation, qr_code, row, stack, svg, text, text_input};
 use iced::{Alignment, Color, Event, Fill, Padding, Size, Subscription, Task, Theme, event, window};
 use tbs_core::api::{Api, ApiError, LoginResponse, QrSession, QrStatus, TwoFactorConfirm, TwoFactorSetup};
+use tbs_core::model::UserInfo;
 
 use crate::ctx::{Ctx, Request, text_error};
-use crate::screens::settings::ThemeChoice;
+use crate::screens::settings::{ThemeChoice, avatar};
 use crate::theme::{self, Tone, control, size, space};
 use crate::ui::{self, El, Icon, Kind};
 
-/// The sign-in has a small window of its own, and the two panes fill all of it.
+/// The start window is small and its own, and the two panes fill all of it.
 pub const WINDOW: Size = Size::new(880.0, 560.0);
 const PANE_WIDTH: f32 = 340.0;
 const FORM_WIDTH: f32 = 360.0;
@@ -48,7 +51,7 @@ pub enum Subsystem {
 impl Subsystem {
     const ALL: [Subsystem; 1] = [Subsystem::Receipts];
 
-    fn name(self) -> &'static str {
+    pub fn name(self) -> &'static str {
         match self {
             Subsystem::Receipts => "Чеки",
         }
@@ -71,6 +74,16 @@ impl Subsystem {
 enum Step {
     Credentials,
     TwoFactor { temp_token: String, setup: bool },
+}
+
+/// Whose session the window stands on. One account serves every workspace, so
+/// this is asked once, here, and not by each of them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Session {
+    /// A saved one is with the server; until it answers there is nothing to ask for.
+    Resuming,
+    SignedOut,
+    SignedIn,
 }
 
 struct Setup {
@@ -96,6 +109,7 @@ impl Qr {
 
 pub struct Login {
     system: Subsystem,
+    session: Session,
     settings: bool,
     /// `None` until the first answer.
     server: Option<bool>,
@@ -130,6 +144,9 @@ pub enum ListKey {
 #[derive(Clone, Debug)]
 pub enum Msg {
     System(Subsystem),
+    /// Opens the chosen workspace on the session there is.
+    Open,
+    SignOut,
     OpenSettings,
     CloseSettings,
     Theme(ThemeChoice),
@@ -185,15 +202,26 @@ fn list_key(event: Event, _status: event::Status, _window: window::Id) -> Option
     Some(Msg::ListKey(key))
 }
 
+/// Enter opens the workspace when there is nothing left to type: only an Enter
+/// no field took.
+fn open_key(event: Event, status: event::Status, _window: window::Id) -> Option<Msg> {
+    match event {
+        Event::Keyboard(keyboard::Event::KeyPressed { key: Key::Named(Named::Enter), .. }) if status == event::Status::Ignored => Some(Msg::Open),
+        _ => None,
+    }
+}
+
 fn focus(id: &'static str) -> Task<Msg> {
     operation::focus(Id::new(id))
 }
 
 impl Login {
+    /// The window as it stands for the session there is: signed in, or the sign-in.
     pub fn new(ctx: &Ctx) -> Self {
         let users = ctx.prefs.users();
         Self {
             system: Subsystem::Receipts,
+            session: if ctx.user.is_some() { Session::SignedIn } else { Session::SignedOut },
             settings: false,
             server: None,
             step: Step::Credentials,
@@ -217,8 +245,28 @@ impl Login {
         }
     }
 
+    /// The window a launch opens with. A saved session is still with the
+    /// server then, and the account half waits for the answer instead of
+    /// offering a sign-in that may not be needed.
+    pub fn starting(ctx: &Ctx) -> Self {
+        let mut screen = Self::new(ctx);
+        if ctx.user.is_none() && ctx.api.has_refresh_token() {
+            screen.session = Session::Resuming;
+        }
+        screen
+    }
+
+    /// The server answered about the saved session; `ctx.user` holds who it is.
+    pub fn resumed(&mut self, ctx: &Ctx) {
+        self.session = if ctx.user.is_some() { Session::SignedIn } else { Session::SignedOut };
+    }
+
     /// Where typing starts: a known user only has the password left to enter.
+    /// With a session there is nothing to type.
     pub fn focus_first(&self) -> Task<Msg> {
+        if self.session != Session::SignedOut {
+            return Task::none();
+        }
         focus(if self.username.is_empty() { USERNAME_ID } else { PASSWORD_ID })
     }
 
@@ -235,11 +283,14 @@ impl Login {
         if self.form_shown() && !self.users.is_empty() {
             all.push(event::listen_with(list_key));
         }
+        if self.session == Session::SignedIn && !self.settings {
+            all.push(event::listen_with(open_key));
+        }
         Subscription::batch(all)
     }
 
     fn form_shown(&self) -> bool {
-        self.step == Step::Credentials && !self.settings && !self.qr.takes_the_pane()
+        self.session == Session::SignedOut && self.step == Step::Credentials && !self.settings && !self.qr.takes_the_pane()
     }
 
     pub fn update(&mut self, message: Msg, ctx: &mut Ctx) -> Task<Msg> {
@@ -250,8 +301,22 @@ impl Login {
             Msg::System(system) => {
                 self.system = system;
                 self.settings = false;
-                if self.form_shown() {
+                // Choosing a workspace opens it on the session there is; without
+                // one the sign-in beside it is the way in.
+                if self.session == Session::SignedIn {
+                    ctx.request(Request::Open(system));
+                } else if self.form_shown() {
                     return self.focus_first();
+                }
+            }
+            Msg::Open => {
+                if self.session == Session::SignedIn {
+                    ctx.request(Request::Open(self.system));
+                }
+            }
+            Msg::SignOut => {
+                if self.session == Session::SignedIn {
+                    ctx.request(Request::SignOut);
                 }
             }
             Msg::OpenSettings => self.settings = true,
@@ -592,17 +657,46 @@ impl Login {
     fn account<'a>(&'a self, ctx: &'a Ctx) -> El<'a, Msg> {
         let body = if self.settings {
             self.settings_view(ctx)
-        } else if self.qr.takes_the_pane() {
-            self.qr_pane()
         } else {
-            match &self.step {
-                Step::Credentials => self.credentials(),
-                Step::TwoFactor { setup: true, .. } => self.setup_view(),
-                Step::TwoFactor { .. } => self.two_factor(),
+            match (self.session, &ctx.user) {
+                (Session::Resuming, _) => self.resuming(),
+                (Session::SignedIn, Some(user)) => self.signed_in(user),
+                _ if self.qr.takes_the_pane() => self.qr_pane(),
+                _ => match &self.step {
+                    Step::Credentials => self.credentials(),
+                    Step::TwoFactor { setup: true, .. } => self.setup_view(),
+                    Step::TwoFactor { .. } => self.two_factor(),
+                },
             }
         };
         let form = container(container(body).max_width(FORM_WIDTH)).center_x(Fill).padding(Padding { top: 56.0, bottom: space::LG, left: space::XL, right: space::XL });
         ui::scroll(form).width(Fill).height(Fill).into()
+    }
+
+    /// A saved session is being checked: no form yet, it may not be needed.
+    fn resuming(&self) -> El<'_, Msg> {
+        column![
+            heading(format!("Вход в {}", self.system.name()), "Проверяем сохранённый вход на этом компьютере"),
+            row![ui::icon(Icon::Loader, 16.0), ui::muted("Подождите…")].spacing(space::SM).align_y(Alignment::Center),
+        ]
+        .spacing(space::LG + space::XS)
+        .into()
+    }
+
+    /// Somebody is signed in: nothing to type, the workspace opens on the
+    /// session, and signing out is said in words because it ends it.
+    fn signed_in<'a>(&'a self, user: &'a UserInfo) -> El<'a, Msg> {
+        let name = user.title();
+        let who = column![ui::strong(name), ui::faint(format!("@{}", user.username))].spacing(1).width(Fill);
+        let account = container(row![avatar(name, 40.0), who].spacing(space::MD).align_y(Alignment::Center)).width(Fill).padding([space::SM + 2.0, space::MD]).style(theme::inset);
+        column![
+            heading("Вход выполнен".to_owned(), "Учётная запись одна для всех рабочих пространств"),
+            labeled("Учётная запись", account),
+            primary(format!("Открыть {}", self.system.name()), Some(Msg::Open)),
+            quiet_link(Icon::Logout, "Выйти из учётной записи", Msg::SignOut),
+        ]
+        .spacing(space::LG + space::XS)
+        .into()
     }
 
     fn feedback(&self) -> Column<'_, Msg> {
@@ -786,6 +880,8 @@ impl Login {
             "l-users" => Msg::ToggleUsers,
             "l-next" => Msg::ListKey(ListKey::Next),
             "l-receipts" => Msg::System(Subsystem::Receipts),
+            "l-open" => Msg::Open,
+            "l-signout" => Msg::SignOut,
             "l-settings" => Msg::OpenSettings,
             "l-settings-off" => Msg::CloseSettings,
             "l-qr" => Msg::QrStart,
@@ -825,13 +921,18 @@ fn inside_field(control: El<'_, Msg>) -> El<'_, Msg> {
     container(control).align_right(Fill).center_y(Fill).padding(Padding { right: space::XXS + 1.0, ..Padding::ZERO }).into()
 }
 
-fn primary<'a>(caption: &'a str, press: Option<Msg>) -> El<'a, Msg> {
+fn primary<'a>(caption: impl text::IntoFragment<'a>, press: Option<Msg>) -> El<'a, Msg> {
     let body = container(text(caption).size(size::MD).font(theme::FONT_MEDIUM)).center_x(Fill).center_y(Fill);
     button(body).width(Fill).height(control::LG).padding(0).style(theme::btn_primary).on_press_maybe(press).into()
 }
 
 fn back<'a>(caption: &'a str, message: Msg) -> El<'a, Msg> {
-    let line = row![ui::icon(Icon::ArrowLeft, 16.0), ui::muted(caption).size(size::BASE)].spacing(space::XS).align_y(Alignment::Center);
+    quiet_link(Icon::ArrowLeft, caption, message)
+}
+
+/// A line of quiet text with its glyph: the way back, or out.
+fn quiet_link<'a>(glyph: Icon, caption: &'a str, message: Msg) -> El<'a, Msg> {
+    let line = row![ui::icon(glyph, 16.0), ui::muted(caption).size(size::BASE)].spacing(space::XS).align_y(Alignment::Center);
     button(line).style(theme::btn_link).padding(0).on_press(message).into()
 }
 
@@ -1189,5 +1290,134 @@ mod tests {
         assert!(!sees(&screen, &ctx, "Войти"));
         let _ = screen.update(Msg::QrCancel, &mut ctx);
         assert!(sees(&screen, &ctx, "Войти"));
+    }
+
+    fn anna() -> UserInfo {
+        UserInfo { username: "anna".into(), display_name: Some("Анна К.".into()), role: "admin".into(), ..Default::default() }
+    }
+
+    /// A launch after a run that left its session in the credential store.
+    fn with_saved_session(dir: &tempfile::TempDir) -> Ctx {
+        use tbs_core::secret::{MemoryStore, SecretStore};
+        let mut ctx = with_users(dir, &["anna"]);
+        let vault = std::sync::Arc::new(MemoryStore::default());
+        vault.set(&format!("refresh:{}", ctx.api.base()), "saved-by-the-last-run");
+        ctx.api = Api::new(ctx.api.base(), None, vault);
+        ctx
+    }
+
+    #[test]
+    fn a_saved_session_is_asked_about_before_any_form_is_offered() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = with_saved_session(&dir);
+        let mut screen = Login::starting(&ctx);
+        assert!(sees(&screen, &ctx, "РАБОЧЕЕ ПРОСТРАНСТВО"));
+        assert!(sees(&screen, &ctx, "Проверяем сохранённый вход на этом компьютере"));
+        for form in ["Войти", "Пароль", "Войти через Telegram", "Открыть Чеки"] {
+            assert!(!sees(&screen, &ctx, form), "«{form}» is offered before the server has answered");
+        }
+        // Nothing to open, and nothing to sign out of, until it has.
+        let _ = screen.update(Msg::System(Subsystem::Receipts), &mut ctx);
+        let _ = screen.update(Msg::Open, &mut ctx);
+        let _ = screen.update(Msg::SignOut, &mut ctx);
+        assert!(ctx.requests.is_empty(), "{:?}", ctx.requests);
+
+        // The server knows the session: who it is, and the way in without a form.
+        ctx.user = Some(anna());
+        screen.resumed(&ctx);
+        for words in ["Вход выполнен", "Анна К.", "@anna", "Открыть Чеки", "Выйти из учётной записи"] {
+            assert!(sees(&screen, &ctx, words), "«{words}» is missing for a signed-in user");
+        }
+        for form in ["Войти", "Пароль", "Войти через Telegram", "Запомнить пользователя"] {
+            assert!(!sees(&screen, &ctx, form), "«{form}» is asked of a signed-in user");
+        }
+    }
+
+    #[test]
+    fn a_saved_session_the_server_refused_leaves_the_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = with_saved_session(&dir);
+        let mut screen = Login::starting(&ctx);
+        screen.resumed(&ctx);
+        assert!(sees(&screen, &ctx, "Вход в Чеки"));
+        assert!(sees(&screen, &ctx, "Войти"));
+        assert_eq!(screen.username, "anna");
+    }
+
+    #[test]
+    fn without_a_saved_session_the_sign_in_is_there_from_the_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = with_users(&dir, &[]);
+        let screen = Login::starting(&ctx);
+        assert!(sees(&screen, &ctx, "Вход в Чеки"));
+        assert!(sees(&screen, &ctx, "Войти"));
+        assert!(!sees(&screen, &ctx, "Проверяем сохранённый вход на этом компьютере"));
+    }
+
+    #[test]
+    fn a_session_opens_the_workspace_from_its_row_and_from_the_button() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = with_users(&dir, &[]);
+        ctx.user = Some(anna());
+        let mut screen = Login::new(&ctx);
+
+        let messages = click(&screen, &ctx, "Открыть Чеки");
+        assert!(matches!(messages.as_slice(), [Msg::Open]), "{messages:?}");
+        let _ = screen.update(Msg::Open, &mut ctx);
+        assert!(matches!(ctx.requests.as_slice(), [Request::Open(Subsystem::Receipts)]), "{:?}", ctx.requests);
+
+        ctx.requests.clear();
+        let messages = click(&screen, &ctx, "Транзакции и учёт чеков");
+        assert!(matches!(messages.as_slice(), [Msg::System(Subsystem::Receipts)]), "{messages:?}");
+        let _ = screen.update(Msg::System(Subsystem::Receipts), &mut ctx);
+        assert!(matches!(ctx.requests.as_slice(), [Request::Open(Subsystem::Receipts)]), "{:?}", ctx.requests);
+    }
+
+    #[test]
+    fn without_a_session_choosing_the_workspace_asks_the_shell_for_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = with_users(&dir, &[]);
+        let mut screen = Login::new(&ctx);
+        let _ = screen.update(Msg::System(Subsystem::Receipts), &mut ctx);
+        let _ = screen.update(Msg::Open, &mut ctx);
+        let _ = screen.update(Msg::SignOut, &mut ctx);
+        assert!(ctx.requests.is_empty(), "{:?}", ctx.requests);
+        assert!(sees(&screen, &ctx, "Вход в Чеки"));
+    }
+
+    #[test]
+    fn signing_out_of_the_start_window_is_asked_of_the_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = with_users(&dir, &[]);
+        ctx.user = Some(anna());
+        let mut screen = Login::new(&ctx);
+        let messages = click(&screen, &ctx, "Выйти из учётной записи");
+        assert!(matches!(messages.as_slice(), [Msg::SignOut]), "{messages:?}");
+        let _ = screen.update(Msg::SignOut, &mut ctx);
+        assert!(matches!(ctx.requests.as_slice(), [Request::SignOut]), "{:?}", ctx.requests);
+    }
+
+    #[test]
+    fn the_settings_are_within_reach_of_a_signed_in_user_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = with_users(&dir, &[]);
+        ctx.user = Some(anna());
+        let mut screen = Login::new(&ctx);
+        let _ = screen.update(Msg::OpenSettings, &mut ctx);
+        assert!(sees(&screen, &ctx, "Тема"));
+        assert!(!sees(&screen, &ctx, "Открыть Чеки"));
+        let _ = screen.update(Msg::CloseSettings, &mut ctx);
+        assert!(sees(&screen, &ctx, "Открыть Чеки"));
+        assert!(ctx.requests.is_empty(), "{:?}", ctx.requests);
+    }
+
+    #[test]
+    fn enter_opens_the_workspace_unless_a_field_took_it() {
+        let enter = || iced_test::simulator::press_key(Key::Named(Named::Enter), None);
+        let window = window::Id::unique();
+        assert!(matches!(open_key(enter(), event::Status::Ignored, window), Some(Msg::Open)));
+        assert!(open_key(enter(), event::Status::Captured, window).is_none());
+        let tab = iced_test::simulator::press_key(Key::Named(Named::Tab), None);
+        assert!(open_key(tab, event::Status::Ignored, window).is_none());
     }
 }

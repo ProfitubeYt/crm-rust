@@ -78,6 +78,7 @@ const fluent = {
 
   // The navigation rail and the sign-in window.
   menu: "navigation_20_regular",
+  home_20: "home_20_regular",
   table_20: "table_20_regular",
   table_20_filled: "table_20_filled",
   book_20: "book_20_regular",

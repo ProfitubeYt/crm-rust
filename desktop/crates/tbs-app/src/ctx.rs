@@ -10,12 +10,15 @@ use tbs_core::config::{Preferences, save_json};
 use tbs_core::model::UserInfo;
 use tbs_core::store::Store;
 
+use crate::screens::login::Subsystem;
 use crate::theme::Tone;
 
 /// Things a screen asks the application shell to do.
 #[derive(Clone, Debug)]
 pub enum Request {
     SignedIn(UserInfo),
+    /// The start window: open this workspace on the session there is.
+    Open(Subsystem),
     SignOut,
     /// The saved theme choice changed.
     ThemeChanged,

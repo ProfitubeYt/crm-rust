@@ -1,5 +1,6 @@
-//! The application shell: boot, sign-in, navigation and the things every
-//! screen shares.
+//! The application shell: the start window every launch opens on, the one
+//! session it and the workspaces share, navigation and the things every screen
+//! shares.
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -21,7 +22,7 @@ use crate::ctx::{Ctx, Request, SyncState, text_error};
 use crate::focus;
 use crate::screens::gate::{self, LaunchGate};
 use crate::screens::audit::{self, Audit};
-use crate::screens::login::{self, Login};
+use crate::screens::login::{self, Login, Subsystem};
 use crate::screens::logs::{self, Logs};
 use crate::screens::reference::{self, Reference};
 use crate::screens::settings::{self, Settings};
@@ -30,8 +31,14 @@ use crate::screens::transactions::{self, Transactions};
 use crate::theme::{self, Tone, size, space};
 use crate::ui::{self, El, Icon};
 
-/// What the program calls itself: the window title, the rail and its dialogs.
+/// What the program calls itself: the window title and its dialogs. A
+/// workspace opened from the start window goes by its own name in its rail.
 pub const PRODUCT: &str = "TBS inform CRM";
+/// The workspace this window opens, as the start window lists it.
+const WORKSPACE: Subsystem = Subsystem::Receipts;
+/// The way from a workspace back to the start window, session kept.
+const HUB: &str = "Главный экран";
+const HUB_HINT: &str = "К выбору рабочего пространства, без выхода из учётной записи";
 const PING_EVERY: Duration = Duration::from_secs(30);
 const TOAST_LIFE: Duration = Duration::from_secs(5);
 pub const RAIL_WIDTH: f32 = 208.0;
@@ -111,7 +118,8 @@ const WORK_MIN_WINDOW: Size = Size::new(1024.0, 640.0);
 const SCREEN_CHROME: f32 = 80.0;
 
 enum Phase {
-    Boot,
+    /// The start window. Every launch opens here, and a workspace comes back
+    /// here: signed in, signed out, or still asking the server which.
     Login(Login),
     Checking,
     Blocked { expired_at: Option<String>, busy: bool },
@@ -139,6 +147,8 @@ pub enum Message {
     Login(login::Msg),
     Launch(gate::Msg),
     Nav(Route),
+    /// Back to the start window. The session stays as it is.
+    Hub,
     /// Folds the rail down to its icons, or opens it again.
     ToggleRail,
     Tx(transactions::Msg),
@@ -148,7 +158,7 @@ pub enum Message {
     Settings(settings::Msg),
     Telegram(telegram::Msg),
     Resized(iced::Size),
-    /// The other window is up: `true` for the sign-in one.
+    /// The other window is up: `true` for the small one of the start window.
     WindowSwapped(bool),
     Tab { back: bool },
     Ping(bool),
@@ -165,7 +175,7 @@ pub enum Message {
 pub struct App {
     ctx: Ctx,
     phase: Phase,
-    /// The window on screen is the small sign-in one.
+    /// The window on screen is the small one of the start window.
     compact: bool,
     swapping: bool,
     route: Route,
@@ -270,13 +280,16 @@ impl App {
         let api = app.ctx.api.clone();
         let resume = Task::perform(async move { api.resume().await.map_err(text_error) }, Message::Boot);
         let system = iced::system::theme().map(Message::SystemTheme);
-        (app, Task::batch([system, resume]))
+        (app, Task::batch([system, resume, Task::done(Message::PingTick)]))
     }
 
+    /// Opens on the start window, whatever session is saved: the saved one is
+    /// asked about while the window is already up.
     fn with(ctx: Ctx) -> Self {
+        let start = Login::starting(&ctx);
         Self {
             ctx,
-            phase: Phase::Boot,
+            phase: Phase::Login(start),
             compact: true,
             swapping: false,
             route: Route::Transactions,
@@ -381,6 +394,22 @@ impl App {
 
     fn sign_out(&mut self) -> Task<Message> {
         self.ctx.user = None;
+        self.close_workspace();
+        self.enter_login()
+    }
+
+    /// Back to the start window with the session as it is: the workspace's
+    /// screens go, the account does not, so coming back in asks for nothing.
+    fn to_hub(&mut self) -> Task<Message> {
+        // As when leaving the table: a locked folder takes a fresh code next time.
+        if let Some(tx) = &mut self.tx {
+            tx.leave(&self.ctx);
+        }
+        self.close_workspace();
+        self.enter_login()
+    }
+
+    fn close_workspace(&mut self) {
         self.ctx.store = None;
         self.tx = None;
         self.reference = None;
@@ -389,9 +418,9 @@ impl App {
         self.settings = None;
         self.telegram = None;
         self.ctx.sync = SyncState::Idle;
-        self.enter_login()
     }
 
+    /// The start window for the session there is: the sign-in without one.
     fn enter_login(&mut self) -> Task<Message> {
         let screen = Login::new(&self.ctx);
         let focus = screen.focus_first().map(Message::Login);
@@ -440,6 +469,11 @@ impl App {
                     self.ctx.user = Some(user);
                     tasks.push(self.check());
                 }
+                Request::Open(WORKSPACE) => {
+                    if self.ctx.user.is_some() && matches!(self.phase, Phase::Login(_)) {
+                        tasks.push(self.check());
+                    }
+                }
                 Request::SignOut => tasks.push(Task::done(Message::Logout)),
                 Request::ThemeChanged => {
                     self.apply_theme();
@@ -462,15 +496,21 @@ impl App {
 
     fn route_message(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Boot(Ok(Some(user))) => {
-                self.ctx.user = Some(user);
-                return self.check();
+            // The answer about the saved session changes what the start window
+            // offers and nothing else: a workspace opens when it is chosen.
+            Message::Boot(answer) => {
+                match answer {
+                    Ok(user) => self.ctx.user = user,
+                    Err(reason) => tracing::warn!("session resume failed: {reason}"),
+                }
+                if let Phase::Login(screen) = &mut self.phase {
+                    screen.resumed(&self.ctx);
+                    return screen.focus_first().map(Message::Login);
+                }
             }
-            Message::Boot(Ok(None)) => return self.enter_login(),
-            Message::Boot(Err(reason)) => {
-                tracing::warn!("session resume failed: {reason}");
-                return self.enter_login();
-            }
+            // Asked for by a start window that has since been signed out of, or
+            // come back to: nothing waits for the answer any more.
+            Message::Entitled(_) if matches!(self.phase, Phase::Login(_)) => {}
             Message::Entitled(Entitled::Allowed) => return self.enter_main(),
             Message::Entitled(Entitled::Blocked(expired_at)) => self.phase = Phase::Blocked { expired_at, busy: false },
             Message::RetryEntitlement => {
@@ -498,6 +538,11 @@ impl App {
                 }
             }
             Message::Nav(route) => return self.go_to(route),
+            Message::Hub => {
+                if matches!(self.phase, Phase::Main) {
+                    return self.to_hub();
+                }
+            }
             Message::ToggleRail => {
                 self.ctx.prefs.rail_collapsed = !self.ctx.prefs.rail_collapsed;
                 self.ctx.rail = rail_width(self.ctx.prefs.rail_collapsed);
@@ -573,7 +618,9 @@ impl App {
                 return self.sign_out();
             }
             Message::Api(ApiEvent::LaunchRequired) => {
-                if !matches!(self.phase, Phase::Launch(_)) {
+                // The launch password stands before the work, not before the
+                // start window: there the next thing opened asks for it again.
+                if !matches!(self.phase, Phase::Launch(_) | Phase::Login(_)) {
                     self.phase = Phase::Launch(LaunchGate::default());
                     return LaunchGate::load(&self.ctx).map(Message::Launch);
                 }
@@ -695,9 +742,34 @@ impl App {
         let (head, caption): (El<'_, Message>, El<'_, Message>) = if folded {
             (burger, ui::divider())
         } else {
-            let brand = column![ui::heading(PRODUCT), ui::faint("учёт чеков")].spacing(0.0);
+            // The workspace's own name: the product's stands on the start window.
+            let brand = column![ui::heading(WORKSPACE.name()), ui::faint("учёт чеков")].spacing(0.0);
             (row![burger, brand].spacing(space::SM).align_y(Alignment::Center).into(), container(ui::faint("РАЗДЕЛЫ")).padding([0.0, space::SM]).into())
         };
+
+        // A line of the rail: a glyph and a name, or the glyph alone once folded.
+        let line = |glyph: El<'static, Message>, title: &'static str, hint: Option<&'static str>, open: bool, message: Message| -> El<'static, Message> {
+            if folded {
+                let square = button(container(glyph).center(RAIL_ITEM)).padding(0).style(theme::btn_nav(open)).on_press(message);
+                return ui::hint_beside(square, title);
+            }
+            // The glyph stands where it does in the folded square.
+            let name = text(title).size(size::BASE).font(if open { theme::FONT_MEDIUM } else { theme::FONT });
+            let item = button(container(row![glyph, name].spacing(space::MD - 2.0).align_y(Alignment::Center)).center_y(Fill))
+                .width(Fill)
+                .height(RAIL_ITEM)
+                .padding([0.0, (RAIL_ITEM - 20.0) / 2.0])
+                .style(theme::btn_nav(open))
+                .on_press(message);
+            match hint {
+                Some(hint) => ui::hint_beside(item, hint),
+                None => item.into(),
+            }
+        };
+
+        // The way back to the start window stands apart from the sections, above
+        // them: it leaves the workspace, and unlike «Выйти» keeps the session.
+        let hub = line(ui::icon(Icon::Home20, 20.0).into(), HUB, Some(HUB_HINT), false, Message::Hub);
 
         let mut nav = column![].spacing(space::XXS);
         for route in Route::ALL {
@@ -706,22 +778,7 @@ impl App {
             }
             let open = self.route == route;
             let glyph = if open { ui::icon_tone(route.glyph(true), 20.0, Tone::Accent) } else { ui::icon(route.glyph(false), 20.0) };
-            let item: El<'_, Message> = if folded {
-                let square = button(container(glyph).center(RAIL_ITEM)).padding(0).style(theme::btn_nav(open)).on_press(Message::Nav(route));
-                ui::hint_beside(square, route.title())
-            } else {
-                // The glyph stands where it does in the folded square.
-                let name = text(route.title()).size(size::BASE).font(if open { theme::FONT_MEDIUM } else { theme::FONT });
-                let line = row![glyph, name].spacing(space::MD - 2.0).align_y(Alignment::Center);
-                button(container(line).center_y(Fill))
-                    .width(Fill)
-                    .height(RAIL_ITEM)
-                    .padding([0.0, (RAIL_ITEM - 20.0) / 2.0])
-                    .style(theme::btn_nav(open))
-                    .on_press(Message::Nav(route))
-                    .into()
-            };
-            nav = nav.push(item);
+            nav = nav.push(line(glyph.into(), route.title(), None, open, Message::Nav(route)));
         }
 
         let name = user.map(UserInfo::title).unwrap_or_default();
@@ -761,7 +818,7 @@ impl App {
             column![container(column![network, sync].spacing(space::XS)).padding([0.0, space::SM]), ui::divider(), account].spacing(space::SM).into()
         };
 
-        let content = column![head, container(caption).height(RAIL_CAPTION).center_y(RAIL_CAPTION), nav, ui::grow(), foot].spacing(space::XS);
+        let content = column![head, hub, container(caption).height(RAIL_CAPTION).center_y(RAIL_CAPTION), nav, ui::grow(), foot].spacing(space::XS);
         container(content).width(Length::Fixed(self.ctx.rail)).height(Fill).padding(RAIL_PAD).style(theme::rail).into()
     }
 
@@ -810,7 +867,7 @@ impl App {
 
     fn view(&self) -> El<'_, Message> {
         let base: El<'_, Message> = match &self.phase {
-            Phase::Boot | Phase::Checking => container(ui::loading("Загрузка…")).width(Fill).height(Fill).style(theme::page).into(),
+            Phase::Checking => container(ui::loading("Загрузка…")).width(Fill).height(Fill).style(theme::page).into(),
             Phase::Login(screen) => screen.view(&self.ctx).map(Message::Login),
             Phase::Blocked { expired_at, busy } => gate::blocked(expired_at.as_deref(), Message::RetryEntitlement, *busy),
             Phase::Launch(screen) => screen.view().map(Message::Launch),
@@ -840,7 +897,7 @@ fn tab_key(event: Event, status: event::Status, _window: window::Id) -> Option<M
 }
 
 fn wants_compact(phase: &Phase) -> bool {
-    matches!(phase, Phase::Boot | Phase::Login(_))
+    matches!(phase, Phase::Login(_))
 }
 
 /// The work window never goes past the screen, nor under the size its pages
@@ -928,8 +985,10 @@ mod window_tests {
     }
 
     #[test]
-    fn only_the_start_and_the_sign_in_are_compact() {
-        assert!(wants_compact(&Phase::Boot));
+    fn only_the_start_window_is_compact() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = Ctx::for_tests(dir.path());
+        assert!(wants_compact(&Phase::Login(Login::new(&ctx))));
         assert!(!wants_compact(&Phase::Checking));
         assert!(!wants_compact(&Phase::Main));
     }
@@ -957,16 +1016,50 @@ mod rail_tests {
     fn the_folded_rail_keeps_its_icons_and_drops_the_words() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = signed_in(&dir);
-        for words in [PRODUCT, "РАЗДЕЛЫ", "Справочник", "онлайн", "anna"] {
+        for words in [WORKSPACE.name(), HUB, "РАЗДЕЛЫ", "Справочник", "онлайн", "anna"] {
             assert!(sees(&app, words), "{words} is missing from the open rail");
         }
 
         let _ = app.update(Message::ToggleRail);
-        for words in [PRODUCT, "РАЗДЕЛЫ", "Справочник", "онлайн", "anna"] {
+        for words in [WORKSPACE.name(), HUB, "РАЗДЕЛЫ", "Справочник", "онлайн", "anna"] {
             assert!(!sees(&app, words), "{words} is still on the folded rail");
         }
         // The avatar stays, and with it who is signed in.
         assert!(sees(&app, "A"));
+    }
+
+    #[test]
+    fn the_rail_is_headed_by_the_workspace_and_not_by_the_product() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = signed_in(&dir);
+        assert_eq!(WORKSPACE.name(), "Чеки");
+        assert!(sees(&app, "Чеки"));
+        assert!(!sees(&app, PRODUCT), "the product's name belongs to the start window");
+        // The window, the installer and the update keep the product's name.
+        assert_eq!(PRODUCT, "TBS inform CRM");
+    }
+
+    #[test]
+    fn the_rail_leads_back_to_the_start_window_folded_or_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = signed_in(&dir);
+        let pressed = |app: &App, at: iced::Point| -> Vec<Message> {
+            let mut sim = Simulator::with_size(Settings::default(), WORK_WINDOW, app.rail());
+            sim.point_at(at);
+            let _ = sim.simulate(iced_test::simulator::click());
+            sim.into_messages().collect()
+        };
+
+        let mut sim = Simulator::with_size(Settings::default(), WORK_WINDOW, app.rail());
+        sim.click(HUB).expect("the way back on the open rail");
+        let messages: Vec<Message> = sim.into_messages().collect();
+        assert!(matches!(messages.as_slice(), [Message::Hub]), "{messages:?}");
+
+        // Folded, it is the square under the burger: the second line of the rail.
+        let _ = app.update(Message::ToggleRail);
+        let second = iced::Point::new(RAIL_FOLDED / 2.0, RAIL_PAD + RAIL_ITEM + space::XS + RAIL_ITEM / 2.0);
+        let messages = pressed(&app, second);
+        assert!(matches!(messages.as_slice(), [Message::Hub]), "{messages:?}");
     }
 
     #[test]
@@ -985,5 +1078,258 @@ mod rail_tests {
         assert_eq!(app.ctx.rail, RAIL_WIDTH);
         let saved: Preferences = config::load_json(&dir.path().join("preferences.json"));
         assert!(!saved.rail_collapsed);
+    }
+}
+
+/// Every launch opens on the start window, and one session serves it and the
+/// workspace alike.
+#[cfg(test)]
+mod hub_tests {
+    use iced_test::Simulator;
+    use iced_test::core::Settings;
+    use tbs_core::api::LoginResponse;
+    use tbs_core::secret::MemoryStore;
+
+    use super::*;
+
+    fn anna() -> UserInfo {
+        UserInfo { id: 7, username: "anna".into(), display_name: Some("Анна К.".into()), role: "admin".into(), ..Default::default() }
+    }
+
+    /// A launch: nobody is known yet, and the last run may have left a session.
+    fn launched(dir: &tempfile::TempDir, saved_session: bool) -> App {
+        let mut ctx = Ctx::for_tests(dir.path());
+        let vault = Arc::new(MemoryStore::default());
+        if saved_session {
+            // Where the client keeps its refresh token: one entry per server.
+            vault.set(&format!("refresh:{}", ctx.api.base()), "saved-by-the-last-run");
+        }
+        ctx.api = Api::new(ctx.api.base(), None, vault);
+        App::with(ctx)
+    }
+
+    fn on_the_start_window(app: &App) -> bool {
+        matches!(app.phase, Phase::Login(_))
+    }
+
+    /// The window the phase is shown in.
+    fn window(app: &App) -> Size {
+        if wants_compact(&app.phase) { login::WINDOW } else { WORK_WINDOW }
+    }
+
+    fn sees(app: &App, wanted: &str) -> bool {
+        let mut sim = Simulator::with_size(Settings::default(), window(app), app.view());
+        sim.find(wanted).is_ok()
+    }
+
+    /// A click on the words, and what it says carried out as the window would.
+    fn press(app: &mut App, wanted: &str) {
+        let messages: Vec<Message> = {
+            let mut sim = Simulator::with_size(Settings::default(), window(app), app.view());
+            sim.click(wanted).unwrap_or_else(|_| panic!("no «{wanted}» on the screen"));
+            sim.into_messages().collect()
+        };
+        assert!(!messages.is_empty(), "«{wanted}» does nothing");
+        for message in messages {
+            let _ = app.update(message);
+        }
+    }
+
+    /// A launch with a session that the server confirmed.
+    fn resumed(dir: &tempfile::TempDir) -> App {
+        let mut app = launched(dir, true);
+        let _ = app.update(Message::Boot(Ok(Some(anna()))));
+        app
+    }
+
+    /// The same, with the workspace opened from the start window.
+    fn at_work(dir: &tempfile::TempDir) -> App {
+        let mut app = resumed(dir);
+        press(&mut app, "Открыть Чеки");
+        let _ = app.update(Message::Entitled(Entitled::Allowed));
+        assert!(matches!(app.phase, Phase::Main));
+        app
+    }
+
+    #[test]
+    fn a_launch_with_a_saved_session_opens_on_the_start_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = launched(&dir, true);
+        // Before the server has answered: the start window already, and no form on it.
+        assert!(on_the_start_window(&app));
+        assert!(sees(&app, "РАБОЧЕЕ ПРОСТРАНСТВО") && sees(&app, "Чеки"));
+        assert!(sees(&app, "Проверяем сохранённый вход на этом компьютере"));
+        assert!(!sees(&app, "Войти"));
+
+        let _ = app.update(Message::Boot(Ok(Some(anna()))));
+        assert!(on_the_start_window(&app), "a saved session must not skip the start window");
+        assert!(app.tx.is_none() && app.ctx.store.is_none(), "nothing of the table is opened before it is asked for");
+        assert!(sees(&app, "РАБОЧЕЕ ПРОСТРАНСТВО") && sees(&app, "CRM"));
+        assert!(sees(&app, "Вход выполнен") && sees(&app, "Анна К.") && sees(&app, "@anna"));
+        assert!(sees(&app, "Открыть Чеки"));
+        assert!(!sees(&app, "Войти") && !sees(&app, "Пароль"));
+    }
+
+    #[test]
+    fn a_launch_without_a_session_opens_on_the_start_window_with_the_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = launched(&dir, false);
+        // Nothing saved, so nothing to wait for: the sign-in is there at once.
+        assert!(on_the_start_window(&app));
+        assert!(sees(&app, "Вход в Чеки") && sees(&app, "Войти"));
+
+        let _ = app.update(Message::Boot(Ok(None)));
+        assert!(on_the_start_window(&app));
+        assert!(app.ctx.user.is_none());
+        assert!(sees(&app, "РАБОЧЕЕ ПРОСТРАНСТВО") && sees(&app, "Вход в Чеки") && sees(&app, "Войти"));
+        assert!(!sees(&app, "Открыть Чеки"));
+    }
+
+    #[test]
+    fn a_session_the_server_could_not_be_asked_about_is_kept_for_the_next_launch() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = launched(&dir, true);
+        let _ = app.update(Message::Boot(Err("сервер недоступен".into())));
+        assert!(on_the_start_window(&app));
+        assert!(sees(&app, "Вход в Чеки") && sees(&app, "Войти"));
+        assert!(app.ctx.api.has_refresh_token(), "an unreachable server is no reason to forget the session");
+    }
+
+    #[test]
+    fn choosing_the_workspace_opens_it_on_the_saved_session() {
+        for way_in in ["Транзакции и учёт чеков", "Открыть Чеки"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut app = resumed(&dir);
+            press(&mut app, way_in);
+            assert!(matches!(app.phase, Phase::Checking), "«{way_in}» did not ask for the workspace");
+
+            let _ = app.update(Message::Entitled(Entitled::Allowed));
+            assert!(matches!(app.phase, Phase::Main));
+            assert!(app.tx.is_some() && app.ctx.store.is_some());
+            assert_eq!(app.route, Route::Transactions);
+            // The session it runs on is the saved one: nobody was asked to sign in.
+            assert_eq!(app.ctx.user.as_ref().map(|user| user.id), Some(7));
+            assert!(app.ctx.api.has_refresh_token());
+        }
+    }
+
+    #[test]
+    fn an_expired_licence_still_stands_between_the_start_window_and_the_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = resumed(&dir);
+        press(&mut app, "Открыть Чеки");
+        let _ = app.update(Message::Entitled(Entitled::Blocked(Some("2026-07-01".into()))));
+        assert!(matches!(app.phase, Phase::Blocked { .. }));
+        assert!(app.tx.is_none());
+        assert!(sees(&app, "Срок доступа истёк"));
+    }
+
+    #[test]
+    fn signing_in_at_the_start_window_opens_the_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = launched(&dir, false);
+        let _ = app.update(Message::Boot(Ok(None)));
+        let answer = LoginResponse { ok: true, user: Some(anna()), ..Default::default() };
+        let _ = app.update(Message::Login(login::Msg::Answered(Ok(answer))));
+        assert!(matches!(app.phase, Phase::Checking));
+        let _ = app.update(Message::Entitled(Entitled::Allowed));
+        assert!(matches!(app.phase, Phase::Main));
+        assert!(app.tx.is_some());
+    }
+
+    #[test]
+    fn the_way_back_keeps_the_session_and_the_way_in_asks_for_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = at_work(&dir);
+        assert!(sees(&app, "Чеки") && sees(&app, HUB));
+
+        press(&mut app, HUB);
+        assert!(on_the_start_window(&app));
+        assert!(app.tx.is_none() && app.settings.is_none() && app.telegram.is_none() && app.ctx.store.is_none());
+        assert_eq!(app.ctx.user.as_ref().map(|user| user.id), Some(7), "going back is not signing out");
+        assert!(app.ctx.api.has_refresh_token());
+        assert!(sees(&app, "Вход выполнен") && sees(&app, "Открыть Чеки"));
+        assert!(!sees(&app, "Войти"));
+
+        press(&mut app, "Открыть Чеки");
+        assert!(matches!(app.phase, Phase::Checking));
+        let _ = app.update(Message::Entitled(Entitled::Allowed));
+        assert!(matches!(app.phase, Phase::Main));
+        assert!(app.tx.is_some());
+    }
+
+    #[test]
+    fn the_way_back_works_from_the_workspace_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = resumed(&dir);
+        press(&mut app, "Открыть Чеки");
+        let _ = app.update(Message::Hub);
+        assert!(matches!(app.phase, Phase::Checking), "there is nothing to go back from yet");
+    }
+
+    #[test]
+    fn signing_out_comes_back_to_the_start_window_signed_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = at_work(&dir);
+        // What follows the server's answer to «Выйти».
+        let _ = app.update(Message::LoggedOut);
+        assert!(on_the_start_window(&app));
+        assert!(app.ctx.user.is_none() && app.tx.is_none() && app.ctx.store.is_none());
+        assert!(sees(&app, "РАБОЧЕЕ ПРОСТРАНСТВО") && sees(&app, "Вход в Чеки") && sees(&app, "Войти"));
+        assert!(!sees(&app, "Открыть Чеки") && !sees(&app, "Вход выполнен"));
+    }
+
+    #[test]
+    fn signing_out_at_the_start_window_leaves_the_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = resumed(&dir);
+        press(&mut app, "Выйти из учётной записи");
+        // The request went to the server; its answer ends the session here.
+        assert!(on_the_start_window(&app));
+        let _ = app.update(Message::LoggedOut);
+        assert!(on_the_start_window(&app));
+        assert!(app.ctx.user.is_none());
+        assert!(sees(&app, "Вход в Чеки") && !sees(&app, "Открыть Чеки"));
+    }
+
+    /// Says so in a toast, and a toast is timed: that takes a runtime.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_session_that_ends_comes_back_to_the_sign_in_and_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        for mut app in [at_work(&dir), resumed(&dir)] {
+            let _ = app.update(Message::Api(ApiEvent::SessionRevoked));
+            assert!(on_the_start_window(&app));
+            assert!(app.ctx.user.is_none() && app.tx.is_none());
+            assert!(sees(&app, "Вход в Чеки") && sees(&app, "Сессия завершена, войдите снова"));
+        }
+    }
+
+    #[test]
+    fn nothing_opens_the_workspace_from_the_start_window_but_choosing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = resumed(&dir);
+        // Answers that come late: the licence asked about before going back, a
+        // launch password the server wanted from a request already over.
+        for late in [Message::Entitled(Entitled::Allowed), Message::Entitled(Entitled::Blocked(None)), Message::Api(ApiEvent::LaunchRequired)] {
+            let _ = app.update(late);
+            assert!(on_the_start_window(&app));
+            assert!(app.tx.is_none());
+        }
+        // And without a session choosing it does not open it either.
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = launched(&dir, false);
+        let _ = app.update(Message::Boot(Ok(None)));
+        press(&mut app, "Транзакции и учёт чеков");
+        assert!(on_the_start_window(&app));
+        assert!(sees(&app, "Вход в Чеки"));
+    }
+
+    #[test]
+    fn the_launch_password_still_stands_before_the_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = resumed(&dir);
+        press(&mut app, "Открыть Чеки");
+        let _ = app.update(Message::Api(ApiEvent::LaunchRequired));
+        assert!(matches!(app.phase, Phase::Launch(_)));
     }
 }
