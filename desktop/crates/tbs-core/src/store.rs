@@ -236,6 +236,8 @@ mod tests {
         assert!(s.load_transactions().unwrap().is_empty());
         assert_eq!(s.checksum().unwrap(), None);
         assert!(schema_stamp().contains("receiver_card") && schema_stamp().contains("description") && schema_stamp().contains("excel_bank"));
+        // A build that learned the stored type does not trust rows cached without it.
+        assert!(schema_stamp().contains("stored_transaction_type"));
         // The same build finds its own cache again.
         s.replace_transactions(&[tx(2)], Some("b"), Some("e")).unwrap();
         drop(s);

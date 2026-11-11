@@ -11,7 +11,7 @@ use tbs_core::api::{AccessScope, AccessStatus, InitReply, LockedPeriod, ScopeCod
 use tbs_core::format;
 use tbs_core::query::Scope;
 
-use super::{Msg as Screen, Transactions, menus};
+use super::{Msg as Screen, Transactions, filters};
 use crate::ctx::{Ctx, text_error};
 use crate::theme::{self, Tone, space};
 use crate::ui::{self, El, Icon, Kind};
@@ -241,7 +241,8 @@ pub(super) fn fetch_all(ctx: &Ctx) -> Task<Screen> {
 }
 
 fn banner<'a>(tone: Tone, name: &'a str, hint: &'a str, action: Option<El<'a, Screen>>) -> El<'a, Screen> {
-    let mut line = row![column![ui::strong(name), ui::muted(hint)].spacing(space::XXS), ui::fill()].spacing(space::MD).align_y(Alignment::Center);
+    // The words take what the button leaves and wrap there: in a narrow page a long hint pushed the button out.
+    let mut line = row![column![ui::strong(name), ui::muted(hint)].spacing(space::XXS).width(Fill)].spacing(space::MD).align_y(Alignment::Center);
     if let Some(action) = action {
         line = line.push(action);
     }
@@ -465,8 +466,9 @@ impl Transactions {
         }
         let filtered = self.table.filters.active_count() > 0 || !self.search.trim().is_empty();
         if !self.locked_view() && filtered && self.rows.is_empty() && !self.data.is_empty() {
-            let action = ui::btn("Сбросить вид", Kind::Secondary, Some(Screen::Menu(menus::Msg::Reset)));
-            items.push(banner(Tone::Warning, "Данные скрыты текущими фильтрами", "Сбросьте сохранённое состояние, чтобы увидеть весь набор данных пользователя.", Some(action.into())));
+            // The filters and the search are what hides the rows. The look of the table is not at fault and stays.
+            let action = ui::btn("Сбросить фильтры и поиск", Kind::Secondary, Some(Screen::Filters(filters::Msg::ShowAll)));
+            items.push(banner(Tone::Warning, "Фильтры и поиск скрыли все строки", "Под эти условия не подходит ни одна транзакция. Вид таблицы останется прежним.", Some(action.into())));
         }
         items
     }

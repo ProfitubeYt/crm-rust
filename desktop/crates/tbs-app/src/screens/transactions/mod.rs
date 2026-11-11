@@ -9,6 +9,7 @@ mod facets;
 mod filters;
 mod menus;
 pub mod table;
+mod view;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -34,8 +35,9 @@ use detail::Detail;
 use edit::{Choices, DeleteAsk, Editor, History};
 use excel::ExcelPanel;
 use filters::{FilterForm, Kept};
-use menus::{Popup, Preset, PresetAsk};
+use menus::Popup;
 use table::{PageSize, TableView, TxGrid};
+use view::{Ask, Preset, Tab, ViewPanel};
 
 pub use access::Msg as AccessMsg;
 
@@ -43,6 +45,9 @@ const STATE: &str = "transactions";
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(200);
 const SEARCH_ID: &str = "tx-search";
 const FOOTER_HEIGHT: f32 = 36.0;
+/// The narrowest page in which the tools above the table fit one line and
+/// still leave a search box worth typing in.
+const ROOMY_PAGE: f32 = 1090.0;
 /// How long the manifest alone is believed. It cannot see everything (see
 /// `tbs_core::sync`), so this often the rows themselves are compared.
 const VERIFY_EVERY: Duration = Duration::from_secs(300);
@@ -103,6 +108,7 @@ pub enum Msg {
     Excel(excel::Msg),
     Access(access::Msg),
     Menu(menus::Msg),
+    View(view::Msg),
     Detail(detail::Msg),
 }
 
@@ -114,6 +120,7 @@ pub enum Sheet {
     Filters(Box<FilterForm>),
     Excel(Box<ExcelPanel>),
     Detail(Detail),
+    View(ViewPanel),
 }
 
 #[cfg(test)]
@@ -175,7 +182,10 @@ pub struct Transactions {
     popup: Popup,
     presets: Vec<Preset>,
     preset_name: String,
-    preset_ask: Option<PresetAsk>,
+    /// What the view sheet is asking before it renames, deletes or resets.
+    view_ask: Option<Ask>,
+    /// The tab the view sheet was left on.
+    view_tab: Tab,
     export_from: String,
     export_to: String,
 }
@@ -274,7 +284,8 @@ impl Transactions {
             popup: Popup::None,
             presets,
             preset_name: String::new(),
-            preset_ask: None,
+            view_ask: None,
+            view_tab: Tab::default(),
             export_from: String::new(),
             export_to: String::new(),
         };
@@ -313,7 +324,9 @@ impl Transactions {
             "filters" => Msg::OpenFilters,
             "add" => Msg::OpenAdd,
             "excel" => Msg::OpenExcel,
-            "view" => open(Popup::View),
+            "view" => Msg::View(view::Msg::Open(Tab::Columns)),
+            "view-display" => Msg::View(view::Msg::Open(Tab::Display)),
+            "view-saved" => Msg::View(view::Msg::Open(Tab::Saved)),
             "export" => open(Popup::Export),
             "help" => open(Popup::Help),
             "cell" => open(Popup::Cell { row: 1, col: 6, at }),
@@ -475,8 +488,8 @@ impl Transactions {
             self.editor = None;
         } else if self.popup != Popup::None {
             self.popup = Popup::None;
-        } else if self.preset_ask.is_some() {
-            self.preset_ask = None;
+        } else if self.view_ask.is_some() {
+            self.view_ask = None;
         } else if self.delete_ask.is_some() {
             self.delete_ask = None;
         } else if !matches!(self.sheet, Sheet::None) {
@@ -606,7 +619,7 @@ impl Transactions {
             }
             Msg::Quick(code) => {
                 self.table.filters.transaction_types = code.map(|c| vec![c.to_string()]).unwrap_or_default();
-                self.forget_filter_draft();
+                self.forget_filter_draft(ctx);
                 self.refresh_rows();
                 self.save(ctx);
             }
@@ -642,6 +655,7 @@ impl Transactions {
             Msg::Excel(message) => return self.excel_update(message, ctx),
             Msg::Access(message) => return self.access_update(message, ctx),
             Msg::Menu(message) => return self.menu_update(message, ctx),
+            Msg::View(message) => return self.view_update(message, ctx),
             Msg::Detail(message) => self.detail_update(message),
         }
         Task::none()
@@ -747,7 +761,13 @@ impl Transactions {
         }
     }
 
-    fn toolbar(&self) -> El<'_, Msg> {
+    /// Whether the tools above the table stand on one line. In a narrower page
+    /// they take two, or the search box would be left with no width at all.
+    pub(super) fn tools_on_one_line(&self, ctx: &Ctx) -> bool {
+        ctx.window.width - ctx.rail - ui::PAGE_PADDING.left - ui::PAGE_PADDING.right >= ROOMY_PAGE
+    }
+
+    fn toolbar(&self, ctx: &Ctx) -> El<'_, Msg> {
         let locked = self.locked_view();
         let open = !self.editing_blocked();
         let head = row![
@@ -772,21 +792,32 @@ impl Transactions {
         let newest = self.table.sort == Sort { column: Column::TransactionDate, descending: true };
         let types = &self.table.filters.transaction_types;
         let picked = |code: &str| types.len() == 1 && types[0] == code;
-        let actions = row![
+        let quick = row![
             ui::count_chip("Все", s.any_type, types.is_empty(), Msg::Quick(None)),
             ui::count_chip("Списания", s.debits, picked("DEBIT"), Msg::Quick(Some("DEBIT"))),
             ui::count_chip("Пополнения", s.credits, picked("CREDIT"), Msg::Quick(Some("CREDIT"))),
-            Space::new().width(space::SM),
-            ui::input("Поиск: 1250000, \"Korzinka\", date:2026-01-28, status:ошибка", &self.search).id(Id::new(SEARCH_ID)).on_input(Msg::Search).width(Fill),
-            ui::icon_btn(Icon::Help, "Как искать", Some(Msg::Menu(menus::Msg::Open(Popup::Help)))),
-            ui::btn_icon(Icon::Filter, filter_caption, if active > 0 { Kind::Primary } else { Kind::Secondary }, Some(Msg::OpenFilters)),
-            ui::btn_icon(Icon::Newest, "Сначала новые", if newest { Kind::Primary } else { Kind::Secondary }, Some(Msg::Newest)),
-            ui::btn_icon(Icon::Columns, "Вид", Kind::Secondary, Some(Msg::Menu(menus::Msg::Open(Popup::View)))),
         ]
         .spacing(space::SM)
         .align_y(Alignment::Center);
+        let search = ui::input("Поиск: 1250000, \"Korzinka\", date:2026-01-28, status:ошибка", &self.search).id(Id::new(SEARCH_ID)).on_input(Msg::Search).width(Fill);
+        let help = ui::icon_btn(Icon::Help, "Как искать", Some(Msg::Menu(menus::Msg::Open(Popup::Help))));
+        let filters = ui::btn_icon(Icon::Filter, filter_caption, if active > 0 { Kind::Primary } else { Kind::Secondary }, Some(Msg::OpenFilters));
+        let order = ui::btn_icon(Icon::Newest, "Сначала новые", if newest { Kind::Primary } else { Kind::Secondary }, Some(Msg::Newest));
+        // The sheet opens on the tab it was left on.
+        let look = ui::btn_icon(Icon::Columns, "Вид", Kind::Secondary, Some(Msg::View(view::Msg::Open(self.view_tab))));
+        let tools: El<'_, Msg> = if self.tools_on_one_line(ctx) {
+            row![quick, Space::new().width(space::SM), search, help, filters, order, look].spacing(space::SM).align_y(Alignment::Center).into()
+        } else {
+            // What the table shows stands above; what narrows it below, where the search box has the line to itself.
+            column![
+                row![quick, ui::fill(), order, look].spacing(space::SM).align_y(Alignment::Center),
+                row![search, help, filters].spacing(space::SM).align_y(Alignment::Center),
+            ]
+            .spacing(space::SM)
+            .into()
+        };
 
-        column![head, actions].spacing(space::MD).into()
+        column![head, tools].spacing(space::MD).into()
     }
 
     fn footer(&self) -> El<'_, Msg> {
@@ -830,7 +861,7 @@ impl Transactions {
                 .into()
         };
 
-        let mut page = column![self.toolbar()].spacing(space::MD);
+        let mut page = column![self.toolbar(ctx)].spacing(space::MD);
         for banner in self.banners(ctx) {
             page = page.push(banner);
         }
@@ -850,6 +881,7 @@ impl Transactions {
             Sheet::Add(form) => layers.push(self.add_view(form)),
             Sheet::Filters(form) => layers.push(self.filters_view(form)),
             Sheet::Excel(panel) => layers.push(self.excel_view(panel)),
+            Sheet::View(panel) => layers.push(self.view_sheet(panel)),
             Sheet::Detail(detail) => {
                 if let Some(row) = self.data.by_id(detail.id) {
                     layers.push(self.detail_view(detail, row));
@@ -861,7 +893,7 @@ impl Transactions {
         if let Some(ask) = &self.delete_ask {
             layers.push(ui::confirm(Space::new(), &ask.title, &ask.body, "Удалить", Msg::Edit(edit::Msg::ConfirmDelete), Msg::Edit(edit::Msg::CancelDelete)));
         }
-        layers.extend(self.preset_ask_view());
+        layers.extend(self.view_ask_view());
         if layers.is_empty() {
             return None;
         }

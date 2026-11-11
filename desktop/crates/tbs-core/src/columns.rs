@@ -430,4 +430,38 @@ mod tests {
         assert!(Column::Operation.sortable() && !Column::Operation.is_positional() && !Column::Operation.is_labelled());
         assert_eq!(Column::Operation.align(), Align::Left);
     }
+
+    #[test]
+    fn the_operation_goes_by_the_stored_type_and_the_type_keeps_the_servers_word() {
+        let labels = Labels::default();
+        let cells = |tx: &Transaction| (Column::Operation.display(tx, None, &labels), Column::TransactionType.display(tx, None, &labels));
+        // Stored as a top-up; read again by the server as a debit, which it words its own way.
+        let sent = Transaction {
+            raw_message: Some("[Photo]".into()),
+            transaction_type: Some("DEBIT".into()),
+            transaction_type_display: Some("Изменение счета".into()),
+            stored_transaction_type: Some("CREDIT".into()),
+            source_display: Some("HUMO Card".into()),
+            ..Default::default()
+        };
+        assert_eq!(cells(&sent), ("\u{1f389} Пополнение".to_string(), "Изменение счета".to_string()));
+        // «Тип» without the server's wording words the server's own type, never the stored one.
+        let unworded = Transaction { transaction_type_display: None, ..sent.clone() };
+        assert_eq!(cells(&unworded), ("\u{1f389} Пополнение".to_string(), "Списание".to_string()));
+        let untyped = Transaction { transaction_type: None, ..unworded.clone() };
+        assert_eq!(cells(&untyped), ("\u{1f389} Пополнение".to_string(), format::EMPTY.to_string()));
+
+        // An older server sends no stored type: both cells are what they were before the field.
+        let old = Transaction { stored_transaction_type: None, ..sent.clone() };
+        assert_eq!(cells(&old), ("\u{1f4b8} Списание".to_string(), "Изменение счета".to_string()));
+        // And one that sends null for it is the same.
+        let null: Transaction = serde_json::from_str(r#"{"id":7,"raw_message":"[Photo]","transaction_type":"DEBIT","transaction_type_display":"Изменение счета","stored_transaction_type":null,"source_display":"HUMO Card"}"#).unwrap();
+        assert_eq!(cells(&null), cells(&old));
+
+        // The bank given in the workbook goes on choosing the mark.
+        let given = Transaction { excel_bank: Some("CardXabar".into()), ..sent.clone() };
+        assert_eq!(cells(&given), ("\u{1f534} Пополнение".to_string(), "Изменение счета".to_string()));
+        // The stored type is a column of nothing: it is not edited, copied or shown by itself.
+        assert!(ALL.iter().all(|column| column.id() != "stored_transaction_type" && column.edit_field() != Some("stored_transaction_type")));
+    }
 }

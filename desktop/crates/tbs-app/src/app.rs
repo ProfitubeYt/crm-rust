@@ -604,6 +604,18 @@ impl App {
         Task::none()
     }
 
+    /// A signed-in window with no screens in it. A test of one screen draws
+    /// its rail beside the page, so the page gets the room the window leaves it.
+    #[cfg(test)]
+    pub(crate) fn shell_for_tests(ctx: Ctx) -> Self {
+        Self { phase: Phase::Main, compact: false, ..Self::with(ctx) }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rail_for_tests(&self) -> El<'_, Message> {
+        self.rail()
+    }
+
     #[cfg(feature = "devtools")]
     pub fn is_ready(&self) -> bool {
         self.tx.as_ref().is_some_and(Transactions::is_ready)

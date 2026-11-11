@@ -956,6 +956,37 @@ mod tests {
     }
 
     #[test]
+    fn the_stored_type_reaches_the_cell_the_search_and_the_sort() {
+        let humo = |id, stored: Option<&str>, read: &str| Transaction {
+            stored_transaction_type: stored.map(Into::into),
+            transaction_type: Some(read.into()),
+            transaction_type_display: Some(format::type_label(Some(read)).unwrap().into()),
+            raw_message: Some("[Photo]".into()),
+            source_display: Some("HUMO Card".into()),
+            ..tx(id, "2026-01-01T10:00:00", "1.00", "shop")
+        };
+        // 1: stored a top-up, read a debit. 2: an older server's row. 3: both agree.
+        let ds = Dataset::build(vec![humo(1, Some("CREDIT"), "DEBIT"), humo(2, None, "DEBIT"), humo(3, Some("REVERSAL"), "REVERSAL")]);
+        let cells = |column: Column| ds.rows.iter().map(|r| r.cell(column)).collect::<Vec<_>>();
+        assert_eq!(cells(Column::Operation), ["\u{1f389} Пополнение", "\u{1f4b8} Списание", "\u{21a9}\u{fe0f} Отмена"]);
+        // «Тип» is the server's reading, as it was.
+        assert_eq!(cells(Column::TransactionType), ["Списание", "Списание", "Отмена"]);
+
+        let s = |q: &str| ids(&ds, &Filters { search: q.into(), ..Default::default() });
+        assert_eq!(s("пополнение"), [1]);
+        assert_eq!(s("отмена"), [3]);
+        // The type filter goes on reading the server's type, which the quick chips above the table count.
+        let of_type = |code: &str| ids(&ds, &Filters { transaction_types: vec![code.into()], ..Default::default() });
+        assert_eq!(of_type("DEBIT"), [1, 2]);
+        assert_eq!(of_type("CREDIT"), Vec::<i64>::new());
+
+        let sort = Sort { column: Column::Operation, descending: false };
+        let sorted: Vec<i64> = ds.view(&Filters::default(), &Scope::default(), &sort).iter().map(|i| ds.rows[*i as usize].tx.id).collect();
+        // As text, like the column they are sorted by: ↩ before the two emoji, 🎉 before 💸.
+        assert_eq!(sorted, [3, 1, 2]);
+    }
+
+    #[test]
     fn hundred_thousand_rows_filter_fast_enough_for_typing() {
         let txs: Vec<Transaction> = (0..100_000)
             .map(|i| tx(i, "2026-01-04T07:16:00", "5000.00", if i % 2 == 0 { "PAYME Oplata" } else { "Uzum Bank" }))
