@@ -211,12 +211,71 @@ columns `varchar(12)` / `numeric(4,3)` nullable, both check constraints reject b
 two seeded receipts unchanged; `downgrade 20261111_0032` removes both columns and keeps the
 receipts; `upgrade head` again; `alembic heads` → `20261112_0033 (head)`.
 
-## 9. Status
+## 9. Milestone 3 — «Подробности» from confirmed similar operations (2026-11-11)
+
+Code: `backend/services/annotation_rule_service.py`, `annotation_service.py`
+(`rows_for_details_training`), `backend/scripts/enrich_details.py` (new). No schema change: a note
+rule is stored in `annotation_rules` under the key `OPERATOR KEY | ПК 1234 | DEBIT`.
+
+- **Key**: operator + own card (ПК) + direction. Codes (person, article) keep the operator key.
+- **Bar for writing**: ≥ 5 confirmed receipts, ≥ 80 % of them with the note, and the 3 most recent
+  confirmed receipts agree. The candidate is always the newest confirmed note. Spacing,
+  punctuation and case do not make two notes; the latest spelling is kept.
+- **Suggestion only** (reported, never written): ≥ 3 confirmed and the last 3 agree, but too few
+  or too mixed.
+- **Training**: `manual` and `import` only — never `rule` or `agent` notes.
+- **Whole labels**: a note is copied as it stands or not at all. Identifiers inside it are opaque.
+- **Protection**: `manual` and `import` notes are never replaced; locked periods are skipped
+  (`apply_rules` used to ignore them; `fill_defaults` already skipped them).
+- **Self-correction**: `apply_rules(revalidate=True)` / `--revalidate` re-derives the notes a rule
+  wrote: one whose pattern changed is corrected, one whose pattern is gone is taken back, with a
+  journal event (`transaction_annotation_events`) so it can be undone. Without the flag such notes
+  are only counted.
+- **Earlier operator-only note rules** (14 in production) are no longer used unless a person
+  pinned them; the next recompute switches them off and keeps them as history.
+
+Why these numbers (measured on the 1 066 confirmed notes replayed in date order, so each receipt
+is predicted only from earlier ones):
+
+| Variant | Predictions | Right | Precision | Empty receipts reached |
+|---|---|---|---|---|
+| operator only, support 3, purity 0.9 (before) | 81 | 68 | 0.840 | 0 |
+| operator + ПК + type, support 5, last 3 agree, purity 0.9 | 68 | 65 | 0.956 | 23 |
+| the same, purity 0.8 (**chosen**) | 79 | 75 | 0.949 | 59 |
+| the same, purity 0.7 | 96 | 87 | 0.906 | 66 |
+| the same, no purity bar | 177 | 155 | 0.876 | 101 |
+
+The thresholds are `ANNOTATION_DETAILS_MIN_SUPPORT`, `ANNOTATION_DETAILS_MIN_PURITY` and
+`ANNOTATION_DETAILS_RECENT_AGREE`. Expect about one automatic note in twenty to differ from what
+the accountant would have written; it carries the `rule` provenance and any manual edit replaces it.
+
+Dry run on production through the read-only tunnel (`scripts.enrich_details`, nothing written;
+measured):
+
+| | Receipts |
+|---|---|
+| looked at | 1 932 |
+| confirmed by a person or the workbook | 1 066 |
+| confirmed patterns (operator + ПК + type) | 208, of them rules: 11 |
+| without «Подробности» | 732 |
+| **would be filled** | **59** |
+| suggestion only, not written | 46 (mixed history 42, few confirmed 4) |
+| left empty | 627: no confirmed similar 399, recent notes differ 154, too few confirmed 74 |
+| notes an earlier rule wrote | 28: still supported 22, `--revalidate` would take back 6 |
+| notes the agent wrote | 106, untouched; where a confirmed pattern exists it differs in 7 of 7 |
+
+Most notes cannot be derived at all: a phone number, a purpose or a name is not in the receipt,
+and 392 different notes occur among 1 064. That is a limit of the source, not of the matching.
+
+Verification (verified): `tests/test_details_matching.py` 28 passed; backend suite
+`1226 passed, 1 skipped` (`--ignore=tools`).
+
+## 10. Status
 
 | Milestone | State |
 |---|---|
 | 1. Investigation and plan | measured, pushed `9287e0f` |
-| 2. Application detection, provenance, dry-run | verified, pushed |
-| 3. Details matching | not started |
+| 2. Application detection, provenance, dry-run | verified, pushed `3dbdbf4` |
+| 3. Details matching, dry-run | verified, pushed |
 | 4. Desktop column order (separate commit) | not started |
 | 5. Optional AI adapter | not built: not justified (section 8) |

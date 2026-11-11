@@ -320,3 +320,25 @@ def rows_for_rule_training(
     if limit:
         query = query.limit(limit)
     return query.yield_per(1000)
+
+
+def rows_for_details_training(db: Session) -> Iterable[Tuple[Any, ...]]:
+    """Yield `(operator_raw, card_last_4, transaction_type, details)`, oldest first.
+
+    The same eligibility as `rows_for_rule_training`: only what a person wrote
+    or the workbook supplied. The order matters here, because a note is trusted
+    only while the most recent confirmed receipts still agree on it.
+    """
+    return (
+        db.query(
+            Transaction.operator_raw,
+            Transaction.card_last_4,
+            Transaction.transaction_type,
+            Transaction.annotation_details,
+        )
+        .filter(Transaction.annotation_details.isnot(None))
+        .filter(Transaction.annotation_details_src.in_(("manual", "import")))
+        .filter(Transaction.operator_raw.isnot(None))
+        .order_by(Transaction.transaction_date.asc(), Transaction.id.asc())
+        .yield_per(1000)
+    )
