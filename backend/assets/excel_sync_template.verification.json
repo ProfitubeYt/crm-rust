@@ -1,0 +1,99 @@
+{
+  "verification_date": "2026-09-09",
+  "local_evidence_directory": "C:/Dev/tmp/parcer-excel-e2e-5a9c6e18151248b68ff07f4fb04ee5b6",
+  "artifact": {
+    "path": "backend/assets/excel_sync_template.xlsm",
+    "sha256": "6eb167c9464f20f3285fac20dda83b336609484be1cb183e60777652a412ccaf",
+    "manifest": "backend/assets/excel_sync_template.manifest.json",
+    "source_sha256": {
+      "ThisWorkbook.cls": "b3b3c95565a21ef46998504d4d736081ce495b3187c41b3db12babe19fbc2b7d",
+      "Json.bas": "ac4fb3af6542c79e18c0b9d13767d21662c2fdc7278721f02d9e5f00186804b4",
+      "WindowsStore.bas": "4e8a2c6b472a5e78236c04ff94e6d3c267f865ba9d77991e76ec30d931d91179",
+      "ExcelSync.bas": "d41aa44eec92fd73b4ad5410d1b4e5729b7f7c85f41ab98614c72e21f8310c33"
+    },
+    "packaged_native_compiled": false
+  },
+  "environment": {
+    "os": "Windows",
+    "native_excel": "16.0",
+    "powershell": "7.6.5",
+    "api": "isolated loopback fixture",
+    "database": "isolated SQLite"
+  },
+  "full_native_suites": {
+    "passed": true,
+    "run_before_final_ui_unicode_change": true,
+    "rerun_on_exact_final_artifact": false,
+    "results": [
+      {
+        "script": "backend/tools/excel_sync/testing/run_native_e2e.ps1",
+        "evidence": "native-e2e-verification.json",
+        "passed_checks": 7,
+        "checks": "WinCred, owner binding, edits, lost ACK retries, offline recovery, create/delete, conflict preservation",
+        "initial_pending_ui_check": "subsequently resolved by native UI checks"
+      },
+      {
+        "script": "backend/tools/excel_sync/testing/native_all_fields.ps1",
+        "evidence": "native-all-fields-verification.json",
+        "passed_checks": 4,
+        "checks": "All 16 editable fields in both directions; nullable clears; literal text, Unicode, dates and cents; sorting preserves row identities"
+      },
+      {
+        "script": "backend/tools/excel_sync/testing/native_auth_lifecycle.ps1",
+        "evidence": "native-auth-lifecycle-verification.json",
+        "passed_checks": 5,
+        "checks": "Same-owner grant renewal after lost create ACK; wrong-owner GET without POST and preserved queue; real Save/Close/Open with events enabled; offline replay once; existing fixture rows preserved"
+      }
+    ]
+  },
+  "final_artifact_validation": {
+    "passed": true,
+    "final_change": "UI-only Unicode conflict dialogs through SyncWindows MessageBoxW",
+    "checks": [
+      "Opened final artifact in native Excel 16.0",
+      "SelfTest and state self-test passed, repeated after compilation",
+      "Whole VBA project compiled; Compile command became disabled",
+      "Russian conflict text and emoji displayed correctly",
+      "Real conflict: No accepted server value, matching database and grid"
+    ],
+    "evidence": [
+      "native-ui-verification.json",
+      "result-24.json",
+      "result-25.json",
+      "native-final-artifact-verification.json"
+    ],
+    "full_native_suites_repeated_after_final_change": false
+  },
+  "python_validation": {
+    "before_final_ui_change": {
+      "passed": 112,
+      "separate_builder_tests_passed": 1,
+      "scripts": [
+        "backend/tests/test_excel_sync_service.py",
+        "backend/tests/test_excel_sync_api.py",
+        "backend/tests/test_excel_vba_package.py"
+      ]
+    },
+    "after_final_ui_change": {
+      "artifact_tests_with_oletools_passed": 4,
+      "builder_tests_passed": 1
+    }
+  },
+  "cleanup": {
+    "evidence": "native-cleanup-verification.json",
+    "native_worker_exited": true,
+    "test_credential_and_queue_removed": true,
+    "test_state_removed": true,
+    "fixture_port_closed": true
+  },
+  "production_deployed": false,
+  "production_read_only": {
+    "ssh_batch_mode": "passed",
+    "api_health": "HTTP 200, healthy",
+    "postgresql_version": "15.16",
+    "redis_container_health": "healthy",
+    "alembic_revision": "20260902_0027",
+    "excel_sync_routes_asset_and_0028_schema_present": false,
+    "changes_performed": false
+  }
+}

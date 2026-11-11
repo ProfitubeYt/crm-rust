@@ -1,0 +1,28 @@
+# Thin overlay over an already-built backend image.
+#
+# The full Dockerfile compiles TDLib from source. That stage needs several GB of
+# RAM, and the production box has ~2.9 GB total with an empty BuildKit cache — a
+# rebuild there reliably OOMs and leaves the stack half-swapped.
+#
+# Nothing in this release changes the system dependencies or requirements.txt,
+# only Python code. So reuse the existing image wholesale and refresh /app.
+#
+# Build (on the server, seconds rather than an hour):
+#   docker build -f backend/Dockerfile.overlay \
+#     --build-arg BASE_IMAGE=parcer-backend:1.4.25-feed-sync \
+#     -t parcer-backend:1.5.0-annotations ./backend
+#
+# If requirements.txt ever changes, this overlay is NOT enough — go back to the
+# full Dockerfile and build somewhere with memory to spare.
+ARG BASE_IMAGE=parcer-backend:latest
+FROM ${BASE_IMAGE}
+
+WORKDIR /app
+
+# Application code only. The base already carries libtdjson, the pip
+# environment, tesseract and poppler.
+COPY . /app
+
+ENV PYTHONPATH=/app
+
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]

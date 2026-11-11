@@ -1,0 +1,125 @@
+{
+  "date": "2026-09-09",
+  "change": "Preserve the original 12-point row height after assigning multiline receipt text",
+  "reference_workbook": "C:/Users/heper/Downloads/Чеки — живая книга.xlsx",
+  "reference_data_row_height_points": 12,
+  "formatting_only": true,
+  "multiline_receipt_text_preserved": true,
+  "workbook_template_sha256": "f9a26a684c1f37366b350df6d1f918806b80a9c07a2da37707ca8d375d434092",
+  "source_files": [
+    "backend/tools/build_sync_workbook.py",
+    "backend/tools/excel_sync/build_native.ps1",
+    "backend/tools/excel_sync/ExcelSync.bas"
+  ],
+  "validation": {
+    "artifact_tests_passed": 3,
+    "artifact_tests_skipped": 1,
+    "skip_reason": "Optional oletools reader unavailable in the project test environment",
+    "builder_tests_passed": 1,
+    "native_vba_selftests_passed": 2,
+    "native_save_reopen_https_refresh": true,
+    "automatic_refresh_retains_height": true,
+    "semantic_values_formulas_ids_refs_state_preserved": true,
+    "native_visual_review": "Compact rows confirmed in Excel"
+  },
+  "workbooks": [
+    {
+      "username": "stlee",
+      "workbook_id": "3c76a6a4-2dc8-45e2-a678-c4b7618ece9a",
+      "path": "C:\\Users\\heper\\Downloads\\Чеки — синхронизация.xlsm",
+      "row_height": 12,
+      "wrap_text": false,
+      "data_rows": 1537,
+      "style_height": 12,
+      "status": "Updated 19:10:53. Pending: 0; needs attention: 0",
+      "owner_id": "2",
+      "saved": true,
+      "native_selftest": true,
+      "other_zip_parts_preserved": true
+    },
+    {
+      "username": "admin",
+      "workbook_id": "e74a3c23-82f8-4ada-8d6f-5d81ddb42ff9",
+      "path": "C:\\Users\\heper\\Downloads\\Чеки — admin.xlsm",
+      "row_height": 12,
+      "wrap_text": false,
+      "data_rows": 1537,
+      "style_height": 12,
+      "status": "Updated 19:11:28. Pending: 0; needs attention: 0",
+      "owner_id": "1",
+      "saved": true,
+      "native_selftest": true,
+      "other_zip_parts_preserved": true
+    }
+  ],
+  "evidence_directory": "C:/Dev/tmp/parcer-excel-rowheight-20260909-585382a4",
+  "historical_native_test_report_retained": true,
+  "production_asset_deployment": {
+    "verified_at_utc": "2026-09-09T14:27:05.3945890Z",
+    "passed": true,
+    "change": "Only XLSM master and manifest updated; BACKEND_IMAGE changed for the next backend recreation.",
+    "restarted_services": [],
+    "all_container_ids_unchanged": true,
+    "actual_running_container_id": "0ca72bd7763c8840f7aa585339c89b906aded23e797a8a38e075012f7bbb74d8",
+    "actual_running_image_id": "sha256:36cac2e09142b68ccbfd48fead245e6b4e5e6589b63f29d179212395567b7e9d",
+    "actual_running_image_tag": "parcer-backend:1.7.2-excel-sync-20260909",
+    "future_backend_image_tag": "parcer-backend:1.7.3-excel-rows-20260909",
+    "future_backend_image_id": "sha256:83619217a87ef39df01cac80ef092a30daa529c16404a2f1bdf95fba67f193e6",
+    "exact_base_image_id": "sha256:36cac2e09142b68ccbfd48fead245e6b4e5e6589b63f29d179212395567b7e9d",
+    "image_additional_layers": 1,
+    "runtime_assets": {
+      "excel_sync_template.xlsm": {
+        "sha256": "f9a26a684c1f37366b350df6d1f918806b80a9c07a2da37707ca8d375d434092",
+        "bytes": 40372
+      },
+      "excel_sync_template.manifest.json": {
+        "sha256": "985927ced7280a945ed1e7edf044fc2f9949a2decaad4c065319ce6cf714b081",
+        "bytes": 616
+      }
+    },
+    "host_assets": {
+      "excel_sync_template.xlsm": {
+        "sha256": "f9a26a684c1f37366b350df6d1f918806b80a9c07a2da37707ca8d375d434092",
+        "bytes": 40372
+      },
+      "excel_sync_template.manifest.json": {
+        "sha256": "985927ced7280a945ed1e7edf044fc2f9949a2decaad4c065319ce6cf714b081",
+        "bytes": 616
+      }
+    },
+    "image_assets": {
+      "excel_sync_template.xlsm": {
+        "sha256": "f9a26a684c1f37366b350df6d1f918806b80a9c07a2da37707ca8d375d434092",
+        "bytes": 40372
+      },
+      "excel_sync_template.manifest.json": {
+        "sha256": "985927ced7280a945ed1e7edf044fc2f9949a2decaad4c065319ce6cf714b081",
+        "bytes": 616
+      }
+    },
+    "other_environment_bytes_unchanged": true,
+    "environment_mode": "0o600",
+    "business_rows": {
+      "count": 1537,
+      "max_id": 10130,
+      "digest": "6ed92fc7267da0925b6c9fe6637a458e"
+    },
+    "business_digest_unchanged": true,
+    "active_grants_count": 2,
+    "existing_grant_bindings_unchanged": true,
+    "sync_operations_count": 0,
+    "grant_creation_audits": {
+      "total": 2,
+      "successful": 2
+    },
+    "https_health": {
+      "http_status": 200,
+      "status": "healthy",
+      "database": "connected",
+      "version": "1.5.1"
+    },
+    "backup_directory": "/opt/receipt-parser/backups/excel-rows-20260909-585382a4",
+    "remote_release_directory": "/opt/receipt-parser/deployments/excel-rows-20260909-585382a4",
+    "business_report": "business-after-asset-deploy.json"
+  }
+}

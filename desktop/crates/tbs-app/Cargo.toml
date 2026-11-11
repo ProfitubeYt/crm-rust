@@ -1,0 +1,32 @@
+[package]
+name = "tbs-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "tbsparcer"
+path = "src/main.rs"
+
+[dependencies]
+tbs-core = { path = "../tbs-core" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+iced = { version = "0.14", features = ["tokio", "advanced", "canvas", "svg", "image", "lazy", "qr_code"] }
+wry = "0.57"
+rfd = { version = "0.15", default-features = false, features = ["tokio"] }
+png = { version = "0.18", optional = true }
+
+[features]
+devtools = ["dep:png"]
+
+[dev-dependencies]
+iced_test = "0.14"
+iced_runtime = "0.14"
+rust_xlsxwriter = "0.102"
+tempfile = "3"

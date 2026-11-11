@@ -1,0 +1,14 @@
+{
+  "protocol_version": 1,
+  "source_encoding": "utf-8-lf",
+  "artifact_sha256": "f570d9e9728b36b5c86f40371408b1b71f9df3b8e6aec784bee5b4074e2e0e1d",
+  "source_sha256": {
+    "ThisWorkbook.cls": "a9f1ca658349156e9161c4c8d0b124d5d719c44b2f2abae3687b9f5d00e74725",
+    "Json.bas": "ac4fb3af6542c79e18c0b9d13767d21662c2fdc7278721f02d9e5f00186804b4",
+    "WindowsStore.bas": "5538e7b77de9755eeebce25a011616713547cfbb3fa7d8131efb7d1d1593f2d7",
+    "ExcelSync.bas": "1e6e1e390d2c2ede68d97361241b877d53ade586203e2d23410f692847191f70",
+    "BankViews.bas": "594863f350a84d708e209f3c05e2310cdac408c7d7a17ff0106ada9f22fed607"
+  },
+  "native_compiled": false,
+  "packager": "EPPlus 4.5.3.3 (LGPL-3.0)"
+}

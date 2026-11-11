@@ -1,0 +1,143 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Telegram Sessions
+*.session
+*.session-journal
+
+# Environment Variables
+.env
+.env.local
+.env.production
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Frontend Build
+frontend/dist/
+frontend/dist-telegram/
+frontend/build/
+frontend/release/
+/deploy/excel-feed/*.xlsx
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+logs/
+*.log
+PROJECT_AGENT_GUIDE.md
+
+# Docker
+.dockerignore
+
+# Testing
+.pytest_cache/
+coverage/
+.coverage
+htmlcov/
+
+# Alembic
+backend/alembic/versions/*.pyc
+
+# Vendored Telegram Web (tweb) static bundle
+**/public/tweb/
+
+# MCP / tooling artifacts
+.playwright-mcp/
+.serena/
+.codex_artifacts/
+
+# Local desktop bootstrap credentials (never commit or serve publicly)
+/frontend/client-access.json
+/frontend/public/client-access.json
+
+# Backups
+*.bak
+
+# Media
+*.mp4
+*.mov
+
+# Root debug screenshots
+/*.png
+
+# Real access credentials (keep only .example templates)
+security/*.json
+!security/*.example.json
+
+# Junk / agent scratch
+/,
+agentcontinue.md
+
+# Build artifacts / installers (too large for git)
+*.exe
+*.msi
+*.dmg
+*.p12
+*.pfx
+
+# Rust desktop client
+desktop/target/
+/.tools/
+
+# Local agent settings and scratch files
+.claude/
+/tmp/
+/output/
+
+# Environment files (commit example templates only)
+.env.*
+!.env.example
+!**/.env.example
+
+# Private keys, certificates with private material, and credential stores
+*.pem
+*.key
+*.p8
+*.jks
+*.keystore
+*.kdbx
+
+# Local database dump (may contain production data)
+/receipt_parser_dump.sql

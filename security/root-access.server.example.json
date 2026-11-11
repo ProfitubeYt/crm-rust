@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "metadata": {
+    "owner": "TBSparcer",
+    "note": "Replace all placeholder tokens, password hashes, and salts before production use"
+  },
+  "system_access": {
+    "enforced": true,
+    "tokens": [
+      {
+        "id": "desktop-main",
+        "kind": "pbkdf2_sha256",
+        "hash": "replace_with_pbkdf2_sha256_hash",
+        "salt": "replace_with_random_salt",
+        "active": true,
+        "rotated": false
+      }
+    ]
+  },
+  "scopes": [
+    {
+      "id": 2025,
+      "name": "Папка 2025",
+      "password": {
+        "kind": "pbkdf2_sha256",
+        "hash": "replace_with_pbkdf2_sha256_hash",
+        "salt": "replace_with_random_salt",
+        "active": true,
+        "rotated": false
+      },
+      "years": [2025],
+      "allow_transactions": true,
+      "allow_sources": true,
+      "is_active": true
+    },
+    {
+      "id": 2026,
+      "name": "Папка 2026",
+      "password": {
+        "kind": "pbkdf2_sha256",
+        "hash": "replace_with_pbkdf2_sha256_hash",
+        "salt": "replace_with_random_salt",
+        "active": true,
+        "rotated": false
+      },
+      "years": [2026],
+      "allow_transactions": true,
+      "allow_sources": true,
+      "is_active": true
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+[Unit]
+Description=Claude Code CLI bridge for the receipt parser
+After=network.target docker.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/claude-bridge.env
+ExecStart=/usr/bin/python3 /opt/claude-bridge/bridge.py
+Restart=always
+RestartSec=5
+# The bridge can be asked to prepare code changes, so keep it away from
+# everything it has no business touching.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/receipt-parser /var/lib/claude-bridge /root/.claude /root/.config
+
+[Install]
+WantedBy=multi-user.target

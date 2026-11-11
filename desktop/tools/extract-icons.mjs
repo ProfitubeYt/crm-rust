@@ -1,0 +1,152 @@
+// Writes the icons the client uses into crates/tbs-app/assets/icons, and the enum
+// that names them. Run from the repository root: node desktop/tools/extract-icons.mjs
+//
+// The icons are Fluent UI System Icons (MIT), which sit naturally beside Segoe UI.
+// Each is drawn for the size in its name, so it stays sharp there: 16 for buttons,
+// menus and lines of text, 20 for the navigation rail, where the open section takes
+// the filled one. The Telegram mark is from Simple Icons (CC0; the logo itself is
+// Telegram's trademark).
+//
+// Both are fetched at pinned versions, so this script needs the network. The files
+// it writes are committed; the build does not fetch anything.
+
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const root = resolve(here, "..", "..");
+const target = join(root, "desktop", "crates", "tbs-app", "assets", "icons");
+
+const FLUENT = "https://cdn.jsdelivr.net/npm/@fluentui/svg-icons@1.1.345/icons";
+const SIMPLE = "https://cdn.jsdelivr.net/npm/simple-icons@16.37.0/icons";
+
+// The client's name for an icon, and the Fluent icon behind it.
+const fluent = {
+  alert: "error_circle_16_regular",
+  align_center: "text_align_center_16_regular",
+  align_left: "text_align_left_16_regular",
+  align_right: "text_align_right_16_regular",
+  arrow_left: "arrow_left_16_regular",
+  book: "book_16_regular",
+  bookmark: "bookmark_16_regular",
+  check: "checkmark_16_regular",
+  chevron_down: "chevron_down_16_regular",
+  chevron_left: "chevron_left_16_regular",
+  chevron_right: "chevron_right_16_regular",
+  chevron_up: "chevron_up_16_regular",
+  close: "dismiss_16_regular",
+  columns: "layout_column_three_16_regular",
+  copy: "copy_16_regular",
+  download: "arrow_download_16_regular",
+  edit: "edit_16_regular",
+  eye: "eye_16_regular",
+  eye_off: "eye_off_16_regular",
+  file_up: "document_arrow_up_16_regular",
+  filter: "filter_16_regular",
+  folder_person: "folder_person_16_regular",
+  help: "question_circle_16_regular",
+  info: "info_16_regular",
+  key: "key_16_regular",
+  loader: "spinner_ios_16_regular",
+  lock: "lock_closed_16_regular",
+  logout: "arrow_exit_20_regular",
+  logs: "text_bullet_list_square_16_regular",
+  monitor: "desktop_16_regular",
+  moon: "weather_moon_16_regular",
+  newest: "arrow_sort_down_lines_16_regular",
+  palette: "color_16_regular",
+  plus: "add_16_regular",
+  power: "power_20_regular",
+  refresh: "arrow_clockwise_16_regular",
+  search: "search_16_regular",
+  send: "send_16_regular",
+  server: "server_16_regular",
+  sheet: "document_table_16_regular",
+  shield: "shield_checkmark_16_regular",
+  success: "checkmark_circle_16_regular",
+  sun: "weather_sunny_16_regular",
+  table: "table_16_regular",
+  tag: "tag_16_regular",
+  trash: "delete_16_regular",
+  unlink: "link_dismiss_16_regular",
+  unlock: "lock_open_16_regular",
+  upload: "arrow_upload_16_regular",
+  user: "person_16_regular",
+  users: "people_16_regular",
+  warning: "warning_16_regular",
+
+  // The navigation rail and the sign-in window.
+  menu: "navigation_20_regular",
+  table_20: "table_20_regular",
+  table_20_filled: "table_20_filled",
+  book_20: "book_20_regular",
+  book_20_filled: "book_20_filled",
+  send_20: "send_20_regular",
+  send_20_filled: "send_20_filled",
+  logs_20: "text_bullet_list_square_20_regular",
+  logs_20_filled: "text_bullet_list_square_20_filled",
+  settings_20: "settings_20_regular",
+  settings_20_filled: "settings_20_filled",
+  shield_20: "shield_checkmark_20_regular",
+  shield_20_filled: "shield_checkmark_20_filled",
+  check_circle_20_filled: "checkmark_circle_20_filled",
+  receipt_24_filled: "receipt_24_filled",
+};
+
+const sources = {
+  ...Object.fromEntries(Object.entries(fluent).map(([name, icon]) => [name, `${FLUENT}/${icon}.svg`])),
+  telegram: `${SIMPLE}/telegram.svg`,
+};
+
+mkdirSync(target, { recursive: true });
+
+const fetched = await Promise.all(
+  Object.entries(sources).map(async ([name, url]) => {
+    const reply = await fetch(url).catch(() => null);
+    return [name, reply?.ok ? (await reply.text()).trim() : null, url];
+  }),
+);
+
+const missing = fetched.filter(([, svg]) => svg === null);
+for (const [name, , url] of missing) {
+  console.error(`missing: ${name} (${url})`);
+}
+if (missing.length) {
+  // Nothing is written: a half-replaced set would not build.
+  process.exit(1);
+}
+
+// Kept as published: the client paints every icon in one colour of its own.
+for (const [name, svg] of fetched) {
+  writeFileSync(join(target, `${name}.svg`), `${svg}\n`);
+}
+for (const file of readdirSync(target)) {
+  if (file.endsWith(".svg") && !(file.slice(0, -4) in sources)) {
+    rmSync(join(target, file));
+  }
+}
+
+const variant = (name) => name.split("_").map((part) => part[0].toUpperCase() + part.slice(1)).join("");
+const names = Object.keys(sources).sort();
+const rust = [
+  "// Generated by desktop/tools/extract-icons.mjs. Do not edit by hand.",
+  "",
+  "#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]",
+  "#[allow(dead_code)]",
+  "pub enum Icon {",
+  ...names.map((name) => `    ${variant(name)},`),
+  "}",
+  "",
+  "impl Icon {",
+  "    pub const fn bytes(self) -> &'static [u8] {",
+  "        match self {",
+  ...names.map((name) => `            Icon::${variant(name)} => include_bytes!("../assets/icons/${name}.svg"),`),
+  "        }",
+  "    }",
+  "}",
+  "",
+].join("\n");
+writeFileSync(join(root, "desktop", "crates", "tbs-app", "src", "icon_set.rs"), rust);
+
+console.log(`icons: ${names.length}`);

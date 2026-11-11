@@ -1,0 +1,192 @@
+"""
+Logs API routes - логирование обработки чеков
+"""
+from datetime import datetime
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, Query
+from pydantic import BaseModel
+from sqlalchemy import desc, or_
+from sqlalchemy.orm import Session
+
+from api.dependencies import require_tab_access
+from database.connection import get_db_session
+from database.models import ReceiptProcessingTask, Transaction
+
+router = APIRouter()
+
+
+class LogEntry(BaseModel):
+    """Модель записи лога"""
+    id: int
+    task_id: str
+    chat_id: int
+    message_id: int
+    status: str  # queued | processing | done | failed
+    error: Optional[str] = None
+    transaction_id: Optional[int] = None
+    created_at: datetime
+    updated_at: Optional[datetime] = None
+    # Дополнительная информация о транзакции
+    is_duplicate: bool = False
+    operator_raw: Optional[str] = None
+    amount: Optional[str] = None
+    raw_message: Optional[str] = None
+    fingerprint: Optional[str] = None
+    currency: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class LogsResponse(BaseModel):
+    """Ответ со списком логов"""
+    total: int
+    page: int
+    page_size: int
+    items: List[LogEntry]
+
+
+class LogStats(BaseModel):
+    """Статистика логов"""
+    total: int
+    success: int
+    failed: int
+    duplicates: int
+    processing: int
+
+
+@router.get("/stats", response_model=LogStats)
+async def get_logs_stats(
+    db: Session = Depends(get_db_session),
+    current_user: dict = Depends(require_tab_access("logs")),
+):
+    """Получить статистику логов обработки"""
+    total = db.query(ReceiptProcessingTask).count()
+    success = db.query(ReceiptProcessingTask).filter(
+        ReceiptProcessingTask.status == "done"
+    ).count()
+    # 'failed' alone undercounts badly: it is written only when a file download
+    # fails. A receipt that exhausts its retries is stored as 'dead', and one
+    # waiting to try again as 'retry' — those are precisely the receipts an
+    # operator needs to see, and they were invisible here.
+    failed = db.query(ReceiptProcessingTask).filter(
+        ReceiptProcessingTask.status.in_(["failed", "dead", "retry"])
+    ).count()
+    processing = db.query(ReceiptProcessingTask).filter(
+        ReceiptProcessingTask.status.in_(["queued", "processing"])
+    ).count()
+    
+    # Подсчёт дубликатов через поиск "duplicate" в error или через связанные транзакции
+    duplicates = db.query(ReceiptProcessingTask).filter(
+        or_(
+            ReceiptProcessingTask.error.ilike("%duplicate%"),
+            ReceiptProcessingTask.error.ilike("%дубликат%"),
+        )
+    ).count()
+    
+    return LogStats(
+        total=total,
+        success=success,
+        failed=failed,
+        duplicates=duplicates,
+        processing=processing,
+    )
+
+
+@router.get("", response_model=LogsResponse)
+async def get_logs(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    status: Optional[str] = Query(None, description="Filter by status: done, failed, queued, processing"),
+    search: Optional[str] = Query(None, description="Search in error message"),
+    date_from: Optional[datetime] = Query(None),
+    date_to: Optional[datetime] = Query(None),
+    duplicates_only: bool = Query(False, description="Show only duplicates"),
+    db: Session = Depends(get_db_session),
+    current_user: dict = Depends(require_tab_access("logs")),
+):
+    """Получить список логов обработки с пагинацией и фильтрами"""
+    query = db.query(ReceiptProcessingTask)
+    
+    # Фильтр по статусу
+    if status:
+        query = query.filter(ReceiptProcessingTask.status == status)
+    
+    # Поиск в сообщении об ошибке
+    if search:
+        query = query.filter(ReceiptProcessingTask.error.ilike(f"%{search}%"))
+    
+    # Фильтр по дате
+    if date_from:
+        query = query.filter(ReceiptProcessingTask.created_at >= date_from)
+    if date_to:
+        query = query.filter(ReceiptProcessingTask.created_at <= date_to)
+    
+    # Только дубликаты
+    if duplicates_only:
+        query = query.filter(
+            or_(
+                ReceiptProcessingTask.error.ilike("%duplicate%"),
+                ReceiptProcessingTask.error.ilike("%дубликат%"),
+                ReceiptProcessingTask.error.ilike("%Already processed%"),
+            )
+        )
+    
+    # Подсчёт общего количества
+    total = query.count()
+    
+    # Пагинация и сортировка (новые сверху)
+    offset = (page - 1) * page_size
+    tasks = query.order_by(desc(ReceiptProcessingTask.created_at)).offset(offset).limit(page_size).all()
+    
+    # Формируем ответ с дополнительной информацией
+    items = []
+    for task in tasks:
+        is_duplicate = False
+        operator_raw = None
+        amount = None
+        fingerprint = None
+        currency = None
+        raw_message = getattr(task, "raw_message", None)
+
+        # Проверяем на дубликат
+        if task.error and any(kw in task.error.lower() for kw in ["duplicate", "дубликат", "already processed"]):
+            is_duplicate = True
+
+        # Получаем информацию о связанной транзакции
+        if task.transaction_id:
+            txn = db.query(Transaction).filter(Transaction.id == task.transaction_id).first()
+            if txn:
+                operator_raw = txn.operator_raw
+                amount = str(abs(txn.amount)) if txn.amount else None
+                fingerprint = txn.fingerprint
+                currency = txn.currency
+                # For successful tasks, also expose raw_message from transaction
+                if not raw_message:
+                    raw_message = txn.raw_message
+
+        items.append(LogEntry(
+            id=task.id,
+            task_id=task.task_id,
+            chat_id=task.chat_id,
+            message_id=task.message_id,
+            status=task.status,
+            error=task.error,
+            transaction_id=task.transaction_id,
+            created_at=task.created_at,
+            updated_at=task.updated_at,
+            is_duplicate=is_duplicate,
+            operator_raw=operator_raw,
+            amount=amount,
+            raw_message=raw_message,
+            fingerprint=fingerprint,
+            currency=currency,
+        ))
+    
+    return LogsResponse(
+        total=total,
+        page=page,
+        page_size=page_size,
+        items=items,
+    )
