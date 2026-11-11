@@ -1,0 +1,202 @@
+[
+  {
+    "name": "Ноябрь · Telegram",
+    "view": {
+      "layout": 2,
+      "order": [
+        "row_number",
+        "operation_number",
+        "date_time",
+        "source_type",
+        "transaction_type",
+        "operator_raw",
+        "application_mapped",
+        "amount",
+        "balance_after",
+        "card_last4",
+        "is_p2p",
+        "annotation_details",
+        "annotation_person_code",
+        "annotation_period",
+        "annotation_article_code",
+        "currency",
+        "receiver_name",
+        "receiver_card",
+        "transaction_date",
+        "time",
+        "day",
+        "description"
+      ],
+      "hidden": [
+        "transaction_date",
+        "time",
+        "day",
+        "description"
+      ],
+      "widths": {},
+      "density": "standard",
+      "pinned": 3,
+      "column_paint": {},
+      "cell_paint": [],
+      "sort": {
+        "column": "transaction_date",
+        "descending": true
+      },
+      "filters": {
+        "search": "",
+        "date_from": "2026-11-01",
+        "date_to": "2026-11-30",
+        "days_of_week": [],
+        "amount_min": null,
+        "amount_max": null,
+        "currency": null,
+        "transaction_types": [
+          "DEBIT"
+        ],
+        "operators": [],
+        "apps": [],
+        "source_channel": "TELEGRAM",
+        "source_chat_ids": [
+          -1001234567890
+        ],
+        "card": null,
+        "parsing_method": null,
+        "confidence_min": null,
+        "confidence_max": null,
+        "annotation_details": "",
+        "annotation_persons": [],
+        "annotation_articles": [],
+        "annotation_period_from": null,
+        "annotation_period_to": null,
+        "annotation_state": "All"
+      },
+      "page_size": "hundred"
+    },
+    "default": true
+  },
+  {
+    "name": "Без разметки",
+    "view": {
+      "layout": 2,
+      "order": [
+        "row_number",
+        "operation_number",
+        "date_time",
+        "source_type",
+        "transaction_type",
+        "operator_raw",
+        "application_mapped",
+        "amount",
+        "balance_after",
+        "card_last4",
+        "is_p2p",
+        "annotation_details",
+        "annotation_person_code",
+        "annotation_period",
+        "annotation_article_code",
+        "currency",
+        "receiver_name",
+        "receiver_card",
+        "transaction_date",
+        "time",
+        "day",
+        "description"
+      ],
+      "hidden": [
+        "transaction_date",
+        "time",
+        "day"
+      ],
+      "widths": {
+        "description": 320.0
+      },
+      "density": "compact",
+      "pinned": 1,
+      "column_paint": {},
+      "cell_paint": [],
+      "sort": {
+        "column": "amount",
+        "descending": true
+      },
+      "filters": {
+        "search": "такси",
+        "date_from": null,
+        "date_to": null,
+        "days_of_week": [],
+        "amount_min": 50000.0,
+        "amount_max": null,
+        "currency": "UZS",
+        "transaction_types": [],
+        "operators": [],
+        "apps": [],
+        "source_channel": null,
+        "source_chat_ids": [],
+        "card": null,
+        "parsing_method": null,
+        "confidence_min": null,
+        "confidence_max": 0.6,
+        "annotation_details": "",
+        "annotation_persons": [],
+        "annotation_articles": [],
+        "annotation_period_from": null,
+        "annotation_period_to": null,
+        "annotation_state": "Missing"
+      },
+      "page_size": "all"
+    },
+    "default": false
+  },
+  {
+    "name": "Старый вид",
+    "view": {
+      "order": [
+        "row_number",
+        "operation_number",
+        "date_time",
+        "operator_raw",
+        "amount",
+        "transaction_type",
+        "transaction_date",
+        "time",
+        "day",
+        "application_mapped",
+        "description",
+        "receiver_name",
+        "receiver_card",
+        "balance_after",
+        "card_last4",
+        "is_p2p",
+        "currency",
+        "source_type",
+        "annotation_details",
+        "annotation_person_code",
+        "annotation_period",
+        "annotation_article_code"
+      ],
+      "hidden": [
+        "transaction_date",
+        "time",
+        "day",
+        "currency",
+        "source_type"
+      ],
+      "density": "comfortable",
+      "sort": {
+        "column": "transaction_date",
+        "descending": false
+      },
+      "filters": {
+        "search": "",
+        "days_of_week": [
+          6,
+          0
+        ],
+        "operators": [
+          "Korzinka"
+        ],
+        "annotation_period_from": 202601,
+        "annotation_state": "Annotated"
+      }
+    }
+  }
+]
