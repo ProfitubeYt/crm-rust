@@ -25,6 +25,6 @@ The implementation plan contains some stale recovery statements; update it based
 
 ## Access and preservation
 
-A shared SSH key has not been set up in this handoff. Previous session private keys do not transfer. Follow CONTINUE_PROMPT.md for secure provisioning and existing read-only restrictions. No private key is embedded in the prompt or repository.
+The shared SSH public key is installed and tested (see SHARED_SSH_ACCESS.md). Its private key is stored only on the owner's computer outside git and must still be securely mounted into each new sandbox. Installation alone does not provision new sandboxes. No private key is embedded in the prompt or repository.
 
-Commit and PUSH after every substantial milestone, include intended new files, verify remote SHA, and push clearly labelled WIP before credits expire. Run work sequentially by default to conserve credits.
+Commit and PUSH after every substantial milestone, include intended new files, verify remote SHA, and push clearly labelled WIP before credits expire. Follow the owner's model-routing preference in CONTINUE_PROMPT.md: a capable main model for complex work and bounded, lower-cost helpers for simple tasks.
