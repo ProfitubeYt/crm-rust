@@ -193,3 +193,8 @@ _Filled in as tasks complete._
 ## 8. Status
 
 _In progress._ Recovery of the build: done (§0). P2 backend, P3 filters: in work. P4, P1.7: not started.
+
+
+## Production integration — 12 November 2026
+
+Backend b6419c6 and Rust UI 83f5bdd were merged without conflicts at b5bbc0d. Backend deployed with migration 0032 after backups. Native 2.0.1 release and private installer built. Fresh Windows checks: 116 core and 264 app tests pass. Fresh isolated backend checks: 1092 pass, 1 optional oletools check skipped. See docs/handoff/DEPLOYMENT_20261112.md for backup paths, rollback, live smoke checks and limitations. Earlier unfinished-state statements above describe previous sessions; real Excel execution and interactive Windows validation remain unverified.
