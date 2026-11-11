@@ -12,8 +12,8 @@ Status words used below: **verified** = a check listed under "Verification" ran 
 
 | # | Content | State |
 |---|---|---|
-| 1 | Workbook API audited and hardened, `test_excel_workbook_api.py` written, migration 0032 round trips | verified, pushed |
-| 2 | `docs/EXCEL_SYNC.md`: prepared-workbook flow, contract, deployment proposal; loopback HTTP run | pending |
+| 1 | Workbook API audited and hardened, `test_excel_workbook_api.py` written, migration 0032 round trips | verified, pushed as `5d4156e` |
+| 2 | `docs/EXCEL_SYNC.md`: prepared-workbook flow, contract, deployment proposal; loopback HTTP run; gate test | verified, pushed |
 | 3 | Operation parity (plan P1.7): additive transaction fields, export sort, contract note | pending |
 
 ## Environment (nothing of it is in git)
@@ -76,13 +76,14 @@ All commands from `backend/` with the environment above.
 
 | Check | Command | Result |
 |---|---|---|
-| New API tests | `pytest tests/test_excel_workbook_api.py` | 121 passed |
+| New API tests | `pytest tests/test_excel_workbook_api.py` | 123 passed |
 | Migration 0032, SQLite | `pytest tests/test_excel_workbook_migration.py` | 2 passed |
-| Excel suites together | `pytest tests/test_excel_workbook_api.py tests/test_excel_workbook_builder.py tests/test_excel_sync_api.py tests/test_excel_sync_service.py tests/test_excel_vba_package.py` | 477 passed (476 + 1 skipped without `oletools`) |
-| Whole backend | `pytest tests` | 1082 passed, 0 failed, 0 skipped |
+| Excel suites together | `pytest tests/test_excel_workbook_api.py tests/test_excel_workbook_builder.py tests/test_excel_workbook_migration.py tests/test_excel_sync_api.py tests/test_excel_sync_service.py tests/test_excel_vba_package.py` | 481 passed (480 + 1 skipped without `oletools`) |
+| Whole backend | `pytest tests` | 1084 passed, 0 failed, 0 skipped |
 | Migration 0032, PostgreSQL 16 | alembic CLI, see below | passed |
-| New API tests on PostgreSQL 16 | same test module, `db_session` bound to the migrated database | 121 passed |
+| New API tests on PostgreSQL 16 | same test module, `db_session` bound to the migrated database | 123 passed |
 | Existing sync API tests on PostgreSQL 16 | `tests/test_excel_sync_api.py`, same harness | 107 passed |
+| The flow over a real socket | `tools/excel_sync/test_server.py` (uvicorn, `127.0.0.1:8767`) + an httpx client, see below | 34 of 34 checks |
 
 What `test_excel_workbook_api.py` covers: the create reply and stored record (hash only, audit entry, no grant);
 listing before any grant; 22 malformed requests; text that cannot be stored; address normalisation; 39 malformed or
@@ -107,6 +108,23 @@ PostgreSQL round trip (disposable cluster; alembic command line, not test double
 5. Column already present but stamped 0031 → upgrade succeeds without touching it; column absent but stamped head
    → downgrade succeeds. `alembic heads` → `20261111_0032 (head)` only.
 
+Loopback run (real TCP, no test client): the synthetic server of the native Excel suites
+(`backend/tools/excel_sync/test_server.py`: the real router and service, fresh in-memory SQLite, uvicorn on
+`127.0.0.1`) answered an httpx script that first acts as the desktop client and then as the workbook, taking the
+address and identifiers of every later request from the downloaded file. All 34 checks passed: `201` with the five
+fields; address written `http://127.0.0.1:8767`; `Content-Type`, `Content-Disposition` (RFC 5987, Cyrillic name)
+and `no-store` on the file; `B1`/`B5`/`B7`/`B8` set and `B6`/`B9` blank; one changed part (`xl/worksheets/sheet7.xml`);
+`vbaProject.bin` SHA-256 equal to the template's; no password in the file; snapshot without a key `401`; wrong
+password `401 excel_activation_password_invalid`; right password `201` and a key of the form the VBA accepts;
+snapshot `200`, complete, `user_id` equal to `B7`, 2 receipts; conditional snapshot `304`; the key on another
+computer `403`; an edit through `/v1/sync` applied; the computer listed under its workbook; password change keeps
+the name and the activated computer; re-download byte-identical; revocation → `401` for reads and writes; the old
+password no longer activates; a foreign `server_url` → `422 invalid_server_url` and nothing stored.
+
+The gates of the real application were checked per middleware (`SystemAccessMiddleware`,
+`LaunchSessionMiddleware`): making, fetching and listing workbooks are refused without the application's access,
+while `/v1/activate` and `/v1/snapshot` of a prepared workbook still work.
+
 ## Limits of this verification
 
 - **No real Excel ran.** Nothing here executes VBA or opens the workbook in Excel; the file is read with openpyxl,
@@ -124,11 +142,12 @@ No change to any existing method, path or field. Milestone 1 only adds or tighte
 - 422 bodies of `/api/excel/*` no longer contain `detail[].input`. `detail[].msg`, `loc`, `type` are unchanged.
 - `server_url` naming this host with a port other than the one in `Host` is now `422 invalid_server_url`.
 
-The full contract (fields, codes, compatibility) goes into `docs/EXCEL_SYNC.md` with milestone 2.
+The full contract (fields, codes, address rules, compatibility, deployment proposal) is in `docs/EXCEL_SYNC.md`,
+section «Готовая книга с сервера: 11.11.2026».
 
 ## Remaining
 
-- Milestone 2 and 3 as in the table above.
+- Milestone 3 as in the table above.
 - Deployment proposal (not executed, needs separate authorization): `alembic upgrade head` (adds one nullable
   column, reversible), optional `EXCEL_SYNC_PUBLIC_URL=https://<public host>` in the server's `.env` (the backend
   service already reads `.env`; no compose change), then restart of the backend. A commented entry for

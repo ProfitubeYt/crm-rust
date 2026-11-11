@@ -14,6 +14,7 @@ import json
 import re
 import warnings
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Optional
@@ -32,7 +33,7 @@ from api import dependencies
 from api.routes import excel_sync as routes
 from database.connection import get_db_session
 from database.excel_sync_models import ExcelSyncActivation, ExcelSyncGrant
-from database.models import AccessAuditLog, User
+from database.models import AccessAuditLog, AppLaunchConfig, User
 from services.access_control_service import hash_password, verify_password
 from services.user_service import build_permissions_snapshot
 from tests.test_excel_sync_api import operator, transaction
@@ -552,6 +553,44 @@ def test_an_unknown_or_malformed_workbook_is_not_found(api):
     assert refused.status_code == 404 and code(refused) == "workbook_not_found"
     assert download(api, "not-a-workbook-id").status_code == 422
     assert download(api, "..%2F..%2Fetc%2Fpasswd").status_code in (404, 422)
+
+
+@pytest.mark.parametrize("gate", ["SystemAccessMiddleware", "LaunchSessionMiddleware"])
+def test_the_application_gates_cover_making_and_fetching_but_not_the_workbooks_own_calls(api, monkeypatch, gate):
+    # Import classes only; the application's real lifespan is never entered.
+    from api import main
+    from database import connection
+
+    book, cells = configured(api)
+    monkeypatch.setattr(main, "is_internal_request", lambda _request: False)
+    monkeypatch.setattr(main, "system_access_enforced", lambda: True)
+    monkeypatch.setattr(main, "is_system_blocked", lambda: (False, ""))
+    monkeypatch.setattr(main, "verify_system_access_token", lambda _token: (False, None, "test denied"))
+    monkeypatch.setattr(main, "_write_system_access_audit", lambda **_kwargs: None)
+    monkeypatch.setattr(main, "_get_launch_gate_enabled_runtime", lambda: True)
+
+    @contextmanager
+    def local_db():
+        yield api.db
+
+    monkeypatch.setattr(connection, "get_db", local_db)
+    api.db.add(AppLaunchConfig(id=1, password_hash="unused", salt="unused"))
+    api.db.commit()
+    gated = FastAPI()
+    gated.include_router(routes.router)
+    gated.dependency_overrides.update(api.app.dependency_overrides)
+    gated.add_middleware(getattr(main, gate))
+    with TestClient(gated, base_url=SERVER) as client:
+        assert create(api, client).status_code == 403
+        assert download(api, book["workbook_id"], client).status_code == 403
+        assert client.get("/api/excel/activations").status_code == 403
+        assert stored(api) == 1
+        # An opened workbook has no application login: its password is its way in.
+        activated = client.post("/api/excel/v1/activate", json={"device_name": "ПК", "password": PASSWORD},
+                                headers={"X-Excel-Workbook": cells["B1"], "X-Excel-Device": PC_A})
+        assert activated.status_code == 201, activated.text
+        key = key_headers(cells, activated.json()["token"])
+        assert client.get("/api/excel/v1/snapshot", headers=key).status_code == 200
 
 
 # --- workbooks from before this feature -----------------------------------------------
