@@ -124,6 +124,10 @@ computer `403`; an edit through `/v1/sync` applied; the computer listed under it
 the name and the activated computer; re-download byte-identical; revocation → `401` for reads and writes; the old
 password no longer activates; a foreign `server_url` → `422 invalid_server_url` and nothing stored.
 
+The file downloaded in that run was also read with `oletools` (an independent VBA reader): 15 modules; the five
+source modules (`ThisWorkbook`, `SyncJson`, `SyncWindows`, `ExcelSync`, `BankViews`) are identical to
+`backend/tools/excel_sync`; `xl/vbaProject.bin` has the SHA-256 of the template's.
+
 The gates of the real application were checked per middleware (`SystemAccessMiddleware`,
 `LaunchSessionMiddleware`): making, fetching and listing workbooks are refused without the application's access,
 while `/v1/activate` and `/v1/snapshot` of a prepared workbook still work.
@@ -132,7 +136,8 @@ while `/v1/activate` and `/v1/snapshot` of a prepared workbook still work.
 
 - **No real Excel ran.** Nothing here executes VBA or opens the workbook in Excel; the file is read with openpyxl,
   ElementTree and zipfile, and the workbook's HTTP calls are replayed by the tests. The native PowerShell suites in
-  `backend/tools/excel_sync/testing` need Windows and Excel and were not run.
+  `backend/tools/excel_sync/testing` need Windows and Excel and were not run. Steps for a manual check in Excel
+  against the loopback server are in `docs/EXCEL_SYNC.md` («Как проверить в настольном Excel»).
 - The Rust client was not built or run in this session (out of scope); its expectations were read from source.
 - Production was neither read nor written.
 
