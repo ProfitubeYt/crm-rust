@@ -202,7 +202,8 @@ they stay in the sandbox's volume and are in no repository. The setup
 imagemagick python3 mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri
 fonts-dejavu-core fonts-noto-core procps`), on an Xvfb screen of 1600×1000,
 drawn by Mesa's software Vulkan (`WGPU_BACKEND=vulkan`), against the same stub
-and driven by the same `window-check.py` with `CLIENT="wine …/tbsparcer.exe"`.
+and driven by the same `window-check.py` with `CLIENT="wine …/tbsparcer.exe"`
+(`desktop/README.md` has the whole line).
 **Wine is not Windows.** This shows that the Windows build starts, draws and
 keeps its session through the Windows calls as Wine answers them. Nothing here
 was run on Windows itself.

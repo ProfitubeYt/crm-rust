@@ -51,7 +51,8 @@ The same steps drive the Windows build under Wine, which stands in for Windows
 without being it:
 
     CLIENT="wine $CARGO_TARGET_DIR/x86_64-pc-windows-gnu/debug/tbsparcer.exe" \
-    TBS_DATA_DIR='Z:\tmp\tbs-window-check\data' WGPU_BACKEND=vulkan SETTLE=12 \
+    TBS_DATA_DIR='Z:\tmp\tbs-window-check\data' WGPU_BACKEND=vulkan \
+    WINEDLLOVERRIDES='mscoree,mshtml=' WINEDEBUG=-all PATIENCE=240 SETTLE=12 \
         python3 tools/window-check.py up start shot first-launch
 
 ## Setup
