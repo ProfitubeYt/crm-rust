@@ -1292,6 +1292,11 @@ mod tests {
             sim.point_at(Point::new(WINDOW.width / 2.0, WINDOW.height / 2.0));
             let _ = sim.simulate([Event::Mouse(mouse::Event::WheelScrolled { delta: mouse::ScrollDelta::Pixels { x: -scroll, y: 0.0 } })]);
         }
+        picture(&mut sim, dark)
+    }
+
+    /// What the simulator has on screen right now.
+    fn picture<Message>(sim: &mut Simulator<'_, Message>, dark: bool) -> Picture {
         let shot = sim.snapshot(&theme::iced_theme(dark)).expect("a snapshot");
         // The simulator names the file after its renderer.
         let folder = tempfile::tempdir().unwrap();
@@ -1363,6 +1368,56 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_lines_stand_between_the_columns_in_whatever_order_they_are() {
+        let sizes = [60.0, 90.0, 70.0, 120.0];
+        let p = &theme::LIGHT;
+        for order in [[0, 1, 2, 3], [3, 2, 1, 0], [2, 0, 3, 1]] {
+            let arranged: Vec<f32> = order.iter().map(|at| sizes[*at]).collect();
+            let picture = draw(&widths(&arranged), 1, 3, &Selection::default(), false, 0.0);
+            let mut edge = 0.0;
+            for (col, width) in arranged.iter().enumerate() {
+                edge += width;
+                // Whichever column comes first is the pinned one, with the darker edge.
+                let line = if col == 0 { p.control_edge } else { p.border_strong };
+                for y in [header_y(), row_y(2)] {
+                    assert!(picture.is(edge - 0.5, y, line), "order {order:?}: no line at {edge}, {y}: {:?}", picture.at(edge - 0.5, y));
+                    assert!(picture.is(edge - 2.5, y, p.surface) && picture.is(edge + 1.5, y, p.surface), "order {order:?}: more than a line at {edge}, {y}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_line_goes_with_its_column_while_the_column_is_resized() {
+        let columns = widths(&[60.0, 90.0, 70.0]);
+        let selection = Selection::default();
+        let table: Element<'_, GridEvent> = grid(Blank(3), &columns, &selection, |event| event).into();
+        let mut sim = Simulator::with_size(Settings::default(), WINDOW, table);
+        // Taken by the line itself: the grip is where the line is drawn.
+        sim.point_at(Point::new(149.5, header_y()));
+        let _ = sim.simulate([Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))]);
+        let to = Point::new(179.5, header_y());
+        sim.point_at(to);
+        let _ = sim.simulate([Event::Mouse(mouse::Event::CursorMoved { position: to })]);
+
+        // Mid-drag the column is 120 wide: its line and the next one have moved, in the header and the rows.
+        let p = &theme::LIGHT;
+        let shown = picture(&mut sim, false);
+        for y in [header_y(), row_y(1)] {
+            for edge in [60.0, 180.0, 250.0] {
+                assert!(shown.is(edge - 0.5, y, p.border_strong), "no line at {edge}, {y}: {:?}", shown.at(edge - 0.5, y));
+            }
+            for left_behind in [150.0, 220.0] {
+                assert!(shown.is(left_behind - 0.5, y, p.surface), "a line stayed at {left_behind}, {y}");
+            }
+        }
+
+        let _ = sim.simulate([Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))]);
+        let said: Vec<GridEvent> = sim.into_messages().collect();
+        assert_eq!(said, [GridEvent::Resize { col: 1, width: 120.0 }]);
     }
 
     #[test]

@@ -335,6 +335,26 @@ mod tests {
     }
 
     #[test]
+    fn edges_follow_whatever_order_the_columns_are_in() {
+        let widths = [50.0, 120.0, 80.0, 200.0, 64.0];
+        // The same columns as saved, reversed, with one moved to the front, and shuffled.
+        for order in [[0, 1, 2, 3, 4], [4, 3, 2, 1, 0], [3, 0, 1, 2, 4], [1, 4, 0, 3, 2]] {
+            let arranged: Vec<f32> = order.iter().map(|at| widths[*at]).collect();
+            for pinned in 0..=3 {
+                let c = Columns::new(arranged.clone(), pinned);
+                for scroll in [0.0, 33.0, 150.0] {
+                    let mut end = 0.0;
+                    for (col, width) in arranged.iter().enumerate() {
+                        end += width;
+                        let wanted = if col < pinned { end } else { end - scroll };
+                        assert_eq!(c.edge_x(col, scroll), wanted, "order {order:?}, {pinned} pinned, scroll {scroll}, column {col}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn the_grip_is_on_the_line_between_columns() {
         let c = cols();
         for scroll in [0.0, 40.0] {
