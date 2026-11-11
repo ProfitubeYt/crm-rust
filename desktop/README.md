@@ -47,6 +47,13 @@ screen, a keyring on a private D-Bus keeps the saved session, and xdotool is the
 mouse and the keyboard. The pictures are of that screen, not of the test
 simulator. `window-check.py` lists what it needs installed and every step.
 
+The same steps drive the Windows build under Wine, which stands in for Windows
+without being it:
+
+    CLIENT="wine $CARGO_TARGET_DIR/x86_64-pc-windows-gnu/debug/tbsparcer.exe" \
+    TBS_DATA_DIR='Z:\tmp\tbs-window-check\data' WGPU_BACKEND=vulkan SETTLE=12 \
+        python3 tools/window-check.py up start shot first-launch
+
 ## Setup
 
     pwsh tools/build-installer.ps1

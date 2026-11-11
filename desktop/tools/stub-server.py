@@ -5,7 +5,7 @@ to draw it. It is not the backend: it keeps nothing, checks nothing a real
 server would and answers only what the start window and the table ask at
 first. Never point a shipped client at it.
 
-    python3 desktop/tools/stub-server.py [--port 8000] [--rows 80]
+    python3 desktop/tools/stub-server.py [--port 8000] [--rows 80] [--refresh-delay 0]
     TBS_API_BASE_URL=http://127.0.0.1:8000 tbsparcer
 
 Sign in as `anna` with the password `anna-secret`. Sessions live in memory:
@@ -19,6 +19,7 @@ import argparse
 import json
 import secrets
 import threading
+import time
 from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -115,9 +116,10 @@ def transactions(count):
 
 
 class State:
-    def __init__(self, rows, sessions_file):
+    def __init__(self, rows, sessions_file, refresh_delay=0.0):
         self.lock = threading.Lock()
         self.rows = rows
+        self.refresh_delay = refresh_delay
         self.access = set()
         self.file = Path(sessions_file) if sessions_file else None
         self.refresh = set(json.loads(self.file.read_text())) if self.file and self.file.exists() else set()
@@ -171,6 +173,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.answer(200, state.open_session())
             return self.answer(401, {"ok": False, "error": "invalid_credentials", "attempts_left": 4})
         if path == "/api/auth/refresh":
+            # Slow on request, so the start window can be seen while it still waits.
+            time.sleep(state.refresh_delay)
             token = body.get("refresh_token") or self.headers.get("x-refresh-token")
             if token in state.refresh:
                 return self.answer(200, state.open_session(token))
@@ -240,8 +244,9 @@ def main():
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--rows", type=int, default=80)
     parser.add_argument("--sessions", help="a file that keeps the sessions over a restart of the stub")
+    parser.add_argument("--refresh-delay", type=float, default=0.0, help="seconds a saved session takes to be confirmed")
     args = parser.parse_args()
-    Handler.state = State(transactions(args.rows), args.sessions)
+    Handler.state = State(transactions(args.rows), args.sessions, args.refresh_delay)
     print(f"stub backend on http://127.0.0.1:{args.port}, {args.rows} rows; sign in as {USER['username']} / {PASSWORD}", flush=True)
     ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
 

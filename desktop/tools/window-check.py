@@ -6,9 +6,14 @@ pictures it takes are of that screen, not of the test simulator.
 
 Runs inside the image of linux-dev.Dockerfile with these added as root:
 
-    apt-get install -y xdotool x11-apps gnome-keyring dbus-x11
+    apt-get install -y xdotool gnome-keyring
 
-and a client built with `cargo build -p tbs-app --locked`.
+and a client built with `cargo build -p tbs-app --locked`. `CLIENT` names
+another one, a command line included: `CLIENT="wine …/tbsparcer.exe"` runs the
+Windows build, which keeps its session in Wine's own credential store, so the
+keyring is not needed there; `TBS_DATA_DIR` then spells the data folder the
+Windows way. `STUB` adds options for the stub, `SETTLE` and `PATIENCE` give a
+slow start more time.
 
     window-check.py up              the screen, the keyring and the stub
     window-check.py start           the client; `stop` ends it, the session stays saved
@@ -27,6 +32,7 @@ Several steps can go on one line, with `wait SECONDS` between them:
 """
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -40,6 +46,9 @@ SHOTS = Path(os.environ.get("SHOTS", ROOM / "shots"))
 CLIENT = os.environ.get("CLIENT", os.path.join(os.environ.get("CARGO_TARGET_DIR", "/target"), "debug", "tbsparcer"))
 PORT = os.environ.get("PORT", "8000")
 TITLE = "^TBS inform CRM$"
+# Wine names the process after its main thread, so the command line is matched,
+# and its end only: a shell that merely mentions the client is left alone.
+CLIENT_PROCESS = r"tbsparcer(\.exe)?$"
 WHEEL = {"up": "4", "down": "5", "left": "6", "right": "7"}
 
 ENV = dict(
@@ -71,17 +80,20 @@ def up(_):
         folder.mkdir(parents=True, exist_ok=True)
     (ROOM / "run").chmod(0o700)
     spawn("xvfb.log", "Xvfb", ENV["DISPLAY"], "-screen", "0", os.environ.get("SCREEN", "1600x1000x24"), "-nolisten", "tcp")
-    spawn("dbus.log", "dbus-daemon", "--session", f"--address={ENV['DBUS_SESSION_BUS_ADDRESS']}", "--nofork", "--nopidfile")
-    time.sleep(2)
-    # The keyring's own password: it guards nothing but this check's session.
-    run("gnome-keyring-daemon", "--unlock", "--components=secrets", input="window-check", stdout=subprocess.DEVNULL)
-    spawn("stub.log", sys.executable, str(HERE / "stub-server.py"), "--port", PORT, "--sessions", str(ROOM / "sessions.json"))
+    if shutil.which("gnome-keyring-daemon"):
+        spawn("dbus.log", "dbus-daemon", "--session", f"--address={ENV['DBUS_SESSION_BUS_ADDRESS']}", "--nofork", "--nopidfile")
+        time.sleep(2)
+        # The keyring's own password: it guards nothing but this check's session.
+        run("gnome-keyring-daemon", "--unlock", "--components=secrets", input="window-check", stdout=subprocess.DEVNULL)
+    stub_options = shlex.split(os.environ.get("STUB", ""))
+    spawn("stub.log", sys.executable, str(HERE / "stub-server.py"), "--port", PORT, "--sessions", str(ROOM / "sessions.json"), *stub_options)
     time.sleep(1)
 
 
 def start(_):
-    spawn("client.log", CLIENT, TBS_DATA_DIR=str(ROOM / "data"), TBS_API_BASE_URL=f"http://127.0.0.1:{PORT}")
-    for _ in range(60):
+    data = os.environ.get("TBS_DATA_DIR", str(ROOM / "data"))
+    spawn("client.log", *shlex.split(CLIENT), TBS_DATA_DIR=data, TBS_API_BASE_URL=f"http://127.0.0.1:{PORT}")
+    for _ in range(int(os.environ.get("PATIENCE", "60"))):
         if window():
             break
         time.sleep(0.5)
@@ -89,7 +101,7 @@ def start(_):
 
 
 def stop(_):
-    subprocess.run(["pkill", "-x", "tbsparcer"])
+    subprocess.run(["pkill", "-f", CLIENT_PROCESS])
     time.sleep(1)
 
 
@@ -155,7 +167,8 @@ def wait(args):
 
 
 def down(_):
-    for name in ("tbsparcer", "gnome-keyring-d", "dbus-daemon", "Xvfb"):
+    subprocess.run(["pkill", "-f", CLIENT_PROCESS])
+    for name in ("gnome-keyring-d", "dbus-daemon", "Xvfb"):
         subprocess.run(["pkill", "-x", name])
     subprocess.run(["pkill", "-f", "stub-server.py"])
     for left in (ROOM / "data", ROOM / "run", Path.home() / ".local/share/keyrings"):
