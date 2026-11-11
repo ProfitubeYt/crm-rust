@@ -1088,7 +1088,7 @@ pub(super) mod tests {
 
     use super::super::facets::tests::rich;
     use super::super::table::TableView;
-    use super::super::{Parcel, STATE, menus};
+    use super::super::{Parcel, STATE, view};
     use super::*;
     use crate::app::App;
 
@@ -1291,17 +1291,40 @@ pub(super) mod tests {
             self.place(words).is_some_and(|at| at.x >= 0.0 && at.y >= 0.0 && at.x + at.width <= window.width && at.y + at.height <= window.height)
         }
 
+        /// How many times the words stand in the window, seen or scrolled away.
+        pub fn count(&self, words: &str) -> usize {
+            let mut sim = Simulator::with_size(Settings::default(), self.ctx.window, self.window());
+            let found = std::sync::Arc::new(std::sync::Mutex::new(0));
+            let (sink, wanted) = (found.clone(), words.to_string());
+            let _ = sim.find(move |candidate: Candidate<'_>| -> Option<()> {
+                if let Candidate::Text { content, .. } = candidate
+                    && content == wanted
+                {
+                    *sink.lock().unwrap() += 1;
+                }
+                None
+            });
+            let count = *found.lock().unwrap();
+            count
+        }
+
         /// Presses what carries the words, and lets the table take what the press sends.
         pub fn press(&mut self, words: &str) {
+            assert!(self.try_press(words), "the press at «{words}» sent nothing");
+        }
+
+        /// The same press on something that may be switched off: says whether it sent anything.
+        pub fn try_press(&mut self, words: &str) -> bool {
             let messages: Vec<Screen> = {
                 let mut sim = Simulator::with_size(Settings::default(), self.ctx.window, self.window());
                 sim.click(words).unwrap_or_else(|_| panic!("nothing to press at «{words}»"));
                 sim.into_messages().collect()
             };
-            assert!(!messages.is_empty(), "the press at «{words}» sent nothing");
+            let sent = !messages.is_empty();
             for message in messages {
                 let _ = self.screen.update(message, &mut self.ctx);
             }
+            sent
         }
 
         /// Reads the table state back from where the screen saves it.
@@ -1941,17 +1964,25 @@ pub(super) mod tests {
         let _ = bench.screen.update(Screen::Quick(Some("DEBIT")), &mut bench.ctx);
         fresh(&mut bench);
         // A saved view put on.
-        let _ = bench.screen.update(Screen::Menu(menus::Msg::PresetName("Дебет".into())), &mut bench.ctx);
-        let _ = bench.screen.update(Screen::Menu(menus::Msg::PresetSave(false)), &mut bench.ctx);
+        let _ = bench.screen.update(Screen::View(view::Msg::Name("Дебет".into())), &mut bench.ctx);
+        let _ = bench.screen.update(Screen::View(view::Msg::Save(false)), &mut bench.ctx);
         bench.send(Msg::RemoveAll);
         park(&mut bench);
-        let _ = bench.screen.update(Screen::Menu(menus::Msg::PresetLoad(0)), &mut bench.ctx);
+        let _ = bench.screen.update(Screen::View(view::Msg::Apply(0)), &mut bench.ctx);
         assert_eq!(bench.applied(), &Filters { currency: Some("UZS".into()), transaction_types: vec!["DEBIT".into()], ..Default::default() });
         fresh(&mut bench);
-        // The whole view reset.
+        // The look of the table reset. The filters are not the look: they stay, and so does the draft made from them.
         park(&mut bench);
-        let _ = bench.screen.update(Screen::Menu(menus::Msg::Reset), &mut bench.ctx);
-        fresh(&mut bench);
+        let narrowed = bench.applied().clone();
+        let _ = bench.screen.update(Screen::View(view::Msg::AskReset), &mut bench.ctx);
+        let _ = bench.screen.update(Screen::View(view::Msg::AskConfirm), &mut bench.ctx);
+        assert_eq!(bench.applied(), &narrowed);
+        assert!(bench.screen.has_filter_draft(), "a reset of the look threw the filter draft away");
+        bench.screen.open_filters();
+        assert!(bench.form().resumed && bench.form().dirty());
+        bench.send(Msg::Revert);
+        bench.send(Msg::Close);
+        assert!(!bench.screen.has_filter_draft());
         // «Сбросить всё» on the bar.
         bench.screen.table.filters = Filters { currency: Some("USD".into()), ..Default::default() };
         park(&mut bench);

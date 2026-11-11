@@ -123,6 +123,13 @@ pub fn btn<'a, M: Clone + 'a>(value: impl text::IntoFragment<'a>, kind: Kind, on
     styled(button(body), kind).padding([0.0, gap::MD]).height(control::MD).on_press_maybe(on_press)
 }
 
+/// A text button for a line that holds several: lower and in smaller type
+/// than [`btn`], and greyed out the same way while it has nothing to do.
+pub fn btn_small<'a, M: Clone + 'a>(value: impl text::IntoFragment<'a>, kind: Kind, on_press: Option<M>) -> button::Button<'a, M> {
+    let body = container(text(value).size(size::SM).font(theme::FONT_MEDIUM)).center_y(Fill);
+    styled(button(body), kind).padding([0.0, gap::SM + 2.0]).height(control::SM).on_press_maybe(on_press)
+}
+
 pub fn btn_icon<'a, M: Clone + 'a>(
     glyph: Icon,
     value: impl text::IntoFragment<'a>,

@@ -9,6 +9,7 @@ mod facets;
 mod filters;
 mod menus;
 pub mod table;
+mod view;
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -34,8 +35,9 @@ use detail::Detail;
 use edit::{Choices, DeleteAsk, Editor, History};
 use excel::ExcelPanel;
 use filters::{FilterForm, Kept};
-use menus::{Popup, Preset, PresetAsk};
+use menus::Popup;
 use table::{PageSize, TableView, TxGrid};
+use view::{Ask, Preset, Tab, ViewPanel};
 
 pub use access::Msg as AccessMsg;
 
@@ -100,12 +102,15 @@ pub enum Msg {
     OpenAdd,
     OpenFilters,
     OpenExcel,
+    /// «Вид» on the toolbar: the sheet opens on the tab it was left on.
+    OpenView,
     Edit(edit::Msg),
     Add(add::Msg),
     Filters(filters::Msg),
     Excel(excel::Msg),
     Access(access::Msg),
     Menu(menus::Msg),
+    View(view::Msg),
     Detail(detail::Msg),
 }
 
@@ -117,6 +122,7 @@ pub enum Sheet {
     Filters(Box<FilterForm>),
     Excel(Box<ExcelPanel>),
     Detail(Detail),
+    View(ViewPanel),
 }
 
 #[cfg(test)]
@@ -178,7 +184,10 @@ pub struct Transactions {
     popup: Popup,
     presets: Vec<Preset>,
     preset_name: String,
-    preset_ask: Option<PresetAsk>,
+    /// What the view sheet is asking before it renames, deletes or resets.
+    view_ask: Option<Ask>,
+    /// The tab the view sheet was left on.
+    view_tab: Tab,
     export_from: String,
     export_to: String,
 }
@@ -277,7 +286,8 @@ impl Transactions {
             popup: Popup::None,
             presets,
             preset_name: String::new(),
-            preset_ask: None,
+            view_ask: None,
+            view_tab: Tab::default(),
             export_from: String::new(),
             export_to: String::new(),
         };
@@ -316,7 +326,9 @@ impl Transactions {
             "filters" => Msg::OpenFilters,
             "add" => Msg::OpenAdd,
             "excel" => Msg::OpenExcel,
-            "view" => open(Popup::View),
+            "view" => Msg::View(view::Msg::Open(Tab::Columns)),
+            "view-display" => Msg::View(view::Msg::Open(Tab::Display)),
+            "view-saved" => Msg::View(view::Msg::Open(Tab::Saved)),
             "export" => open(Popup::Export),
             "help" => open(Popup::Help),
             "cell" => open(Popup::Cell { row: 1, col: 6, at }),
@@ -478,8 +490,8 @@ impl Transactions {
             self.editor = None;
         } else if self.popup != Popup::None {
             self.popup = Popup::None;
-        } else if self.preset_ask.is_some() {
-            self.preset_ask = None;
+        } else if self.view_ask.is_some() {
+            self.view_ask = None;
         } else if self.delete_ask.is_some() {
             self.delete_ask = None;
         } else if !matches!(self.sheet, Sheet::None) {
@@ -634,6 +646,7 @@ impl Transactions {
                 }
             }
             Msg::OpenFilters => self.open_filters(),
+            Msg::OpenView => self.open_view(self.view_tab),
             Msg::OpenExcel => {
                 if !self.editing_blocked() {
                     return self.open_excel(ctx);
@@ -645,6 +658,7 @@ impl Transactions {
             Msg::Excel(message) => return self.excel_update(message, ctx),
             Msg::Access(message) => return self.access_update(message, ctx),
             Msg::Menu(message) => return self.menu_update(message, ctx),
+            Msg::View(message) => return self.view_update(message, ctx),
             Msg::Detail(message) => self.detail_update(message),
         }
         Task::none()
@@ -792,7 +806,7 @@ impl Transactions {
         let help = ui::icon_btn(Icon::Help, "Как искать", Some(Msg::Menu(menus::Msg::Open(Popup::Help))));
         let filters = ui::btn_icon(Icon::Filter, filter_caption, if active > 0 { Kind::Primary } else { Kind::Secondary }, Some(Msg::OpenFilters));
         let order = ui::btn_icon(Icon::Newest, "Сначала новые", if newest { Kind::Primary } else { Kind::Secondary }, Some(Msg::Newest));
-        let look = ui::btn_icon(Icon::Columns, "Вид", Kind::Secondary, Some(Msg::Menu(menus::Msg::Open(Popup::View))));
+        let look = ui::btn_icon(Icon::Columns, "Вид", Kind::Secondary, Some(Msg::OpenView));
         let tools: El<'_, Msg> = if self.tools_on_one_line(ctx) {
             row![quick, Space::new().width(space::SM), search, help, filters, order, look].spacing(space::SM).align_y(Alignment::Center).into()
         } else {
@@ -869,6 +883,7 @@ impl Transactions {
             Sheet::Add(form) => layers.push(self.add_view(form)),
             Sheet::Filters(form) => layers.push(self.filters_view(form)),
             Sheet::Excel(panel) => layers.push(self.excel_view(panel)),
+            Sheet::View(panel) => layers.push(self.view_sheet(panel)),
             Sheet::Detail(detail) => {
                 if let Some(row) = self.data.by_id(detail.id) {
                     layers.push(self.detail_view(detail, row));
@@ -880,7 +895,7 @@ impl Transactions {
         if let Some(ask) = &self.delete_ask {
             layers.push(ui::confirm(Space::new(), &ask.title, &ask.body, "Удалить", Msg::Edit(edit::Msg::ConfirmDelete), Msg::Edit(edit::Msg::CancelDelete)));
         }
-        layers.extend(self.preset_ask_view());
+        layers.extend(self.view_ask_view());
         if layers.is_empty() {
             return None;
         }

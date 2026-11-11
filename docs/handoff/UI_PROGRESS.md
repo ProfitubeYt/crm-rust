@@ -178,7 +178,10 @@ A live check against a server that sends the fields belongs to integration.
 - [x] Baseline verified on a clean clone (milestone 1).
 - [x] P3 filters completed and verified (milestone 2).
 - [x] «Операция» fallback by `stored_transaction_type` with tests (milestone 3).
-- [ ] P4 View implemented and verified.
+- [ ] P4 View: implemented in the commit that follows `85403e7`. The working tree passed
+  `cargo test -p tbs-app --features devtools --locked` with 264 tests before the last
+  wording change of the reset question. Clean-clone runs, pictures and the milestone
+  notes come with the next commit.
 - [ ] Final desktop checks (clean-clone tests, Windows cross-build, headless run).
 
 ## Verification log

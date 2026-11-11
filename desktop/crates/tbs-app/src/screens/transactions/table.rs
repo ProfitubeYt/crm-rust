@@ -95,6 +95,13 @@ pub const MAX_PINNED: usize = 3;
 /// Rows the user may leave hidden or move; the row number stays.
 pub const LOCKED: Column = Column::RowNumber;
 
+/// One place along the order of the columns, for the arrows of the view sheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Up,
+    Down,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Density {
@@ -346,6 +353,47 @@ impl TableView {
     pub fn use_ledger_columns(&mut self) {
         self.order = default_order();
         self.hidden = QUIET.to_vec();
+    }
+
+    /// Whether the columns already stand as the ledger has them.
+    pub fn has_ledger_columns(&self) -> bool {
+        self.has_layout(&default_order(), &QUIET)
+    }
+
+    /// Moves a column one place along the order, past whatever stands there,
+    /// shown or not. `false` when it is already at that end.
+    pub fn move_column(&mut self, column: Column, step: Step) -> bool {
+        let Some(from) = self.order.iter().position(|c| *c == column) else { return false };
+        let to = match step {
+            Step::Up if from > 0 => from - 1,
+            Step::Down if from + 1 < self.order.len() => from + 1,
+            _ => return false,
+        };
+        self.order.swap(from, to);
+        true
+    }
+
+    /// How many columns stay in place on the left, of the ones that are shown.
+    pub fn pinned_shown(&self) -> usize {
+        self.pinned.min(self.visible().len())
+    }
+
+    /// The look of a fresh table: columns, widths, density, pinning, sorting
+    /// and the page. What narrows the table stays, and so do the cells painted
+    /// by hand: both are about the receipts, not about the look.
+    pub fn reset_layout(&mut self) {
+        let filters = std::mem::take(&mut self.filters);
+        let cell_paint = std::mem::take(&mut self.cell_paint);
+        *self = Self { filters, cell_paint, ..Self::default() };
+    }
+
+    /// Whether `reset_layout` would leave the table as it is.
+    pub fn has_fresh_layout(&self) -> bool {
+        let fresh = Self::default();
+        self.has_ledger_columns()
+            && self.widths.is_empty()
+            && self.column_paint.is_empty()
+            && (self.density, self.pinned, self.sort, self.page_size) == (fresh.density, fresh.pinned, fresh.sort, fresh.page_size)
     }
 
     pub fn visible(&self) -> Vec<Column> {
@@ -686,6 +734,130 @@ mod tests {
         assert_eq!(view.order, default_order());
         assert_eq!(view.hidden, QUIET);
         assert_eq!((view.pinned, view.width(Column::Amount)), (1, 200.0));
+    }
+
+    #[test]
+    fn a_column_moves_one_place_and_stops_at_the_ends() {
+        let mut view = TableView::default();
+        let start = view.order.clone();
+        assert_eq!(start.len(), columns::COUNT);
+        // Down and back up is where it was.
+        assert!(view.move_column(Column::Amount, Step::Down));
+        let at = |view: &TableView, column| view.order.iter().position(|c| *c == column).unwrap();
+        assert_eq!((at(&view, Column::Amount), at(&view, Column::BalanceAfter)), (9, 8));
+        assert!(view.move_column(Column::Amount, Step::Up));
+        assert_eq!(view.order, start);
+        // The ends hold.
+        let (first, last) = (start[0], start[columns::COUNT - 1]);
+        assert!(!view.move_column(first, Step::Up));
+        assert!(!view.move_column(last, Step::Down));
+        assert_eq!(view.order, start);
+        // All the way down, a column passes every other one, hidden ones too, and nothing is lost on the way.
+        let mut steps = 0;
+        while view.move_column(first, Step::Down) {
+            steps += 1;
+        }
+        assert_eq!(steps, columns::COUNT - 1);
+        assert_eq!(view.order.last(), Some(&first));
+        assert_eq!(view.order[..columns::COUNT - 1], start[1..]);
+        let mut sorted = view.order.clone();
+        sorted.sort_by_key(|c| c.index());
+        assert_eq!(sorted, columns::ALL);
+        // Moving changes the order only.
+        assert_eq!(view.hidden, QUIET);
+    }
+
+    #[test]
+    fn a_hidden_column_is_a_place_in_the_order_too() {
+        let mut view = TableView { order: vec![Column::RowNumber, Column::Time, Column::Amount], hidden: vec![Column::Time], ..Default::default() };
+        view.repair();
+        assert_eq!(view.visible()[..2], [Column::RowNumber, Column::Amount]);
+        // One step takes «Сумма» past the hidden column: the table shows the same.
+        assert!(view.move_column(Column::Amount, Step::Up));
+        assert_eq!(view.order[..3], [Column::RowNumber, Column::Amount, Column::Time]);
+        assert_eq!(view.visible()[..2], [Column::RowNumber, Column::Amount]);
+        // The next one changes it.
+        assert!(view.move_column(Column::Amount, Step::Up));
+        assert_eq!(view.visible()[..2], [Column::Amount, Column::RowNumber]);
+    }
+
+    #[test]
+    fn resetting_the_layout_keeps_the_filters_and_the_painted_cells() {
+        let filters = Filters { search: "такси".into(), currency: Some("UZS".into()), amount_min: Some(50_000.0), ..Default::default() };
+        let mut view = TableView {
+            order: columns::ALL.to_vec(),
+            hidden: vec![Column::Amount, Column::Operation],
+            density: Density::Compact,
+            pinned: 1,
+            sort: Sort { column: Column::Amount, descending: true },
+            filters: filters.clone(),
+            page_size: PageSize::All,
+            ..Default::default()
+        };
+        view.widths.insert(Column::OperatorRaw, 300.0);
+        view.column_paint.insert(Column::Amount, Paint { fill: Some(2), align: None });
+        view.cell_paint.insert((17, Column::AnnotationDetails), Paint { fill: Some(3), align: None });
+        assert!(!view.has_fresh_layout());
+
+        view.reset_layout();
+        assert!(view.has_fresh_layout());
+        let fresh = TableView::default();
+        assert_eq!((&view.order, &view.hidden, view.layout), (&fresh.order, &fresh.hidden, LAYOUT));
+        assert_eq!((view.density, view.pinned, view.sort, view.page_size), (fresh.density, fresh.pinned, fresh.sort, fresh.page_size));
+        assert!(view.widths.is_empty() && view.column_paint.is_empty());
+        // What narrows the table is not the look of it, and neither is a cell somebody marked.
+        assert_eq!(view.filters, filters);
+        assert_eq!(view.cell_paint.len(), 1);
+        // Nothing but those two sets it apart from a fresh table.
+        assert_eq!(TableView { filters: Filters::default(), cell_paint: HashMap::new(), ..view }, fresh);
+    }
+
+    #[test]
+    fn a_fresh_layout_is_told_from_one_that_was_arranged() {
+        let fresh = TableView::default;
+        assert!(fresh().has_fresh_layout() && fresh().has_ledger_columns());
+        // Filters and painted cells are not the layout.
+        let mut marked = TableView { filters: Filters { currency: Some("USD".into()), ..Default::default() }, ..fresh() };
+        marked.cell_paint.insert((1, Column::Amount), Paint { fill: Some(0), align: None });
+        assert!(marked.has_fresh_layout());
+        // Hidden columns are the same set in whatever order they were hidden.
+        let mut reversed = fresh();
+        reversed.hidden.reverse();
+        assert!(reversed.has_ledger_columns() && reversed.has_fresh_layout());
+        // Anything the view sheet can change is.
+        let mut moved = fresh();
+        moved.move_column(Column::Amount, Step::Up);
+        let mut wide = fresh();
+        wide.widths.insert(Column::Amount, 200.0);
+        let mut painted = fresh();
+        painted.column_paint.insert(Column::Amount, Paint { fill: Some(1), align: None });
+        let arranged = [
+            moved,
+            TableView { hidden: Vec::new(), ..fresh() },
+            wide,
+            painted,
+            TableView { density: Density::Ultra, ..fresh() },
+            TableView { pinned: 0, ..fresh() },
+            TableView { sort: Sort { column: Column::TransactionDate, descending: true }, ..fresh() },
+            TableView { page_size: PageSize::Fifty, ..fresh() },
+        ];
+        for (index, view) in arranged.iter().enumerate() {
+            assert!(!view.has_fresh_layout(), "case {index}");
+        }
+        // Widths and density leave the columns the ledger's.
+        assert!(arranged[2].has_ledger_columns() && arranged[4].has_ledger_columns());
+        assert!(!arranged[0].has_ledger_columns() && !arranged[1].has_ledger_columns());
+    }
+
+    #[test]
+    fn pinned_columns_are_counted_among_the_shown() {
+        let mut view = TableView::default();
+        assert_eq!(view.pinned_shown(), MAX_PINNED);
+        view.hidden = columns::ALL.iter().copied().filter(|c| *c != LOCKED).collect();
+        assert_eq!(view.visible(), [LOCKED]);
+        assert_eq!(view.pinned_shown(), 1);
+        view.pinned = 0;
+        assert_eq!(view.pinned_shown(), 0);
     }
 
     #[test]
