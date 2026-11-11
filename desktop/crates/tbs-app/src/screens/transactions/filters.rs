@@ -1799,7 +1799,9 @@ mod tests {
         bench.send(Msg::Operator(SHOPS[0].into()));
         assert_eq!(bench.form().count, Count::Found { found: 10, total: 60 });
 
-        // Wrong: said at once, and no number is left standing.
+        // Wrong: said at once, and no number is left standing. «Финансы» starts
+        // folded, so it is opened first, as a person would to type there.
+        bench.send(Msg::Fold(Group::Money));
         bench.type_in(Field::AmountMin, "abc".into());
         assert_eq!(bench.form().count, Count::Invalid);
         assert!(bench.sees(NUMBER_FORMAT));

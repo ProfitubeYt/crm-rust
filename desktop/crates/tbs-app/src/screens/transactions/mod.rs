@@ -5,6 +5,7 @@ mod add;
 mod detail;
 pub(crate) mod edit;
 mod excel;
+mod facets;
 mod filters;
 mod menus;
 pub mod table;
@@ -32,7 +33,7 @@ use add::AddForm;
 use detail::Detail;
 use edit::{Choices, DeleteAsk, Editor, History};
 use excel::ExcelPanel;
-use filters::FilterDraft;
+use filters::{FilterForm, Kept};
 use menus::{Popup, Preset, PresetAsk};
 use table::{PageSize, TableView, TxGrid};
 
@@ -110,7 +111,7 @@ pub enum Sheet {
     #[default]
     None,
     Add(AddForm),
-    Filters(Box<FilterDraft>),
+    Filters(Box<FilterForm>),
     Excel(Box<ExcelPanel>),
     Detail(Detail),
 }
@@ -169,6 +170,8 @@ pub struct Transactions {
     history: History,
     delete_ask: Option<DeleteAsk>,
     sheet: Sheet,
+    /// What the filter sheet keeps between its openings: its folds and a form nobody applied.
+    kept: Kept,
     popup: Popup,
     presets: Vec<Preset>,
     preset_name: String,
@@ -267,6 +270,7 @@ impl Transactions {
             history: History::default(),
             delete_ask: None,
             sheet: Sheet::None,
+            kept: Kept::default(),
             popup: Popup::None,
             presets,
             preset_name: String::new(),
@@ -373,6 +377,7 @@ impl Transactions {
         self.matched = if self.locked_view() { Vec::new() } else { self.data.view(&self.table.filters, &self.scope(), &self.table.sort) };
         self.cut_page();
         self.summarize();
+        self.filters_refreshed();
     }
 
     fn summarize(&mut self) {
@@ -475,6 +480,8 @@ impl Transactions {
         } else if self.delete_ask.is_some() {
             self.delete_ask = None;
         } else if !matches!(self.sheet, Sheet::None) {
+            // Esc on the filter sheet is not «Отменить изменения»: what was typed waits for the next opening.
+            self.close_filters();
             self.sheet = Sheet::None;
         } else {
             self.selection = Selection::default();
@@ -599,6 +606,7 @@ impl Transactions {
             }
             Msg::Quick(code) => {
                 self.table.filters.transaction_types = code.map(|c| vec![c.to_string()]).unwrap_or_default();
+                self.forget_filter_draft();
                 self.refresh_rows();
                 self.save(ctx);
             }
@@ -630,7 +638,7 @@ impl Transactions {
             }
             Msg::Edit(message) => return self.edit_update(message, ctx),
             Msg::Add(message) => return self.add_update(message, ctx),
-            Msg::Filters(message) => self.filters_update(message, ctx),
+            Msg::Filters(message) => return self.filters_update(message, ctx),
             Msg::Excel(message) => return self.excel_update(message, ctx),
             Msg::Access(message) => return self.access_update(message, ctx),
             Msg::Menu(message) => return self.menu_update(message, ctx),
@@ -756,7 +764,11 @@ impl Transactions {
 
         let s = &self.summary;
         let active = self.table.filters.active_count();
-        let filter_caption = if active > 0 { format!("Фильтры · {active}") } else { "Фильтры".to_string() };
+        let mut filter_caption = if active > 0 { format!("Фильтры · {active}") } else { "Фильтры".to_string() };
+        // A form closed without «Применить» is still there, and the button says so.
+        if self.has_filter_draft() {
+            filter_caption.push_str(" · черновик");
+        }
         let newest = self.table.sort == Sort { column: Column::TransactionDate, descending: true };
         let types = &self.table.filters.transaction_types;
         let picked = |code: &str| types.len() == 1 && types[0] == code;
@@ -822,6 +834,10 @@ impl Transactions {
         for banner in self.banners(ctx) {
             page = page.push(banner);
         }
+        // What narrows the table stands right above it, also while its rows are hidden.
+        if let Some(bar) = self.filter_bar() {
+            page = page.push(bar);
+        }
         page = page.push(container(body).width(Fill).height(Fill).style(theme::card)).push(self.footer());
         container(page).padding(ui::PAGE_PADDING).width(Fill).height(Fill).style(theme::page).into()
     }
@@ -832,7 +848,7 @@ impl Transactions {
         match &self.sheet {
             Sheet::None => {}
             Sheet::Add(form) => layers.push(self.add_view(form)),
-            Sheet::Filters(draft) => layers.push(self.filters_view(draft)),
+            Sheet::Filters(form) => layers.push(self.filters_view(form)),
             Sheet::Excel(panel) => layers.push(self.excel_view(panel)),
             Sheet::Detail(detail) => {
                 if let Some(row) = self.data.by_id(detail.id) {
