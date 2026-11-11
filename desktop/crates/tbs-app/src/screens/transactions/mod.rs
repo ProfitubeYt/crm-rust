@@ -102,8 +102,6 @@ pub enum Msg {
     OpenAdd,
     OpenFilters,
     OpenExcel,
-    /// «Вид» on the toolbar: the sheet opens on the tab it was left on.
-    OpenView,
     Edit(edit::Msg),
     Add(add::Msg),
     Filters(filters::Msg),
@@ -646,7 +644,6 @@ impl Transactions {
                 }
             }
             Msg::OpenFilters => self.open_filters(),
-            Msg::OpenView => self.open_view(self.view_tab),
             Msg::OpenExcel => {
                 if !self.editing_blocked() {
                     return self.open_excel(ctx);
@@ -806,7 +803,8 @@ impl Transactions {
         let help = ui::icon_btn(Icon::Help, "Как искать", Some(Msg::Menu(menus::Msg::Open(Popup::Help))));
         let filters = ui::btn_icon(Icon::Filter, filter_caption, if active > 0 { Kind::Primary } else { Kind::Secondary }, Some(Msg::OpenFilters));
         let order = ui::btn_icon(Icon::Newest, "Сначала новые", if newest { Kind::Primary } else { Kind::Secondary }, Some(Msg::Newest));
-        let look = ui::btn_icon(Icon::Columns, "Вид", Kind::Secondary, Some(Msg::OpenView));
+        // The sheet opens on the tab it was left on.
+        let look = ui::btn_icon(Icon::Columns, "Вид", Kind::Secondary, Some(Msg::View(view::Msg::Open(self.view_tab))));
         let tools: El<'_, Msg> = if self.tools_on_one_line(ctx) {
             row![quick, Space::new().width(space::SM), search, help, filters, order, look].spacing(space::SM).align_y(Alignment::Center).into()
         } else {
