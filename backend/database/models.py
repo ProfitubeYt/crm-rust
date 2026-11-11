@@ -6,9 +6,11 @@ from typing import Optional
 from sqlalchemy import (
     BigInteger, Boolean, CheckConstraint, Column, Date, DateTime,
     Float, ForeignKey, Integer, JSON, Numeric, String, Text, Index, UniqueConstraint, Uuid,
+    event,
     text as sql_text,
 )
 from sqlalchemy.orm import declarative_base
+from sqlalchemy.orm.attributes import NEVER_SET, NO_VALUE
 from sqlalchemy.sql import func
 import uuid
 
@@ -42,6 +44,15 @@ class Transaction(Base):
     card_last_4 = Column(String(4))
     operator_raw = Column(Text)
     application_mapped = Column(String(100))
+    # Where the application came from: manual | import | dict | rule | similar | ai.
+    # NULL is "unknown": a value stored before provenance existed, or written
+    # by code that does not say. Unknown values are never replaced and never
+    # learned from. Any change of `application_mapped` clears both columns (see
+    # the listener under the class), so a stamp always describes the value
+    # beside it; writers that know the origin set it after the value.
+    application_src = Column(String(12))
+    # Ordinal trust in an automatic value (see MATCH_CONFIDENCE), not a probability.
+    application_confidence = Column(Numeric(4, 3))
     transaction_type = Column(String(20), nullable=False)
     balance_after = Column(Numeric(18, 2))
 
@@ -173,6 +184,16 @@ class Transaction(Base):
             "annotation_article_src IN ('manual', 'import', 'rule', 'agent')",
             name='check_annotation_article_src',
         ),
+        CheckConstraint(
+            "application_src IS NULL OR "
+            "application_src IN ('manual', 'import', 'dict', 'rule', 'similar', 'ai')",
+            name='check_application_src',
+        ),
+        CheckConstraint(
+            "application_confidence IS NULL OR "
+            "(application_confidence >= 0 AND application_confidence <= 1)",
+            name='check_application_confidence',
+        ),
         Index(
             'idx_transactions_annotation_article',
             'annotation_article_code',
@@ -200,6 +221,31 @@ class Transaction(Base):
     
     def __repr__(self):
         return f"<Transaction(id={self.id}, date={self.transaction_date}, amount={self.amount} {self.currency})>"
+
+
+#: Who may have written `Transaction.application_mapped`.
+APPLICATION_SOURCES = ('manual', 'import', 'dict', 'rule', 'similar', 'ai')
+
+
+@event.listens_for(Transaction.application_mapped, 'set', active_history=True)
+def _application_changed(target, value, oldvalue, _initiator):
+    """A new application drops the provenance of the old one.
+
+    The column is written in a dozen places (routes, the worker, automation,
+    the Excel sync, the agent). Rather than trust each of them to restamp, a
+    change that does not say where it came from leaves the origin unknown,
+    which is the protected state. While the row is still being built nothing
+    is cleared, so constructor keywords may come in any order.
+
+    `active_history` makes SQLAlchemy read the stored value of a row whose
+    attributes have expired; without it such a change would look like a first
+    assignment and keep a stamp that no longer belongs to the value.
+    """
+    if oldvalue is NO_VALUE or oldvalue is NEVER_SET:
+        return
+    if (value or None) != (oldvalue or None):
+        target.application_src = None
+        target.application_confidence = None
 
 
 class Check(Base):

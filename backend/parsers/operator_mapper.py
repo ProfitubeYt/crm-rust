@@ -7,6 +7,7 @@ import re
 import threading
 import time
 import unicodedata
+from dataclasses import dataclass
 from typing import Optional, List, Tuple, Dict
 
 from sqlalchemy.orm import Session
@@ -18,34 +19,93 @@ from database.models import OperatorReference
 _CACHE_TTL_SECONDS = float(os.getenv("OPERATOR_MAPPER_CACHE_TTL", "120"))
 _cache_lock = threading.Lock()
 _cache_data: List[Tuple[int, str, str, bool]] = []
+_cache_forms: Dict[int, "OperatorForm"] = {}
 _cache_loaded_at: float = 0.0
 
+# CardXabar closes the operator line with a country code: `…, UZ`, and on older
+# receipts `…, 99`. The owner's dictionary was typed from the older ones.
+_COUNTRY_SUFFIX = re.compile(r",\s*(?:[A-Za-z]{2}|\d{2,3})\s*$")
+# HUMO cuts the operator line at 20 characters; a trailing space may be lost.
+_CUT_LENGTHS = (19, 20)
 
-def _load_cache(db_session: Session) -> List[Tuple[int, str, str, bool]]:
+#: How far each kind of dictionary match is trusted. Ordinal, not a probability.
+MATCH_CONFIDENCE: Dict[str, float] = {
+    "exact": 1.0,
+    "variant": 0.95,
+    "truncated": 0.9,
+    "substring": 0.85,
+}
+
+
+@dataclass(frozen=True)
+class OperatorForm:
+    """An operator line reduced to the name it carries.
+
+    The same gateway reaches us as `NBU 2P2 U PLAT UZCARD, 99`, as
+    `NBU 2P2 U PLAT UZCARD, UZ` and, through HUMO, cut at 20 characters with a
+    city after `>`. The country code, the city and the cut say nothing about
+    which application it is.
+    """
+
+    #: `normalize_operator` of the whole line: the key every other module uses.
+    full: str
+    #: Tokens of the name alone, without the country code and the city.
+    tokens: Tuple[str, ...]
+    #: The name itself may have been cut at 20 characters.
+    cut: bool
+
+    @property
+    def key(self) -> str:
+        return " ".join(self.tokens)
+
+
+def operator_form(value: Optional[str]) -> OperatorForm:
+    text = unicodedata.normalize("NFKC", str(value or "")).strip()
+    name = _COUNTRY_SUFFIX.sub("", text)
+    had_country = name != text
+    name, arrow, _city = name.partition(">")
+    return OperatorForm(
+        full=OperatorMapper.normalize_operator(text),
+        tokens=tuple(OperatorMapper.normalize_operator(name).split()),
+        cut=not arrow and not had_country and len(text) in _CUT_LENGTHS,
+    )
+
+
+def _is_cut_of(short: OperatorForm, long: OperatorForm) -> bool:
+    """`short` is `long` cut off: same tokens, the last one broken or the rest missing."""
+    if not short.cut or len(short.tokens) < 2 or len(short.key) < 12:
+        return False
+    count = len(short.tokens)
+    if len(long.tokens) < count or short.tokens[:-1] != long.tokens[:count - 1]:
+        return False
+    last, whole = short.tokens[-1], long.tokens[count - 1]
+    return whole.startswith(last) and (len(whole) > len(last) or len(long.tokens) > count)
+
+
+def _load_cache(db_session: Session) -> Tuple[List[Tuple[int, str, str, bool]], Dict[int, OperatorForm]]:
     rows = (
         db_session.query(OperatorReference)
         .filter(OperatorReference.is_active == True)  # noqa: E712
         .all()
     )
-    return [
-        (
-            row.id,
-            OperatorMapper.normalize_operator(row.operator_name),
-            row.application_name,
-            bool(row.is_p2p),
-        )
-        for row in rows
-        if row.operator_name and row.application_name
-    ]
+    data: List[Tuple[int, str, str, bool]] = []
+    forms: Dict[int, OperatorForm] = {}
+    for row in rows:
+        if not row.operator_name or not row.application_name:
+            continue
+        form = operator_form(row.operator_name)
+        data.append((row.id, form.full, row.application_name, bool(row.is_p2p)))
+        forms[row.id] = form
+    return data, forms
 
 
 def _get_cached(db_session: Session, force: bool = False) -> List[Tuple[int, str, str, bool]]:
-    global _cache_data, _cache_loaded_at
+    global _cache_data, _cache_forms, _cache_loaded_at
     now = time.time()
     with _cache_lock:
         if force or not _cache_data or (now - _cache_loaded_at) > _CACHE_TTL_SECONDS:
             try:
-                _cache_data = _load_cache(db_session)
+                _cache_data, _cache_forms = _load_cache(db_session)
                 _cache_loaded_at = now
             except Exception:  # noqa: BLE001
                 # On failure keep stale cache rather than blowing up the request.
@@ -55,9 +115,10 @@ def _get_cached(db_session: Session, force: bool = False) -> List[Tuple[int, str
 
 def invalidate_operator_mapper_cache() -> None:
     """Force next caller to reload from DB (call this after operator CRUD)."""
-    global _cache_data, _cache_loaded_at
+    global _cache_data, _cache_forms, _cache_loaded_at
     with _cache_lock:
         _cache_data = []
+        _cache_forms = {}
         _cache_loaded_at = 0.0
 
 
@@ -101,12 +162,26 @@ class OperatorMapper:
         """Reload cache from operator_reference (only active rows). Force = bypass TTL."""
         self.mappings_cache = _get_cached(self.db_session, force=True)
 
+    def _form_of(self, ref_id: int, pattern: str) -> OperatorForm:
+        form = _cache_forms.get(ref_id)
+        if form is None or form.full != pattern:
+            # A cache handed over by hand: only the normalized pattern is known.
+            form = OperatorForm(full=pattern, tokens=tuple(pattern.split()), cut=False)
+        return form
+
     def map_operator_details(self, operator_raw: str) -> Optional[Dict]:
         """
         Return mapping details or None.
-        Strategy:
-        1. Exact normalized match
-        2. Substring match; choose longest matched_operator_name
+        Strategy, most specific first:
+        1. exact      the whole normalized line equals a dictionary line
+        2. variant    the same name, differing only in country code or city
+        3. truncated  the same name, one of the two cut at 20 characters
+        4. substring  a dictionary line inside the receipt's; the longest wins
+
+        Tiers 2 and 3 answer only when every dictionary line they reach names
+        the same application; when the lines disagree the result carries no
+        application and lists the `candidates`. `match_type` keeps its two
+        historical values; `match_kind` and `confidence` tell the tiers apart.
         """
         if not operator_raw:
             return None
@@ -115,9 +190,13 @@ class OperatorMapper:
         if not normalized_input:
             return None
 
-        exact_match: Optional[Tuple[int, str, str, bool]] = None
-        best_substring: Optional[Tuple[int, str, str, bool]] = None
+        entry = Tuple[int, str, str, bool]
+        exact_match: Optional[entry] = None
+        best_substring: Optional[entry] = None
         best_len = -1
+        variants: List[entry] = []
+        truncated: List[entry] = []
+        form = operator_form(operator_raw)
 
         for ref_id, pattern, app, is_p2p in self.mappings_cache:
             if not pattern:
@@ -127,25 +206,53 @@ class OperatorMapper:
                 exact_match = (ref_id, pattern, app, is_p2p)
                 break
 
+            known = self._form_of(ref_id, pattern)
+            if form.tokens and form.tokens == known.tokens:
+                variants.append((ref_id, pattern, app, is_p2p))
+            elif _is_cut_of(form, known) or _is_cut_of(known, form):
+                truncated.append((ref_id, pattern, app, is_p2p))
+
             if self._contains_token_sequence(normalized_input, pattern):
                 plen = len(pattern)
                 if plen > best_len:
                     best_len = plen
                     best_substring = (ref_id, pattern, app, is_p2p)
 
-        chosen = exact_match or best_substring
+        chosen, kind = exact_match, "exact"
+        for found, found_kind in ((variants, "variant"), (truncated, "truncated")):
+            if chosen is not None or not found:
+                continue
+            applications = sorted({item[2] for item in found})
+            if len(applications) > 1:
+                # The same name under two applications: the dictionary itself
+                # is undecided, and a looser tier must not decide for it.
+                return {
+                    "reference_id": None,
+                    "matched_operator_name": None,
+                    "application_name": None,
+                    "is_p2p": None,
+                    "match_type": "AMBIGUOUS",
+                    "match_kind": "ambiguous",
+                    "confidence": 0.0,
+                    "candidates": applications,
+                }
+            # The lowest id is the oldest line: a stable choice between runs.
+            chosen, kind = min(found, key=lambda item: item[0]), found_kind
+        if chosen is None:
+            chosen, kind = best_substring, "substring"
         if not chosen:
             return None
 
         ref_id, matched_operator_name, application_name, is_p2p = chosen
-        match_type = "EXACT" if exact_match else "SUBSTRING"
 
         return {
             "reference_id": ref_id,
             "matched_operator_name": matched_operator_name,
             "application_name": application_name,
             "is_p2p": is_p2p,
-            "match_type": match_type,
+            "match_type": "EXACT" if kind == "exact" else "SUBSTRING",
+            "match_kind": kind,
+            "confidence": MATCH_CONFIDENCE[kind],
         }
 
     def map_operator(self, operator_raw: str) -> Optional[str]:

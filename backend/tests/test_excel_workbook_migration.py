@@ -40,9 +40,11 @@ def records(connection) -> list[tuple]:
         "ORDER BY workbook_id")).all()
 
 
-def test_the_names_revision_is_the_only_head_and_follows_device_activation():
+def test_the_names_revision_follows_device_activation_on_a_single_line():
+    # Revision 0033 (application provenance) now follows the names revision, so
+    # the head is asserted where it is added; here: one line, unbroken at 0032.
     script = ScriptDirectory(str(ALEMBIC))
-    assert script.get_heads() == ["20261111_0032"]
+    assert len(script.get_heads()) == 1
     assert script.get_revision("20261111_0032").down_revision == "20260923_0031"
 
 
