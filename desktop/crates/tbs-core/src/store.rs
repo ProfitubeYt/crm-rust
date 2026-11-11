@@ -235,7 +235,7 @@ mod tests {
         let s = Store::open(&path).unwrap();
         assert!(s.load_transactions().unwrap().is_empty());
         assert_eq!(s.checksum().unwrap(), None);
-        assert!(schema_stamp().contains("receiver_card") && schema_stamp().contains("description"));
+        assert!(schema_stamp().contains("receiver_card") && schema_stamp().contains("description") && schema_stamp().contains("excel_bank"));
         // The same build finds its own cache again.
         s.replace_transactions(&[tx(2)], Some("b"), Some("e")).unwrap();
         drop(s);

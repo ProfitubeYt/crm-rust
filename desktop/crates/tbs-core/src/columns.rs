@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use crate::format;
 use crate::model::Transaction;
+use crate::operation;
 use chrono::NaiveDateTime;
 
 /// The dictionaries behind the bookkeeping codes. A row stores `р1`; the
@@ -64,9 +65,12 @@ pub enum Column {
     AnnotationPersonCode,
     AnnotationPeriod,
     AnnotationArticleCode,
+    /// The receipt's own headline. New columns go last, here and in [`ALL`]:
+    /// a view saved before them is recognised by the order of the rest.
+    Operation,
 }
 
-pub const ALL: [Column; 22] = [
+pub const ALL: [Column; 23] = [
     Column::RowNumber,
     Column::OperationNumber,
     Column::DateTime,
@@ -89,6 +93,7 @@ pub const ALL: [Column; 22] = [
     Column::AnnotationPersonCode,
     Column::AnnotationPeriod,
     Column::AnnotationArticleCode,
+    Column::Operation,
 ];
 
 pub const COUNT: usize = ALL.len();
@@ -129,6 +134,7 @@ impl Column {
             Column::AnnotationPersonCode => "Лицо",
             Column::AnnotationPeriod => "Период",
             Column::AnnotationArticleCode => "Статья",
+            Column::Operation => "Операция",
         }
     }
 
@@ -156,6 +162,7 @@ impl Column {
             Column::AnnotationPersonCode => 80.0,
             Column::AnnotationPeriod => 100.0,
             Column::AnnotationArticleCode => 150.0,
+            Column::Operation => 150.0,
         }
     }
 
@@ -203,6 +210,7 @@ impl Column {
             Column::AnnotationPersonCode => "annotation_person_code",
             Column::AnnotationPeriod => "annotation_period",
             Column::AnnotationArticleCode => "annotation_article_code",
+            Column::Operation => "operation",
         }
     }
 
@@ -286,6 +294,8 @@ impl Column {
             Column::AnnotationPersonCode => coded(&tx.annotation_person_code, Labels::person),
             Column::AnnotationPeriod => tx.annotation_period.as_deref().map(format::period).unwrap_or_default(),
             Column::AnnotationArticleCode => coded(&tx.annotation_article_code, Labels::article),
+            // Not the server's wording of the type, which is «Тип»: the line the bank wrote.
+            Column::Operation => operation::display(tx),
         }
     }
 
@@ -379,5 +389,45 @@ mod tests {
         assert_eq!(Column::TransactionType.display(&tx, None, &labels), "OTHER");
         tx.transaction_type = None;
         assert_eq!(Column::TransactionType.display(&tx, None, &labels), format::EMPTY);
+    }
+
+    #[test]
+    fn saved_names_and_places_do_not_move() {
+        // Saved views name columns this way; `ALL` had the first 22 in this order before «Операция».
+        let saved = [
+            "row_number", "operation_number", "date_time", "transaction_date", "time", "day", "operator_raw", "application_mapped",
+            "description", "receiver_name", "receiver_card", "amount", "balance_after", "card_last4", "is_p2p", "transaction_type",
+            "currency", "source_type", "annotation_details", "annotation_person_code", "annotation_period", "annotation_article_code",
+            "operation",
+        ];
+        assert_eq!(serde_json::to_value(ALL).unwrap(), serde_json::json!(saved));
+        // The server's names differ in one place.
+        let wire: Vec<&str> = saved.iter().map(|name| if *name == "card_last4" { "card_last_4" } else { *name }).collect();
+        assert_eq!(ALL.map(Column::id).to_vec(), wire);
+        assert_eq!(Column::Operation.index(), COUNT - 1);
+    }
+
+    #[test]
+    fn the_operation_is_the_receipts_own_line_and_is_not_edited() {
+        let labels = Labels::default();
+        let mut tx = Transaction {
+            raw_message: Some("\u{1f4b8} Оплата\n➖ 40.000,00 UZS".into()),
+            transaction_type: Some("DEBIT".into()),
+            transaction_type_display: Some("Списание".into()),
+            source_display: Some("HUMO Card".into()),
+            ..Default::default()
+        };
+        assert_eq!(Column::Operation.display(&tx, None, &labels), "\u{1f4b8} Оплата");
+        // «Тип» beside it keeps the server's wording.
+        assert_eq!(Column::TransactionType.display(&tx, None, &labels), "Списание");
+        // Without a headline the cell is never empty: the workbook's label stands in.
+        tx.raw_message = Some("[Photo]".into());
+        tx.excel_bank = Some("CardXabar".into());
+        assert_eq!(Column::Operation.display(&tx, None, &labels), "\u{1f534} Списание");
+
+        assert_eq!(Column::Operation.title(), "Операция");
+        assert_eq!((Column::Operation.edit_field(), Column::Operation.raw_value(&tx)), (None, String::new()));
+        assert!(Column::Operation.sortable() && !Column::Operation.is_positional() && !Column::Operation.is_labelled());
+        assert_eq!(Column::Operation.align(), Align::Left);
     }
 }

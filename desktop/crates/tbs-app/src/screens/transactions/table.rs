@@ -18,7 +18,52 @@ pub const QUIET: [Column; 4] = [Column::TransactionDate, Column::Time, Column::D
 /// A fresh table reads like the customer's ledger, column for column: service,
 /// operation, operator, application, money, card, then the bookkeeping notes,
 /// and the receiver last. People check one against the other side by side.
+/// «Тип» is the one column the ledger does not have: the server's word for
+/// the operation, kept beside the bank's own.
 pub fn default_order() -> Vec<Column> {
+    let ledger = [
+        Column::RowNumber,
+        Column::OperationNumber,
+        Column::DateTime,
+        Column::SourceType,
+        Column::Operation,
+        Column::TransactionType,
+        Column::OperatorRaw,
+        Column::ApplicationMapped,
+        Column::Amount,
+        Column::BalanceAfter,
+        Column::CardLast4,
+        Column::IsP2p,
+        Column::AnnotationDetails,
+        Column::AnnotationPersonCode,
+        Column::AnnotationPeriod,
+        Column::AnnotationArticleCode,
+        Column::Currency,
+        Column::ReceiverName,
+        Column::ReceiverCard,
+    ];
+    let mut order = ledger.to_vec();
+    order.extend(columns::ALL.iter().copied().filter(|c| !ledger.contains(c)));
+    order
+}
+
+/// Which arrangement of the defaults a saved view was made under.
+pub const LAYOUT: u32 = 3;
+
+/// What a fresh table looked like before it followed the ledger: four columns
+/// that are nearly always empty came first and pushed the notes off the screen.
+///
+/// Like every earlier layout, this is the view as `repair` hands it over: the
+/// columns that came later stand at the end, where `columns::ALL` has them.
+fn first_layout() -> (Vec<Column>, [Column; 5]) {
+    let lead = [Column::RowNumber, Column::OperationNumber, Column::DateTime, Column::OperatorRaw, Column::Amount, Column::TransactionType];
+    let mut order = lead.to_vec();
+    order.extend(columns::ALL.iter().copied().filter(|c| !lead.contains(c)));
+    (order, [Column::TransactionDate, Column::Time, Column::Day, Column::Currency, Column::SourceType])
+}
+
+/// The ledger layout of the builds that had no «Операция»: «Тип» stood in its place.
+fn second_layout() -> (Vec<Column>, [Column; 4]) {
     let ledger = [
         Column::RowNumber,
         Column::OperationNumber,
@@ -41,19 +86,7 @@ pub fn default_order() -> Vec<Column> {
     ];
     let mut order = ledger.to_vec();
     order.extend(columns::ALL.iter().copied().filter(|c| !ledger.contains(c)));
-    order
-}
-
-/// Which arrangement of the defaults a saved view was made under.
-pub const LAYOUT: u32 = 2;
-
-/// What a fresh table looked like before it followed the ledger: four columns
-/// that are nearly always empty came first and pushed the notes off the screen.
-fn first_layout() -> (Vec<Column>, [Column; 5]) {
-    let lead = [Column::RowNumber, Column::OperationNumber, Column::DateTime, Column::OperatorRaw, Column::Amount, Column::TransactionType];
-    let mut order = lead.to_vec();
-    order.extend(columns::ALL.iter().copied().filter(|c| !lead.contains(c)));
-    (order, [Column::TransactionDate, Column::Time, Column::Day, Column::Currency, Column::SourceType])
+    (order, [Column::TransactionDate, Column::Time, Column::Day, Column::Description])
 }
 
 pub const LOW_CONFIDENCE: f64 = 0.6;
@@ -270,6 +303,7 @@ impl TableView {
             seen.push(*c);
             fresh
         });
+        let knew_operation = self.order.contains(&Column::Operation);
         for column in columns::ALL {
             if !self.order.contains(&column) {
                 self.order.push(column);
@@ -277,22 +311,35 @@ impl TableView {
         }
         self.hidden.retain(|c| *c != LOCKED);
         self.pinned = self.pinned.min(MAX_PINNED);
-        self.adopt_ledger_layout();
+        self.adopt_ledger_layout(knew_operation);
     }
 
     /// A view nobody rearranged gets the ledger layout once. One that was
-    /// arranged by hand is the user's own and stays as it is.
-    fn adopt_ledger_layout(&mut self) {
+    /// arranged by hand is the user's own and stays as it is: «Операция», which
+    /// it was saved without, waits hidden at the end, a tick away in the view panel.
+    fn adopt_ledger_layout(&mut self, knew_operation: bool) {
         if self.layout >= LAYOUT {
             return;
         }
+        let untouched = if self.layout < 2 {
+            let (order, hidden) = first_layout();
+            self.has_layout(&order, &hidden)
+        } else {
+            let (order, hidden) = second_layout();
+            self.has_layout(&order, &hidden)
+        };
         self.layout = LAYOUT;
-        let (order, hidden) = first_layout();
-        let untouched = self.order == order && self.hidden.len() == hidden.len() && hidden.iter().all(|c| self.hidden.contains(c));
         if untouched {
             self.order = default_order();
             self.hidden = QUIET.to_vec();
+        } else if !knew_operation && !self.hidden.contains(&Column::Operation) {
+            self.hidden.push(Column::Operation);
         }
+    }
+
+    /// The same columns in the same places, and the same ones hidden.
+    fn has_layout(&self, order: &[Column], hidden: &[Column]) -> bool {
+        self.order == order && self.hidden.len() == hidden.len() && hidden.iter().all(|c| self.hidden.contains(c))
     }
 
     /// The ledger's order and set of columns, keeping widths, paint and filters.
@@ -422,11 +469,13 @@ mod tests {
         let visible = view.visible();
         // The workbook's own order: Сервис, Операция, Оператор, Приложение, Сумма,
         // Остаток, ПК, p2p, Подробности, Лицо, Период, Статья, Валюта, Получатель, Карта.
+        // «Тип» is ours, and stands next to the «Операция» it words.
         let ledger = [
             Column::RowNumber,
             Column::OperationNumber,
             Column::DateTime,
             Column::SourceType,
+            Column::Operation,
             Column::TransactionType,
             Column::OperatorRaw,
             Column::ApplicationMapped,
@@ -483,6 +532,149 @@ mod tests {
         shown.repair();
         assert_eq!(shown.order, order);
         assert_eq!(shown.hidden, [Column::Time]);
+    }
+
+    /// The default view of the first builds, by the names it has on disk.
+    fn first_view_on_disk() -> serde_json::Value {
+        serde_json::json!({
+            "order": [
+                "row_number", "operation_number", "date_time", "operator_raw", "amount", "transaction_type", "transaction_date", "time",
+                "day", "application_mapped", "description", "receiver_name", "receiver_card", "balance_after", "card_last4", "is_p2p",
+                "currency", "source_type", "annotation_details", "annotation_person_code", "annotation_period", "annotation_article_code",
+            ],
+            "hidden": ["transaction_date", "time", "day", "currency", "source_type"],
+        })
+    }
+
+    /// The default view of the builds that followed the ledger and had no «Операция» yet.
+    fn ledger_view_on_disk() -> serde_json::Value {
+        serde_json::json!({
+            "layout": 2,
+            "order": [
+                "row_number", "operation_number", "date_time", "source_type", "transaction_type", "operator_raw", "application_mapped", "amount",
+                "balance_after", "card_last4", "is_p2p", "annotation_details", "annotation_person_code", "annotation_period", "annotation_article_code", "currency",
+                "receiver_name", "receiver_card", "transaction_date", "time", "day", "description",
+            ],
+            "hidden": ["transaction_date", "time", "day", "description"],
+        })
+    }
+
+    fn read(saved: &serde_json::Value) -> TableView {
+        serde_json::from_value(saved.clone()).unwrap()
+    }
+
+    #[test]
+    fn the_views_on_disk_are_the_layouts_they_were_saved_under() {
+        let then = |order: Vec<Column>| serde_json::json!(order.into_iter().filter(|c| *c != Column::Operation).collect::<Vec<_>>());
+        assert_eq!(first_view_on_disk()["order"], then(first_layout().0));
+        assert_eq!(first_view_on_disk()["hidden"], serde_json::json!(first_layout().1));
+        assert_eq!(ledger_view_on_disk()["order"], then(second_layout().0));
+        assert_eq!(ledger_view_on_disk()["hidden"], serde_json::json!(second_layout().1));
+        // Each of them ends, once repaired, with the column it was saved without.
+        assert_eq!(first_layout().0.last(), Some(&Column::Operation));
+        assert_eq!(second_layout().0.last(), Some(&Column::Operation));
+    }
+
+    #[test]
+    fn an_untouched_ledger_view_gets_the_operation_column_once() {
+        let mut saved = ledger_view_on_disk();
+        saved["pinned"] = 2.into();
+        saved["widths"] = serde_json::json!({ "amount": 140.0 });
+        saved["sort"] = serde_json::json!({ "column": "transaction_type", "descending": true });
+        let mut view = read(&saved);
+        assert_eq!((view.layout, view.order.len()), (2, columns::COUNT - 1));
+        view.repair();
+        assert_eq!(view.order, default_order());
+        assert_eq!(view.hidden, QUIET);
+        // «Операция» stands where the ledger has it, shown, with «Тип» after it.
+        assert_eq!(view.visible()[3..6], [Column::SourceType, Column::Operation, Column::TransactionType]);
+        // What the user did set survives the move.
+        assert_eq!((view.pinned, view.width(Column::Amount)), (2, 140.0));
+        assert_eq!(view.sort, Sort { column: Column::TransactionType, descending: true });
+        assert_eq!(view.layout, LAYOUT);
+
+        // Saved and opened again, nothing more happens.
+        let mut reopened = read(&serde_json::to_value(&view).unwrap());
+        reopened.repair();
+        assert_eq!(reopened, view);
+        // And it is not done twice: putting the column back at the end, or away, is now a choice.
+        let (order, hidden) = second_layout();
+        let mut chosen = TableView { order: order.clone(), hidden: hidden.to_vec(), ..view.clone() };
+        chosen.repair();
+        assert_eq!((chosen.order, chosen.hidden), (order, hidden.to_vec()));
+        let mut put_away = TableView { hidden: [QUIET.to_vec(), vec![Column::Operation]].concat(), ..view };
+        put_away.repair();
+        assert_eq!(put_away.order, default_order());
+        assert!(!put_away.visible().contains(&Column::Operation));
+    }
+
+    #[test]
+    fn a_ledger_view_arranged_by_hand_keeps_its_columns() {
+        let mut moved = ledger_view_on_disk();
+        moved["order"].as_array_mut().unwrap().swap(4, 5);
+        let mut shown = ledger_view_on_disk();
+        shown["hidden"] = serde_json::json!(["transaction_date", "time", "day"]);
+        let mut put_away = ledger_view_on_disk();
+        put_away["hidden"].as_array_mut().unwrap().push("currency".into());
+        let mut all_shown = ledger_view_on_disk();
+        all_shown["hidden"] = serde_json::json!([]);
+
+        for saved in [moved, shown, put_away, all_shown] {
+            let before = read(&saved);
+            let mut view = before.clone();
+            view.repair();
+            // Exactly the columns it showed, in the places it showed them.
+            assert_eq!(view.visible(), before.visible(), "{saved}");
+            assert_eq!(view.order[..before.order.len()], before.order[..], "{saved}");
+            // The new column waits at the end, unticked, for the view panel.
+            assert_eq!(view.order[before.order.len()..], [Column::Operation], "{saved}");
+            assert_eq!(view.hidden, [before.hidden.clone(), vec![Column::Operation]].concat(), "{saved}");
+            assert_eq!(view.layout, LAYOUT);
+
+            // Ticked there, it shows after the user's own columns and stays shown.
+            view.hidden.retain(|c| *c != Column::Operation);
+            let ticked = view.clone();
+            let mut reopened = read(&serde_json::to_value(&view).unwrap());
+            reopened.repair();
+            assert_eq!(reopened, ticked, "{saved}");
+            assert_eq!(reopened.visible().last(), Some(&Column::Operation), "{saved}");
+        }
+    }
+
+    #[test]
+    fn the_first_builds_view_moves_to_the_ledger_layout_as_it_stands_on_disk() {
+        let mut saved = first_view_on_disk();
+        saved["density"] = "compact".into();
+        let mut view = read(&saved);
+        assert_eq!((view.layout, view.order.len()), (0, columns::COUNT - 1));
+        view.repair();
+        assert_eq!(view.order, default_order());
+        assert_eq!(view.hidden, QUIET);
+        assert!(view.visible().contains(&Column::Operation));
+        assert_eq!((view.density, view.layout), (Density::Compact, LAYOUT));
+
+        // Arranged by hand, it is the user's own: nothing moves and nothing new shows.
+        let mut by_hand = first_view_on_disk();
+        by_hand["hidden"] = serde_json::json!(["time"]);
+        let before = read(&by_hand);
+        let mut view = before.clone();
+        view.repair();
+        assert_eq!(view.visible(), before.visible());
+        assert_eq!(view.order[..before.order.len()], before.order[..]);
+        assert_eq!(view.order[before.order.len()..], [Column::Operation]);
+        assert_eq!(view.hidden, [Column::Time, Column::Operation]);
+        assert_eq!(view.layout, LAYOUT);
+    }
+
+    #[test]
+    fn a_view_saved_without_its_columns_reads_as_a_fresh_one() {
+        // Only settings on disk: the order is today's, so «Операция» is already in its place.
+        let mut bare: TableView = serde_json::from_str(r#"{"pinned":1}"#).unwrap();
+        bare.repair();
+        assert_eq!((bare.order, bare.hidden, bare.layout), (default_order(), QUIET.to_vec(), LAYOUT));
+        let mut fresh = TableView::default();
+        fresh.repair();
+        assert_eq!(fresh, TableView::default());
     }
 
     #[test]

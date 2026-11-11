@@ -9,16 +9,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote, urlsplit
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import or_
@@ -32,12 +35,14 @@ from database.excel_sync_models import ExcelSyncActivation, ExcelSyncGrant
 from services.access_control_service import (
     config_scope_to_public_dict, hash_password, is_datetime_allowed, verify_password, write_audit_log,
 )
+from services import excel_workbook_builder as workbook_builder
 from services.excel_sync_service import apply_operation, serialize_record
 from services.root_access_config_service import (
     get_config_scopes, is_system_blocked, system_access_enforced,
 )
 from services.user_service import build_permissions_snapshot
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/excel", tags=["Excel"])
 _dashboard_user = dependencies.require_tab_access("dashboard")
 GRANT_ENDPOINTS = frozenset({"/api/excel/v1/snapshot", "/api/excel/v1/sync", "/api/excel/v1/device",
@@ -46,6 +51,10 @@ DEVICE_ID = re.compile(r"^[A-Za-z0-9._:{}-]{8,128}$")
 ACTIVATION_ATTEMPTS = 5
 ACTIVATION_LOCKOUT = timedelta(minutes=15)
 MAX_ACTIVE_GRANTS = 20
+MAX_WORKBOOKS = 20
+WORKBOOK_NAME_MAX = 80
+WORKBOOK_MEDIA_TYPE = "application/vnd.ms-excel.sheet.macroEnabled.12"
+WORKBOOK_FILENAME = "Чеки — синхронизация"
 
 
 def _now() -> datetime:
@@ -318,7 +327,26 @@ class ActivationPassword(BaseModel):
 
 def _activation_public(row: ExcelSyncActivation) -> dict:
     locked = row.locked_until if row.locked_until and _naive_utc(row.locked_until) > _now() else None
-    return {"workbook_id": row.workbook_id, "updated_at": _iso(row.updated_at), "locked_until": _iso(locked)}
+    return {"workbook_id": row.workbook_id, "name": row.name, "created_at": _iso(row.created_at),
+            "updated_at": _iso(row.updated_at), "locked_until": _iso(locked)}
+
+
+def _owned_workbook(db: Session, uid: int, workbook_id: str, *,
+                    lock: bool = False) -> tuple[bool, Optional[ExcelSyncActivation]]:
+    """Whether this user manages the workbook, and its password record if there is one.
+
+    A workbook with a password record belongs to that record's user alone: they
+    made it here, or protected it. Without a record it belongs to a user whose
+    grant is bound to it.
+    """
+    query = db.query(ExcelSyncActivation).filter(ExcelSyncActivation.workbook_id == workbook_id)
+    row = (query.with_for_update() if lock else query).first()
+    if row is not None:
+        return (True, row) if row.user_id == uid else (False, None)
+    bound = db.query(ExcelSyncGrant.id).filter(
+        ExcelSyncGrant.user_id == uid, ExcelSyncGrant.workbook_id == workbook_id,
+    ).first()
+    return bound is not None, None
 
 
 @router.get("/activations")
@@ -326,7 +354,8 @@ async def list_activations(
     response: Response, db: Session = Depends(get_db_session), current_user: dict = Depends(_dashboard_user),
 ):
     uid = int(current_user.get("id") or current_user.get("user_id") or 0)
-    rows = db.query(ExcelSyncActivation).filter(ExcelSyncActivation.user_id == uid).all()
+    rows = db.query(ExcelSyncActivation).filter(ExcelSyncActivation.user_id == uid).order_by(
+        ExcelSyncActivation.created_at.desc(), ExcelSyncActivation.workbook_id).all()
     response.headers["Cache-Control"] = "no-store"
     return {"activations": [_activation_public(row) for row in rows]}
 
@@ -337,7 +366,7 @@ async def set_activation_password(
     db: Session = Depends(get_db_session), current_user: dict = Depends(_dashboard_user),
     scope: Optional[dict] = Depends(dependencies.require_transactions_scope),
 ):
-    """Protect a workbook this user already connected; new computers must enter the password."""
+    """Protect a workbook this user made or connected; new computers must enter the password."""
     uid = int(current_user.get("id") or current_user.get("user_id") or 0)
     user_row = db.query(User).filter(User.id == uid).with_for_update().populate_existing().first()
     if user_row is None:
@@ -346,15 +375,8 @@ async def set_activation_password(
     if not payload.password.strip():
         raise HTTPException(422, "password_required")
     workbook_id = str(payload.workbook_id)
-    owned = db.query(ExcelSyncGrant.id).filter(
-        ExcelSyncGrant.user_id == uid, ExcelSyncGrant.workbook_id == workbook_id,
-    ).first()
-    if owned is None:
-        raise HTTPException(404, "workbook_not_found")
-    row = db.query(ExcelSyncActivation).filter(
-        ExcelSyncActivation.workbook_id == workbook_id,
-    ).with_for_update().first()
-    if row is not None and row.user_id != uid:
+    owned, row = _owned_workbook(db, uid, workbook_id, lock=True)
+    if not owned:
         raise HTTPException(404, "workbook_not_found")
     digest, salt = hash_password(payload.password)
     if row is None:
@@ -388,6 +410,130 @@ async def remove_activation_password(
                     ip_address=tx_api._request_ip(request), details={"workbook_id": str(workbook_id)})
     db.commit()
     return {"ok": True}
+
+
+def _refused(status: int, code: str, message: str) -> HTTPException:
+    # A code in detail.error survives the application's error envelope, which
+    # replaces a bare string with one generic code per status.
+    return HTTPException(status, {"error": code, "message": message})
+
+
+def _workbook_server_url(request: Request, requested: Optional[str]) -> str:
+    """The address written into a workbook file.
+
+    EXCEL_SYNC_PUBLIC_URL decides when it is set, whatever the client sent.
+    Otherwise it is the address the client says it uses, accepted only for the
+    host this very request came to, or failing that the request's own address.
+    """
+    configured = os.getenv("EXCEL_SYNC_PUBLIC_URL", "").strip()
+    try:
+        if configured:
+            return workbook_builder.normalize_server_url(configured)
+        if not (requested or "").strip():
+            return workbook_builder.normalize_server_url(str(request.base_url))
+    except workbook_builder.InvalidServerUrl as exc:
+        logger.warning("No usable Excel workbook address (EXCEL_SYNC_PUBLIC_URL %s): %s",
+                       "is set" if configured else "is not set", exc)
+        raise _refused(503, "excel_public_url_not_configured",
+                       "Set EXCEL_SYNC_PUBLIC_URL to the https address workbooks reach this server by.")
+    try:
+        url = workbook_builder.normalize_server_url(requested)
+    except workbook_builder.InvalidServerUrl as exc:
+        raise _refused(422, "invalid_server_url", f"The workbook cannot use this server address: {exc}.")
+    # A crafted link must not aim someone's workbook, and the password typed
+    # into it, at another server.
+    if urlsplit(url).hostname != (request.url.hostname or "").lower():
+        raise _refused(422, "invalid_server_url", "server_url must be the address of this server.")
+    return url
+
+
+def _configured_workbook(workbook_id: str, server_url: str, owner_id: int) -> bytes:
+    try:
+        template = workbook_builder.TEMPLATE_PATH.read_bytes()
+    except OSError:
+        raise _refused(503, "excel_workbook_not_built", "The Excel workbook template is not installed.")
+    try:
+        return workbook_builder.configure_workbook(
+            template, workbook_id=workbook_id, server_url=server_url, owner_id=owner_id)
+    except workbook_builder.WorkbookTemplateError as exc:
+        logger.error("The Excel workbook template cannot be configured: %s", exc)
+        raise _refused(503, "excel_workbook_template_invalid", "The Excel workbook template cannot be configured.")
+
+
+def _workbook_attachment(name: Optional[str]) -> str:
+    # Characters Windows refuses in a file name, and invisible ones, become spaces.
+    kept = "".join(" " if ch in '<>:"/\\|?*' or unicodedata.category(ch).startswith("C") else ch
+                   for ch in name or "")
+    filename = (" ".join(kept.split()).strip(". ") or WORKBOOK_FILENAME) + ".xlsm"
+    encoded = quote(filename)
+    if encoded == filename:
+        return f'attachment; filename="{filename}"'
+    return f"attachment; filename*=utf-8''{encoded}"
+
+
+class WorkbookCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=200)
+    password: str = Field(min_length=8, max_length=128)
+    server_url: Optional[str] = Field(default=None, max_length=2048)
+
+
+@router.post("/workbooks", status_code=201)
+async def create_workbook(
+    payload: WorkbookCreate, request: Request, response: Response,
+    db: Session = Depends(get_db_session), current_user: dict = Depends(_dashboard_user),
+    scope: Optional[dict] = Depends(dependencies.require_transactions_scope),
+):
+    """Make a workbook whose file needs nothing but its password typed in Excel.
+
+    The workbook is its password record: it exists before any computer holds a
+    grant, so the first activation needs no earlier connection.
+    """
+    uid = int(current_user.get("id") or current_user.get("user_id") or 0)
+    user_row = db.query(User).filter(User.id == uid).with_for_update().populate_existing().first()
+    if user_row is None:
+        raise HTTPException(401, "registered_user_required")
+    user = _check_user(user_row)
+    name = " ".join(payload.name.split())
+    if not name or len(name) > WORKBOOK_NAME_MAX or any(unicodedata.category(ch) == "Cc" for ch in name):
+        raise _refused(422, "workbook_name_invalid", f"The name must have 1 to {WORKBOOK_NAME_MAX} characters.")
+    if not payload.password.strip():
+        raise _refused(422, "password_required", "The password cannot be blank.")
+    if db.query(ExcelSyncActivation).filter(ExcelSyncActivation.user_id == uid).count() >= MAX_WORKBOOKS:
+        raise _refused(409, "too_many_excel_workbooks", "Remove the passwords of workbooks no longer in use.")
+    server_url = _workbook_server_url(request, payload.server_url)
+    captured = _capture_scope(db, scope)
+    workbook_id = str(uuid.uuid4())
+    # Build the file before storing anything: a workbook that cannot be handed
+    # out must not leave a record behind.
+    _configured_workbook(workbook_id, server_url, uid)
+    digest, salt = hash_password(payload.password)
+    now = _now()
+    row = ExcelSyncActivation(workbook_id=workbook_id, user_id=uid, name=name, password_hash=digest, salt=salt,
+                              permissions_version=user["permissions_version"], scope=captured,
+                              failed_attempts=0, created_at=now, updated_at=now)
+    db.add(row)
+    write_audit_log(db, action="excel_workbook_created", success=True, user_id=uid,
+                    ip_address=tx_api._request_ip(request), details={"workbook_id": workbook_id, "name": name})
+    db.commit()
+    response.headers["Cache-Control"] = "no-store"
+    return {"workbook": _activation_public(row), "server_url": server_url}
+
+
+@router.get("/workbooks/{workbook_id}/file")
+async def download_configured_workbook(
+    workbook_id: uuid.UUID, request: Request, server_url: Optional[str] = Query(None, max_length=2048),
+    db: Session = Depends(get_db_session), current_user: dict = Depends(_dashboard_user),
+):
+    """The owner's workbook file, as often as needed: it holds no key and no
+    password, so every computer that opens it still has to be activated."""
+    uid = int(current_user.get("id") or current_user.get("user_id") or 0)
+    owned, row = _owned_workbook(db, uid, str(workbook_id))
+    if not owned:
+        raise _refused(404, "workbook_not_found", "No such workbook among yours.")
+    content = _configured_workbook(str(workbook_id), _workbook_server_url(request, server_url), uid)
+    return Response(content=content, media_type=WORKBOOK_MEDIA_TYPE, headers={
+        "Cache-Control": "no-store", "Content-Disposition": _workbook_attachment(row.name if row else None)})
 
 
 @router.post("/v1/activate", status_code=201)

@@ -41,6 +41,8 @@ pub struct Transaction {
     pub source_chat_id: Option<i64>,
     pub source_chat_title: Option<String>,
     pub source_origin_type: Option<String>,
+    /// The bank a row was given by hand in the workbook: `CardXabar` or `HUMO Card`.
+    pub excel_bank: Option<String>,
     pub parsing_method: Option<String>,
     pub parsing_confidence: Option<f64>,
     #[serde(deserialize_with = "null_default")]
@@ -141,6 +143,20 @@ mod tests {
         assert_eq!(a.balance_after.as_deref(), Some("12.5"));
         let b: Transaction = serde_json::from_str(r#"{"id":2,"amount":null}"#).unwrap();
         assert_eq!(b.amount, None);
+    }
+
+    #[test]
+    fn the_given_bank_is_optional() {
+        // A server that does not send the field yet, one that sends null, one that sends it.
+        let absent: Transaction = serde_json::from_str(r#"{"id":1,"source_display":"Телеграм"}"#).unwrap();
+        assert_eq!(absent.excel_bank, None);
+        let null: Transaction = serde_json::from_str(r#"{"id":2,"excel_bank":null}"#).unwrap();
+        assert_eq!(null.excel_bank, None);
+        let given: Transaction = serde_json::from_str(r#"{"id":3,"excel_bank":"HUMO Card"}"#).unwrap();
+        assert_eq!(given.excel_bank.as_deref(), Some("HUMO Card"));
+        // The cache writes the field out even when empty: that is how a cache from before it is told apart.
+        assert!(serde_json::to_value(&absent).unwrap().as_object().unwrap().contains_key("excel_bank"));
+        assert_eq!(serde_json::from_value::<Transaction>(serde_json::to_value(&given).unwrap()).unwrap(), given);
     }
 
     #[test]

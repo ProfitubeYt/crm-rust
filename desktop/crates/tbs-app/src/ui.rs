@@ -148,6 +148,12 @@ pub fn btn_icon<'a, M: Clone + 'a>(
     styled(button(container(body).center_y(Fill)), kind).padding([0.0, gap::MD - 2.0]).height(control::MD).on_press_maybe(on_press)
 }
 
+/// A quiet text action for a line that has its buttons already: «Очистить»,
+/// «Сбросить всё». As tall as a chip, so it sits in a row of them.
+pub fn link<'a, M: Clone + 'a>(value: impl text::IntoFragment<'a>, on_press: Option<M>) -> button::Button<'a, M> {
+    button(text(value).size(size::SM).font(theme::FONT_MEDIUM)).padding([gap::XS, gap::SM]).style(theme::btn_link).on_press_maybe(on_press)
+}
+
 /// A square icon button with a tooltip, because the glyph alone may not be enough.
 pub fn icon_btn<'a, M: Clone + 'a>(glyph: Icon, hint: &'a str, on_press: Option<M>) -> El<'a, M> {
     let b = button(center(icon(glyph, 16.0)))
@@ -183,6 +189,16 @@ pub fn secret_input<'a, M: Clone + 'a>(placeholder: &str, value: &str) -> text_i
 /// A labelled form row; the error, when present, sits under the control.
 pub fn field<'a, M: 'a>(caption: &'a str, control: impl Into<El<'a, M>>) -> Column<'a, M> {
     column![muted(caption), control.into()].spacing(gap::XS)
+}
+
+/// The same row for a value that may be wrong: what is wrong stands right
+/// under the control, not at the end of the form.
+pub fn field_checked<'a, M: 'a>(caption: &'a str, control: impl Into<El<'a, M>>, problem: Option<&'a str>) -> Column<'a, M> {
+    let row = field(caption, control);
+    match problem {
+        Some(reason) => row.push(error_line(reason)),
+        None => row,
+    }
 }
 
 pub fn select<'a, T, M>(
@@ -306,6 +322,12 @@ pub fn sheet_panel<'a, M: Clone + 'a>(
     footer: Option<El<'a, M>>,
 ) -> El<'a, M> {
     let head = column![faint(eyebrow), dialog_title(name, Some(on_close)), muted(hint)].spacing(gap::XS);
+    sheet_frame(head, body, footer)
+}
+
+/// A side sheet from its parts, for one whose head is more than a name: tabs,
+/// a mark beside the title. The head and the foot stay; the body scrolls.
+pub fn sheet_frame<'a, M: 'a>(head: impl Into<El<'a, M>>, body: impl Into<El<'a, M>>, footer: Option<El<'a, M>>) -> El<'a, M> {
     let mut panel = column![
         container(head).padding([gap::LG, gap::XL]).width(Fill),
         divider(),
@@ -317,6 +339,32 @@ pub fn sheet_panel<'a, M: Clone + 'a>(
     panel.height(Fill).into()
 }
 
+/// The head of a side sheet with room for a mark beside its name, such as «не применено».
+pub fn sheet_head<'a, M: Clone + 'a>(
+    eyebrow: impl text::IntoFragment<'a>,
+    name: impl text::IntoFragment<'a>,
+    mark: Option<El<'a, M>>,
+    hint: impl text::IntoFragment<'a>,
+    on_close: M,
+) -> El<'a, M> {
+    let mut line = row![text(name).size(size::LG).font(theme::FONT_BOLD)].spacing(gap::SM).align_y(Alignment::Center);
+    if let Some(mark) = mark {
+        line = line.push(mark);
+    }
+    line = line.push(fill()).push(icon_btn(Icon::Close, "Закрыть", Some(on_close)));
+    column![faint(eyebrow), line, muted(hint)].spacing(gap::XS).into()
+}
+
+/// The foot of a side sheet: what is going on, above a line of actions with
+/// the quiet ones on the left and the ones that close the sheet on the right.
+pub fn sheet_foot<'a, M: 'a>(status: Option<El<'a, M>>, left: Vec<El<'a, M>>, right: Vec<El<'a, M>>) -> El<'a, M> {
+    let actions = Row::with_children(left).push(fill()).extend(right).spacing(gap::SM).align_y(Alignment::Center);
+    match status {
+        Some(status) => column![status, actions].spacing(gap::SM).into(),
+        None => actions.into(),
+    }
+}
+
 /// A titled group inside a sheet.
 pub fn section<'a, M: 'a>(name: impl text::IntoFragment<'a>, content: impl Into<El<'a, M>>) -> El<'a, M> {
     column![strong(name), content.into()].spacing(gap::SM).width(Fill).into()
@@ -325,6 +373,200 @@ pub fn section<'a, M: 'a>(name: impl text::IntoFragment<'a>, content: impl Into<
 /// A small toggle in a row of choices.
 pub fn chip<'a, M: Clone + 'a>(caption: impl text::IntoFragment<'a>, active: bool, on_press: M) -> El<'a, M> {
     button(text(caption).size(size::SM)).padding([gap::XS, gap::SM]).style(theme::btn_chip(active)).on_press(on_press).into()
+}
+
+/// A line of chips that runs on to the next line instead of pushing the page wider.
+pub fn chip_row<'a, M: 'a>(chips: Vec<El<'a, M>>) -> El<'a, M> {
+    Row::with_children(chips).spacing(gap::XS).align_y(Alignment::Center).wrap().vertical_spacing(gap::XS).into()
+}
+
+/// Something that is on and can be taken off: its words open it, its cross removes it.
+pub fn tag<'a, M: Clone + 'a>(caption: impl text::IntoFragment<'a>, on_press: Option<M>, on_remove: Option<M>) -> El<'a, M> {
+    let words = button(text(caption).size(size::SM).wrapping(text::Wrapping::None))
+        .padding([gap::XS - 1.0, gap::SM])
+        .style(theme::btn_tag)
+        .on_press_maybe(on_press);
+    let cross = button(center(icon_tone(Icon::Close, 12.0, Tone::Accent)))
+        .width(TAG_CROSS)
+        .height(TAG_CROSS)
+        .padding(0)
+        .style(theme::btn_tag)
+        .on_press_maybe(on_remove);
+    // One pixel in, so a lit half does not paint over the outline.
+    container(row![words, hint_on(cross, "Убрать")].align_y(Alignment::Center)).padding(1).style(theme::tag).into()
+}
+
+const TAG_CROSS: f32 = 22.0;
+const FOLD_GLYPH: f32 = 16.0;
+
+/// A group of a sheet that folds to one line: its name, what is chosen in it,
+/// and a way to clear it. Built with [`fold`].
+pub struct Fold<'a, M> {
+    name: &'a str,
+    open: bool,
+    on_toggle: M,
+    hint: &'a str,
+    summary: Option<String>,
+    count: usize,
+    marks: Vec<(&'a str, Tone)>,
+    on_clear: Option<M>,
+    body: Option<El<'a, M>>,
+}
+
+pub fn fold<'a, M: Clone + 'a>(name: &'a str, open: bool, on_toggle: M) -> Fold<'a, M> {
+    Fold { name, open, on_toggle, hint: "", summary: None, count: 0, marks: Vec::new(), on_clear: None, body: None }
+}
+
+impl<'a, M: Clone + 'a> Fold<'a, M> {
+    /// What the folded line says while nothing is chosen.
+    pub fn hint(mut self, hint: &'a str) -> Self {
+        self.hint = hint;
+        self
+    }
+
+    /// What is chosen, in one line. Shown while the group is folded.
+    pub fn summary(mut self, summary: Option<String>) -> Self {
+        self.summary = summary;
+        self
+    }
+
+    /// How many things are chosen. A group with any is edged and says how many.
+    pub fn count(mut self, count: usize) -> Self {
+        self.count = count;
+        self
+    }
+
+    /// A word beside the name: «изменено», «ошибка».
+    pub fn mark(mut self, word: &'a str, tone: Tone) -> Self {
+        self.marks.push((word, tone));
+        self
+    }
+
+    /// «Очистить» at the end of the line; `None` leaves it out.
+    pub fn on_clear(mut self, on_clear: Option<M>) -> Self {
+        self.on_clear = on_clear;
+        self
+    }
+
+    /// Drawn only while the group is open.
+    pub fn body(mut self, body: impl Into<El<'a, M>>) -> Self {
+        self.body = Some(body.into());
+        self
+    }
+}
+
+impl<'a, M: Clone + 'a> From<Fold<'a, M>> for El<'a, M> {
+    fn from(fold: Fold<'a, M>) -> Self {
+        let glyph = if fold.open { Icon::ChevronDown } else { Icon::ChevronRight };
+        let mut name = row![icon(glyph, FOLD_GLYPH), strong(fold.name)].spacing(gap::SM).align_y(Alignment::Center);
+        if fold.count > 0 {
+            name = name.push(badge(fold.count.to_string(), Tone::Accent));
+        }
+        for (word, tone) in fold.marks {
+            name = name.push(badge(word, tone));
+        }
+        let toggle = button(name).width(Fill).padding(gap::SM).style(theme::btn_option(false)).on_press(fold.on_toggle);
+        let mut head = row![toggle].spacing(gap::XS).align_y(Alignment::Center);
+        if let Some(on_clear) = fold.on_clear {
+            head = head.push(link("Очистить", Some(on_clear)));
+        }
+        let mut block = column![head];
+        if !fold.open {
+            let line: El<'a, M> = match fold.summary {
+                Some(summary) => text(summary).size(size::SM).wrapping(text::Wrapping::None).into(),
+                None => faint(fold.hint).into(),
+            };
+            // Under the name, not under the arrow.
+            let inset = Padding { top: 0.0, right: gap::SM, bottom: gap::SM, left: gap::SM + FOLD_GLYPH + gap::SM };
+            block = block.push(container(line).padding(inset).width(Fill).clip(true));
+        } else if let Some(body) = fold.body {
+            block = block.push(container(body).padding(Padding { top: gap::XS, right: gap::MD, bottom: gap::MD, left: gap::MD }).width(Fill));
+        }
+        container(block).padding(gap::XXS).width(Fill).style(theme::group(fold.count > 0)).into()
+    }
+}
+
+/// How many unticked lines a searchable list draws at once. A longer list
+/// says so and asks for a narrower search.
+pub const PICK_LIMIT: usize = 100;
+const PICK_HEIGHT: f32 = 196.0;
+const PICK_TALLY: f32 = 24.0;
+
+/// The lines of a searchable list of ticks, each a code and its name.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Shortlist<'a> {
+    /// The ticked ones: always there and always on top, whatever the search says.
+    pub ticked: Vec<(&'a str, &'a str)>,
+    /// What the search found among the rest, as many as are drawn.
+    pub rest: Vec<(&'a str, &'a str)>,
+    /// How many the search found among the rest, drawn or not.
+    pub found: usize,
+}
+
+pub fn shortlist<'a>(items: &[(&'a str, &'a str)], chosen: &'a [String], query: &str, limit: usize) -> Shortlist<'a> {
+    let needle = query.trim().to_lowercase();
+    let is_chosen = |code: &str| chosen.iter().any(|c| c.as_str() == code);
+    let mut ticked: Vec<(&str, &str)> = items.iter().copied().filter(|(code, _)| is_chosen(code)).collect();
+    // A value saved long ago may have left the list. It stays here to be unticked.
+    for code in chosen {
+        if !items.iter().any(|(known, _)| *known == code.as_str()) {
+            ticked.push((code.as_str(), code.as_str()));
+        }
+    }
+    let mut rest = Vec::new();
+    let mut found = 0;
+    for (code, name) in items.iter().copied().filter(|(code, _)| !is_chosen(code)) {
+        if needle.is_empty() || name.to_lowercase().contains(&needle) || code.to_lowercase().contains(&needle) {
+            found += 1;
+            if rest.len() < limit {
+                rest.push((code, name));
+            }
+        }
+    }
+    Shortlist { ticked, rest, found }
+}
+
+/// A searchable list of ticks: a search box, how many are chosen, the chosen on top.
+pub fn pick_many<'a, M: Clone + 'a>(
+    items: &[(&str, &str)],
+    chosen: &[String],
+    placeholder: &str,
+    query: &str,
+    on_query: impl Fn(String) -> M + 'a,
+    on_toggle: fn(String) -> M,
+    on_clear: M,
+) -> El<'a, M> {
+    let list = shortlist(items, chosen, query, PICK_LIMIT);
+    let tally: El<'a, M> = if chosen.is_empty() {
+        faint("Ничего не выбрано: подходят все").into()
+    } else {
+        row![muted(format!("Выбрано: {}", chosen.len())), link("Снять выбор", Some(on_clear))].spacing(gap::XS).align_y(Alignment::Center).into()
+    };
+    // As tall with a choice as without, so a first tick moves nothing.
+    let mut block = column![input(placeholder, query).on_input(on_query), container(tally).center_y(PICK_TALLY)].spacing(gap::XS);
+    if list.ticked.is_empty() && list.rest.is_empty() {
+        return block.push(faint(if items.is_empty() { "Нет значений" } else { "Ничего не найдено" })).into();
+    }
+    let line = |(code, name): (&str, &str), ticked: bool| {
+        let code = code.to_string();
+        check(name, ticked, move |_| on_toggle(code.clone()))
+    };
+    let mut lines = Column::new().spacing(gap::XS);
+    for item in &list.ticked {
+        lines = lines.push(line(*item, true));
+    }
+    if !list.ticked.is_empty() && !list.rest.is_empty() {
+        lines = lines.push(divider());
+    }
+    for item in &list.rest {
+        lines = lines.push(line(*item, false));
+    }
+    block = block.push(container(scroll(container(lines).padding(gap::SM).width(Fill))).max_height(PICK_HEIGHT).width(Fill).style(theme::inset));
+    if list.found > list.rest.len() {
+        let shown = tbs_core::format::count(list.rest.len());
+        block = block.push(faint(format!("Показаны первые {shown} из {}. Уточните поиск, чтобы найти остальные.", tbs_core::format::count(list.found))));
+    }
+    block.into()
 }
 
 pub fn dialog_title<'a, M: Clone + 'a>(name: impl text::IntoFragment<'a>, on_close: Option<M>) -> El<'a, M> {

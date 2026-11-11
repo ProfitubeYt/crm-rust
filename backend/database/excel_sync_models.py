@@ -47,6 +47,9 @@ class ExcelSyncActivation(Base):
 
     workbook_id = Column(String(128), primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    # Given by the owner when the server prepares the workbook; such a record
+    # exists before any grant. NULL for a workbook that was connected by hand.
+    name = Column(String(120), nullable=True)
     password_hash = Column(String(128), nullable=False)
     salt = Column(String(64), nullable=False)
     permissions_version = Column(Integer, nullable=False)

@@ -39,9 +39,10 @@ pub enum Kind {
     Select(Vec<(String, String)>),
 }
 
-/// These cells open the detail sheet instead of an editor.
+/// These cells open the detail sheet instead of an editor. «Операция» only
+/// selects: it is read off the receipt, and «Тип» is where the type is set.
 pub fn read_only(column: Column) -> bool {
-    matches!(column, Column::RowNumber | Column::OperationNumber | Column::TransactionDate | Column::Day)
+    matches!(column, Column::RowNumber | Column::OperationNumber | Column::TransactionDate | Column::Day | Column::Operation)
 }
 
 /// The dictionary choices for the annotation columns.
@@ -538,7 +539,7 @@ impl Transactions {
             let value = match column {
                 Column::RowNumber => (self.position(row) + 1).to_string(),
                 Column::OperationNumber => super::table::operation_number(&self.table.sort, self.matched_len(), self.position(row)).to_string(),
-                Column::TransactionDate | Column::Day => item.cell(column).to_string(),
+                Column::TransactionDate | Column::Day | Column::Operation => item.cell(column).to_string(),
                 _ => edit_text(column, &item.tx, item.when),
             };
             lines.entry(row).or_default().push((col, value));
@@ -843,10 +844,30 @@ mod tests {
 
     #[test]
     fn read_only_columns_have_no_field() {
-        for column in [Column::RowNumber, Column::OperationNumber, Column::TransactionDate, Column::Day] {
+        for column in [Column::RowNumber, Column::OperationNumber, Column::TransactionDate, Column::Day, Column::Operation] {
             assert!(read_only(column));
             assert!(to_field(column, "1", None).is_err());
         }
+    }
+
+    #[test]
+    fn the_operation_copies_as_it_reads_and_is_not_pasted_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut screen, _) = Transactions::new(&Ctx::for_tests(dir.path()));
+        let receipt = |id, raw: &str| Transaction { id, raw_message: Some(raw.into()), transaction_type: Some("DEBIT".into()), ..Default::default() };
+        screen.data = tbs_core::query::Dataset::build(vec![receipt(1, "\u{1f4b8} Оплата\n➖ 40.000,00 UZS"), receipt(2, "[Photo]")]);
+        screen.rows = vec![0, 1];
+        screen.columns = vec![Column::Operation, Column::TransactionType];
+        screen.selection = crate::grid::Selection::single(0, 0);
+        screen.selection.extend_to((1, 1));
+        // The headline, or the label that stands in for it; «Тип» still copies as its code.
+        assert_eq!(screen.copy_selection().as_deref(), Some("\u{1f4b8} Оплата\tDEBIT\n\u{1f534} Списание\tDEBIT"));
+
+        // Pasted back, or over with anything else, the column is passed by and not counted as unread.
+        let (changes, skipped) = screen.plan_paste("\u{1f4b8} Оплата\tCREDIT\nчто-то\tDEBIT");
+        assert_eq!(skipped, 0);
+        assert_eq!(changes.len(), 1);
+        assert_eq!((changes[0].id, changes[0].field, &changes[0].new), (1, "transaction_type", &json!("CREDIT")));
     }
 
     #[test]

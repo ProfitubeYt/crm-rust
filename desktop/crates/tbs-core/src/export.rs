@@ -82,4 +82,15 @@ mod tests {
         assert_eq!(&bytes[..2], b"PK");
         assert!(bytes.len() > 1000);
     }
+
+    #[test]
+    fn the_operation_goes_out_as_the_text_of_its_cell() {
+        let tx = Transaction { id: 8, raw_message: Some("\u{1f4b8} Оплата\n➖ 40.000,00 UZS".into()), ..Default::default() };
+        let data = Dataset::build(vec![tx]);
+        let rows: Vec<&Row> = data.rows.iter().collect();
+        assert_eq!(rows[0].cell(Column::Operation), "\u{1f4b8} Оплата");
+        assert_eq!(number(Column::Operation, rows[0]), None);
+        let bytes = selected_rows_xlsx(&rows, &[Column::Operation, Column::TransactionType], |_, _| None).unwrap();
+        assert_eq!(&bytes[..2], b"PK");
+    }
 }

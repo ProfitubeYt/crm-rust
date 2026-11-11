@@ -35,15 +35,18 @@ pub struct Row {
 impl Row {
     fn new(tx: Transaction, labels: &Labels) -> Self {
         let when = tx.transaction_date.as_deref().and_then(format::parse_datetime);
-        let cells = columns::ALL.iter().map(|c| c.display(&tx, when, labels)).collect();
+        let cells: Box<[String]> = columns::ALL.iter().map(|c| c.display(&tx, when, labels)).collect();
         let parsed = tx.amount.as_deref().and_then(|a| a.trim().parse::<f64>().ok());
         let s = |v: &Option<String>| v.clone().unwrap_or_default();
+        // «Операция» as shown: without a headline it is a label the receipt does not contain.
+        let operation = Some(cells[Column::Operation.index()].clone());
         // Everything a person may remember a receipt by: who was paid, what the
         // bank wrote, and what the bookkeeper noted next to it.
         let blob = [
             &tx.operator_raw,
             &tx.application_mapped,
             &tx.raw_message,
+            &operation,
             &tx.amount,
             &tx.currency,
             &tx.annotation_details,
@@ -392,6 +395,7 @@ impl Sort {
             Column::AnnotationPeriod => Key::Num(r.period.unwrap_or(0) as f64),
             Column::TransactionType => Key::Text(r.cell(Column::TransactionType).to_lowercase()),
             Column::SourceType => Key::Text(r.cell(Column::SourceType).to_lowercase()),
+            Column::Operation => Key::Text(r.cell(Column::Operation).to_lowercase()),
             Column::OperatorRaw => Key::Text(r.operator_lc.clone()),
             Column::ApplicationMapped => Key::Text(r.app_lc.clone()),
             Column::Description => text(&r.tx.description),
@@ -914,6 +918,41 @@ mod tests {
         assert_eq!(s("0907"), [1]);
         assert_eq!(s("интернет"), [1]);
         assert_eq!(s("-склада"), [2]);
+    }
+
+    #[test]
+    fn the_operation_is_searched_and_sorted_as_shown() {
+        let humo = |id, kind: &str, raw: &str| Transaction {
+            transaction_type: Some(kind.into()),
+            raw_message: Some(raw.into()),
+            source_display: Some("HUMO Card".into()),
+            ..tx(id, "2026-01-01T10:00:00", "1.00", "shop")
+        };
+        let ds = Dataset::build(vec![
+            humo(1, "DEBIT", "\u{1f4b8} Оплата\n➖ 40.000,00 UZS"),
+            humo(2, "CREDIT", "[Photo]\nперевод"),
+            humo(3, "DEBIT", "[Photo]\nперевод"),
+            tx(4, "2026-01-02T10:00:00", "2.00", "b"),
+        ]);
+        let shown: Vec<&str> = ds.rows.iter().map(|r| r.cell(Column::Operation)).collect();
+        assert_eq!(shown, ["\u{1f4b8} Оплата", "\u{1f389} Пополнение", "\u{1f4b8} Списание", "\u{1f534} Списание"]);
+
+        let s = |q: &str| ids(&ds, &Filters { search: q.into(), ..Default::default() });
+        // A headline is the receipt's own text; a label is nowhere but in the cell.
+        assert_eq!(s("оплата"), [1]);
+        assert_eq!(s("пополнение"), [2]);
+        assert_eq!(s("СПИСАНИЕ"), [3, 4]);
+        assert_eq!(s("-списание"), [1, 2]);
+        assert_eq!(s("\"\u{1f4b8} списание\""), [3]);
+        assert_eq!(s("\u{1f534}"), [4]);
+
+        let sorted = |descending| {
+            let sort = Sort { column: Column::Operation, descending };
+            ds.view(&Filters::default(), &Scope::default(), &sort).iter().map(|i| ds.rows[*i as usize].tx.id).collect::<Vec<_>>()
+        };
+        // As text: by the mark first, then by the words.
+        assert_eq!(sorted(false), [2, 1, 3, 4]);
+        assert_eq!(sorted(true), [4, 3, 1, 2]);
     }
 
     #[test]

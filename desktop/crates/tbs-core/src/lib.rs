@@ -11,6 +11,7 @@ pub mod export;
 pub mod format;
 pub mod links;
 pub mod model;
+pub mod operation;
 pub mod query;
 pub mod secret;
 pub mod store;

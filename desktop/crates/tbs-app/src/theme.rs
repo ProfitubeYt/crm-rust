@@ -227,6 +227,20 @@ pub fn inset(theme: &Theme) -> container::Style {
     }
 }
 
+/// A group of a sheet that folds. One that holds something is edged in the
+/// accent, so it is found without opening it.
+pub fn group(marked: bool) -> impl Fn(&Theme) -> container::Style {
+    move |theme| {
+        let c = p(theme);
+        container::Style {
+            background: Some(c.surface.into()),
+            text_color: Some(c.text),
+            border: Border { color: if marked { c.accent } else { c.border }, width: 1.0, radius: radius::LG.into() },
+            ..Default::default()
+        }
+    }
+}
+
 pub fn dialog(theme: &Theme) -> container::Style {
     let c = p(theme);
     container::Style {
@@ -490,6 +504,24 @@ pub fn btn_chip(active: bool) -> impl Fn(&Theme, button::Status) -> button::Styl
         style.border = Border { color: edge, width: 1.0, radius: radius::SM.into() };
         style
     }
+}
+
+/// A filter that is on, above the table: a chosen chip with a cross of its own.
+pub fn tag(theme: &Theme) -> container::Style {
+    let c = p(theme);
+    container::Style {
+        background: Some(c.accent_soft.into()),
+        text_color: Some(c.accent),
+        border: Border { color: c.accent, width: 1.0, radius: radius::SM.into() },
+        ..Default::default()
+    }
+}
+
+/// Either half of a tag: its words or its cross.
+pub fn btn_tag(theme: &Theme, status: button::Status) -> button::Style {
+    let c = p(theme);
+    let lit = matches!(status, button::Status::Hovered | button::Status::Pressed);
+    button::Style { background: lit.then(|| c.selection.into()), text_color: c.accent, ..button_base(radius::SM) }
 }
 
 pub fn btn_segment(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
