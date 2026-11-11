@@ -703,3 +703,71 @@ pub fn pager<'a, M: Clone + 'a>(page: i64, pages: i64, on_page: impl Fn(i64) -> 
     .into()
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SHOPS: [(&str, &str); 5] = [("apt", "Аптека Подорожник"), ("bak", "Булочная"), ("cof", "Кофейня Арбуз"), ("mkt", "Ромашка Маркет"), ("tax", "Такси Комета")];
+
+    fn codes(chosen: &[&str]) -> Vec<String> {
+        chosen.iter().map(|code| code.to_string()).collect()
+    }
+
+    #[test]
+    fn the_ticked_stand_first_whatever_the_search_says() {
+        let chosen = codes(&["mkt", "bak"]);
+        let list = shortlist(&SHOPS, &chosen, "", PICK_LIMIT);
+        // In the order of the list, not of the ticking: a tick does not shuffle its neighbours.
+        assert_eq!(list.ticked, [("bak", "Булочная"), ("mkt", "Ромашка Маркет")]);
+        assert_eq!(list.rest, [("apt", "Аптека Подорожник"), ("cof", "Кофейня Арбуз"), ("tax", "Такси Комета")]);
+        assert_eq!(list.found, 3);
+        // The search narrows the rest. What is ticked stays, to be seen and unticked.
+        let list = shortlist(&SHOPS, &chosen, "кофе", PICK_LIMIT);
+        assert_eq!(list.ticked.len(), 2);
+        assert_eq!(list.rest, [("cof", "Кофейня Арбуз")]);
+        assert_eq!(list.found, 1);
+        // Nothing found among the rest leaves the ticked ones alone.
+        let list = shortlist(&SHOPS, &chosen, "нет такого", PICK_LIMIT);
+        assert_eq!((list.ticked.len(), list.rest.len(), list.found), (2, 0, 0));
+    }
+
+    #[test]
+    fn the_search_reads_names_and_codes_in_any_case() {
+        let none: Vec<String> = Vec::new();
+        let found = |query: &str| shortlist(&SHOPS, &none, query, PICK_LIMIT).rest.iter().map(|(code, _)| *code).collect::<Vec<_>>();
+        assert_eq!(found("АРБУЗ"), ["cof"]);
+        assert_eq!(found("  ромашка  "), ["mkt"]);
+        assert_eq!(found("TAX"), ["tax"]);
+        assert_eq!(found("а"), ["apt", "bak", "cof", "mkt", "tax"]);
+        assert_eq!(found(""), ["apt", "bak", "cof", "mkt", "tax"]);
+        assert_eq!(found("   "), ["apt", "bak", "cof", "mkt", "tax"]);
+    }
+
+    #[test]
+    fn a_value_that_left_the_list_stays_to_be_unticked() {
+        let chosen = codes(&["Закрытый магазин", "cof"]);
+        let list = shortlist(&SHOPS, &chosen, "такси", PICK_LIMIT);
+        assert_eq!(list.ticked, [("cof", "Кофейня Арбуз"), ("Закрытый магазин", "Закрытый магазин")]);
+        assert_eq!(list.rest, [("tax", "Такси Комета")]);
+    }
+
+    #[test]
+    fn a_long_list_is_cut_and_says_how_many_it_found() {
+        let names: Vec<String> = (0..250).map(|i| format!("Поставщик № {i:03}")).collect();
+        let items: Vec<(&str, &str)> = names.iter().map(|name| (name.as_str(), name.as_str())).collect();
+        let chosen = codes(&["Поставщик № 240", "Поставщик № 007"]);
+        let list = shortlist(&items, &chosen, "", PICK_LIMIT);
+        // The ticked ones are all there, even from beyond the cut.
+        assert_eq!(list.ticked.iter().map(|(code, _)| *code).collect::<Vec<_>>(), ["Поставщик № 007", "Поставщик № 240"]);
+        assert_eq!((list.rest.len(), list.found), (PICK_LIMIT, 248));
+        assert_eq!(list.rest[0].0, "Поставщик № 000");
+        // A search that narrows it enough shows all it found.
+        let list = shortlist(&items, &chosen, "№ 24", PICK_LIMIT);
+        assert_eq!((list.rest.len(), list.found), (9, 9));
+        assert!(!list.rest.iter().any(|(code, _)| *code == "Поставщик № 240"));
+        // Nothing to pick from is not a search that failed.
+        let empty = shortlist(&[], &[], "что-нибудь", PICK_LIMIT);
+        assert_eq!((empty.ticked.len(), empty.rest.len(), empty.found), (0, 0, 0));
+    }
+}

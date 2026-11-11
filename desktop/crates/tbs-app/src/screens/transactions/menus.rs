@@ -185,11 +185,11 @@ impl Transactions {
         self.save(ctx);
     }
 
-    fn apply_view(&mut self, view: TableView) {
+    fn apply_view(&mut self, view: TableView, ctx: &mut Ctx) {
         self.table = view;
         self.table.repair();
         self.search = self.table.filters.search.clone();
-        self.forget_filter_draft();
+        self.forget_filter_draft(ctx);
         self.refresh_columns();
         self.refresh_rows();
     }
@@ -292,7 +292,7 @@ impl Transactions {
             }
             Msg::Reset => {
                 self.popup = Popup::None;
-                self.apply_view(TableView::default());
+                self.apply_view(TableView::default(), ctx);
                 self.save(ctx);
                 ctx.toast(Tone::Success, "Фильтры и вид сброшены для текущего пользователя");
             }
@@ -310,7 +310,7 @@ impl Transactions {
             Msg::PresetLoad(index) => {
                 if let Some(preset) = self.presets.get(index) {
                     let view = preset.view.clone();
-                    self.apply_view(view);
+                    self.apply_view(view, ctx);
                     self.save(ctx);
                 }
             }
@@ -493,14 +493,16 @@ impl Transactions {
 
     pub(super) fn popup_view(&self, ctx: &Ctx) -> Option<El<'_, Screen>> {
         let right = ctx.window.width - ui::PAGE_PADDING.right;
-        let at = |width: f32| Point::new(right - width, UNDER_TOOLBAR);
+        // In a narrow page the tools take a line more, and the panels of the toolbar begin under it.
+        let under = if self.tools_on_one_line(ctx) { UNDER_TOOLBAR } else { UNDER_TOOLBAR + theme::control::MD + space::SM };
+        let at = |width: f32| Point::new(right - width, under);
         Some(match self.popup {
             Popup::None => return None,
             Popup::Cell { at, .. } => floating(self.paint_menu(None, true), at, Size::new(CELL_WIDTH, 170.0), ctx.window),
             Popup::Header { col, at } => floating(self.paint_menu(self.columns.get(col).copied(), false), at, Size::new(CELL_WIDTH, 170.0), ctx.window),
             Popup::View => floating(self.view_menu(ctx.window), at(VIEW_WIDTH), Size::new(VIEW_WIDTH, 200.0), ctx.window),
             Popup::Export => floating(self.export_menu(), at(EXPORT_WIDTH), Size::new(EXPORT_WIDTH, 220.0), ctx.window),
-            Popup::Help => floating(self.help_menu(), Point::new(ctx.rail + ui::PAGE_PADDING.left, UNDER_TOOLBAR), Size::new(HELP_WIDTH, 190.0), ctx.window),
+            Popup::Help => floating(self.help_menu(), Point::new(ctx.rail + ui::PAGE_PADDING.left, under), Size::new(HELP_WIDTH, 190.0), ctx.window),
         })
     }
 

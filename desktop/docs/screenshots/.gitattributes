@@ -1,0 +1,2 @@
+# Pictures are never text, whatever their bytes look like.
+*.png binary

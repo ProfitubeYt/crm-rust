@@ -43,6 +43,9 @@ const STATE: &str = "transactions";
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(200);
 const SEARCH_ID: &str = "tx-search";
 const FOOTER_HEIGHT: f32 = 36.0;
+/// The narrowest page in which the tools above the table fit one line and
+/// still leave a search box worth typing in.
+const ROOMY_PAGE: f32 = 1090.0;
 /// How long the manifest alone is believed. It cannot see everything (see
 /// `tbs_core::sync`), so this often the rows themselves are compared.
 const VERIFY_EVERY: Duration = Duration::from_secs(300);
@@ -606,7 +609,7 @@ impl Transactions {
             }
             Msg::Quick(code) => {
                 self.table.filters.transaction_types = code.map(|c| vec![c.to_string()]).unwrap_or_default();
-                self.forget_filter_draft();
+                self.forget_filter_draft(ctx);
                 self.refresh_rows();
                 self.save(ctx);
             }
@@ -747,7 +750,13 @@ impl Transactions {
         }
     }
 
-    fn toolbar(&self) -> El<'_, Msg> {
+    /// Whether the tools above the table stand on one line. In a narrower page
+    /// they take two, or the search box would be left with no width at all.
+    pub(super) fn tools_on_one_line(&self, ctx: &Ctx) -> bool {
+        ctx.window.width - ctx.rail - ui::PAGE_PADDING.left - ui::PAGE_PADDING.right >= ROOMY_PAGE
+    }
+
+    fn toolbar(&self, ctx: &Ctx) -> El<'_, Msg> {
         let locked = self.locked_view();
         let open = !self.editing_blocked();
         let head = row![
@@ -772,21 +781,31 @@ impl Transactions {
         let newest = self.table.sort == Sort { column: Column::TransactionDate, descending: true };
         let types = &self.table.filters.transaction_types;
         let picked = |code: &str| types.len() == 1 && types[0] == code;
-        let actions = row![
+        let quick = row![
             ui::count_chip("Все", s.any_type, types.is_empty(), Msg::Quick(None)),
             ui::count_chip("Списания", s.debits, picked("DEBIT"), Msg::Quick(Some("DEBIT"))),
             ui::count_chip("Пополнения", s.credits, picked("CREDIT"), Msg::Quick(Some("CREDIT"))),
-            Space::new().width(space::SM),
-            ui::input("Поиск: 1250000, \"Korzinka\", date:2026-01-28, status:ошибка", &self.search).id(Id::new(SEARCH_ID)).on_input(Msg::Search).width(Fill),
-            ui::icon_btn(Icon::Help, "Как искать", Some(Msg::Menu(menus::Msg::Open(Popup::Help)))),
-            ui::btn_icon(Icon::Filter, filter_caption, if active > 0 { Kind::Primary } else { Kind::Secondary }, Some(Msg::OpenFilters)),
-            ui::btn_icon(Icon::Newest, "Сначала новые", if newest { Kind::Primary } else { Kind::Secondary }, Some(Msg::Newest)),
-            ui::btn_icon(Icon::Columns, "Вид", Kind::Secondary, Some(Msg::Menu(menus::Msg::Open(Popup::View)))),
         ]
         .spacing(space::SM)
         .align_y(Alignment::Center);
+        let search = ui::input("Поиск: 1250000, \"Korzinka\", date:2026-01-28, status:ошибка", &self.search).id(Id::new(SEARCH_ID)).on_input(Msg::Search).width(Fill);
+        let help = ui::icon_btn(Icon::Help, "Как искать", Some(Msg::Menu(menus::Msg::Open(Popup::Help))));
+        let filters = ui::btn_icon(Icon::Filter, filter_caption, if active > 0 { Kind::Primary } else { Kind::Secondary }, Some(Msg::OpenFilters));
+        let order = ui::btn_icon(Icon::Newest, "Сначала новые", if newest { Kind::Primary } else { Kind::Secondary }, Some(Msg::Newest));
+        let look = ui::btn_icon(Icon::Columns, "Вид", Kind::Secondary, Some(Msg::Menu(menus::Msg::Open(Popup::View))));
+        let tools: El<'_, Msg> = if self.tools_on_one_line(ctx) {
+            row![quick, Space::new().width(space::SM), search, help, filters, order, look].spacing(space::SM).align_y(Alignment::Center).into()
+        } else {
+            // What the table shows stands above; what narrows it below, where the search box has the line to itself.
+            column![
+                row![quick, ui::fill(), order, look].spacing(space::SM).align_y(Alignment::Center),
+                row![search, help, filters].spacing(space::SM).align_y(Alignment::Center),
+            ]
+            .spacing(space::SM)
+            .into()
+        };
 
-        column![head, actions].spacing(space::MD).into()
+        column![head, tools].spacing(space::MD).into()
     }
 
     fn footer(&self) -> El<'_, Msg> {
@@ -830,7 +849,7 @@ impl Transactions {
                 .into()
         };
 
-        let mut page = column![self.toolbar()].spacing(space::MD);
+        let mut page = column![self.toolbar(ctx)].spacing(space::MD);
         for banner in self.banners(ctx) {
             page = page.push(banner);
         }

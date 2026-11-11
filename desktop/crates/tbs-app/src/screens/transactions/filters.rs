@@ -29,6 +29,8 @@ const NUMBER_FORMAT: &str = "Введите число, например 1500 и
 const PERCENT_RANGE: &str = "Введите процент от 0 до 100";
 const PERIOD_BACKWARDS: &str = "Конец периода раньше начала";
 const BOUNDS_BACKWARDS: &str = "Верхняя граница меньше нижней";
+/// Said when a form nobody applied goes with the filters it was made from.
+pub const DRAFT_DROPPED: &str = "Черновик фильтров сброшен: фильтры таблицы изменились";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
@@ -51,6 +53,7 @@ pub enum Field {
 
 impl Field {
     /// The name a message uses when it stands away from the field.
+    #[cfg(test)]
     fn title(self) -> &'static str {
         match self {
             Field::DateFrom => "Дата с",
@@ -243,6 +246,9 @@ pub enum Msg {
     Remove(Facet),
     /// «Сбросить всё» on the bar: every filter off, at once.
     RemoveAll,
+    /// The banner over a table that the filters and the search left empty:
+    /// both off, at once. The look of the table is not touched.
+    ShowAll,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -481,6 +487,10 @@ impl FilterDraft {
         (filters, problems)
     }
 
+    /// The form as filters with the search of the table, or the first thing
+    /// that stops it, named by its field. The sheet itself tells every problem
+    /// at its field; this is how the tests ask.
+    #[cfg(test)]
     pub fn to_filters(&self, search: &str) -> Result<Filters, String> {
         let (filters, problems) = self.read();
         match problems.first() {
@@ -678,9 +688,12 @@ impl Transactions {
     }
 
     /// The filters of the table changed somewhere else: a chip, a saved view,
-    /// a reset. A form made from the old ones must not outlive them.
-    pub(super) fn forget_filter_draft(&mut self) {
-        self.kept.parked = None;
+    /// a reset. A form made from the old ones must not outlive them, and one
+    /// that was waiting to be applied says that it is gone.
+    pub(super) fn forget_filter_draft(&mut self, ctx: &mut Ctx) {
+        if self.kept.parked.take().is_some() {
+            ctx.toast(Tone::Neutral, DRAFT_DROPPED);
+        }
         if matches!(self.sheet, Sheet::Filters(_)) {
             self.sheet = Sheet::Filters(Box::new(FilterForm::new(&self.table.filters)));
             self.filters_refreshed();
@@ -749,8 +762,8 @@ impl Transactions {
     }
 
     /// The table got other filters without the sheet: the rows follow at once.
-    fn filters_replaced(&mut self, ctx: &Ctx) {
-        self.forget_filter_draft();
+    fn filters_replaced(&mut self, ctx: &mut Ctx) {
+        self.forget_filter_draft(ctx);
         self.refresh_rows();
         self.save(ctx);
     }
@@ -785,6 +798,11 @@ impl Transactions {
             }
             Msg::RemoveAll => {
                 self.table.filters = facets::cleared(&self.table.filters);
+                self.filters_replaced(ctx);
+            }
+            Msg::ShowAll => {
+                self.search.clear();
+                self.table.filters = Filters::default();
                 self.filters_replaced(ctx);
             }
             Msg::Edit(facet) => {
@@ -838,7 +856,7 @@ impl Transactions {
             Msg::ClearGroup(group) => group.facets().iter().for_each(|facet| draft.clear(*facet)),
             Msg::Reset => *draft = FilterDraft::default(),
             Msg::Revert => **form = FilterForm::new(&self.table.filters),
-            Msg::Edit(_) | Msg::Remove(_) | Msg::RemoveAll | Msg::Fold(_) | Msg::Close | Msg::Apply | Msg::Counted(_) => return Task::none(),
+            Msg::Edit(_) | Msg::Remove(_) | Msg::RemoveAll | Msg::ShowAll | Msg::Fold(_) | Msg::Close | Msg::Apply | Msg::Counted(_) => return Task::none(),
         }
         // A form that reads well again goes back to waiting for «Применить».
         if form.strict && form.draft.read().1.is_empty() {
@@ -1059,11 +1077,12 @@ fn some<T>((from, to): (T, T)) -> (Option<T>, Option<T>) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use chrono::Duration;
-    use iced::Size;
+    use iced::{Rectangle, Size};
     use iced_test::Simulator;
     use iced_test::core::Settings;
+    use iced_test::selector::Candidate;
     use tbs_core::model::{Transaction, UserInfo};
     use tbs_core::query::Dataset;
 
@@ -1071,12 +1090,15 @@ mod tests {
     use super::super::table::TableView;
     use super::super::{Parcel, STATE, menus};
     use super::*;
+    use crate::app::App;
 
     const FILTERS_FIXTURE: &str = include_str!("fixtures/filters.json");
     const STATE_FIXTURE: &str = include_str!("fixtures/table-state.json");
-    const WINDOW: Size = Size::new(1280.0, 860.0);
+    pub const WINDOW: Size = Size::new(1280.0, 860.0);
+    /// The smallest work window the program lets itself be made.
+    pub const SMALL_WINDOW: Size = Size::new(1024.0, 640.0);
 
-    fn date(year: i32, month: u32, day: u32) -> NaiveDate {
+    pub fn date(year: i32, month: u32, day: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(year, month, day).unwrap()
     }
 
@@ -1108,10 +1130,10 @@ mod tests {
         }
     }
 
-    const SHOPS: [&str; 6] = ["Ромашка Маркет", "Кофейня Арбуз", "Такси Комета", "Аптека Подорожник", "Заправка Вектор", "Маяк Доставка"];
+    pub const SHOPS: [&str; 6] = ["Ромашка Маркет", "Кофейня Арбуз", "Такси Комета", "Аптека Подорожник", "Заправка Вектор", "Маяк Доставка"];
 
     /// Sixty made-up rows: ten of each shop, one a day from 1 October 2026.
-    fn rows() -> Vec<Transaction> {
+    pub fn rows() -> Vec<Transaction> {
         (0..60)
             .map(|i| {
                 let day = date(2026, 10, 1) + Duration::days(i);
@@ -1138,18 +1160,21 @@ mod tests {
             .collect()
     }
 
-    struct Bench {
-        screen: Transactions,
-        ctx: Ctx,
+    /// The table on made-up rows, in a window of its own, for the tests of its sheets.
+    pub struct Bench {
+        pub screen: Transactions,
+        pub ctx: Ctx,
+        /// The window around the page. Its rail takes its width off the table, as in the program.
+        shell: App,
         _dir: tempfile::TempDir,
     }
 
     impl Bench {
-        fn new(admin: bool) -> Self {
+        pub fn new(admin: bool) -> Self {
             Self::with(admin, rows())
         }
 
-        fn with(admin: bool, rows: Vec<Transaction>) -> Self {
+        pub fn with(admin: bool, rows: Vec<Transaction>) -> Self {
             let dir = tempfile::tempdir().unwrap();
             let mut ctx = Ctx::for_tests(dir.path());
             ctx.window = WINDOW;
@@ -1161,7 +1186,9 @@ mod tests {
             let _ = screen.update(Screen::Year(2026), &mut ctx);
             screen.choices.persons = vec![("АК".into(), "Анна К.".into()), ("БЛ".into(), "Борис Л.".into())];
             screen.choices.articles = vec![("пр".into(), "Продукты".into()), ("тр".into(), "Транспорт".into())];
-            Self { screen, ctx, _dir: dir }
+            let mut around = Ctx::for_tests(dir.path());
+            around.user = ctx.user.clone();
+            Self { screen, ctx, shell: App::shell_for_tests(around), _dir: dir }
         }
 
         fn send(&mut self, message: Msg) {
@@ -1178,7 +1205,7 @@ mod tests {
             self.send(Msg::Counted(token));
         }
 
-        fn escape(&mut self) {
+        pub fn escape(&mut self) {
             let _ = self.screen.update(Screen::Escape, &mut self.ctx);
         }
 
@@ -1193,30 +1220,114 @@ mod tests {
             }
         }
 
-        fn applied(&self) -> &Filters {
+        pub fn applied(&self) -> &Filters {
             &self.screen.table.filters
         }
 
-        fn rows_shown(&self) -> usize {
+        pub fn rows_shown(&self) -> usize {
             self.screen.peek().shown
         }
 
-        /// The page with whatever floats above it, as the window draws them.
-        fn window(&self) -> El<'_, Screen> {
-            let mut layers = vec![self.screen.view(&self.ctx)];
+        /// The window as the program draws it: the rail, the page beside it,
+        /// and whatever floats above both.
+        pub fn window(&self) -> El<'_, Screen> {
+            let rail = self.shell.rail_for_tests().map(|_| Screen::Noop);
+            let mut layers: Vec<El<'_, Screen>> = vec![row![rail, self.screen.view(&self.ctx)].into()];
             layers.extend(self.screen.overlay(&self.ctx));
             iced::widget::Stack::with_children(layers).width(Fill).height(Fill).into()
         }
 
-        fn sees(&self, words: &str) -> bool {
-            let mut sim = Simulator::with_size(Settings::default(), WINDOW, self.window());
+        /// Makes the window another size, as a drag on its edge does.
+        pub fn resize(&mut self, window: Size) {
+            self.ctx.window = window;
+        }
+
+        pub fn sees(&self, words: &str) -> bool {
+            let mut sim = Simulator::with_size(Settings::default(), self.ctx.window, self.window());
             sim.find(words).is_ok()
         }
 
+        /// Where the words stand in the window, as far as they can be seen.
+        pub fn place(&self, words: &str) -> Option<Rectangle> {
+            let mut sim = Simulator::with_size(Settings::default(), self.ctx.window, self.window());
+            sim.find(words).ok()?.visible_bounds()
+        }
+
+        /// Every text box on screen, as far as it can be seen, in the order they are drawn.
+        pub fn inputs(&self) -> Vec<Rectangle> {
+            let mut sim = Simulator::with_size(Settings::default(), self.ctx.window, self.window());
+            let found = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let sink = found.clone();
+            let _ = sim.find(move |candidate: Candidate<'_>| -> Option<()> {
+                if let Candidate::TextInput { visible_bounds: Some(bounds), .. } = candidate {
+                    sink.lock().unwrap().push(bounds);
+                }
+                None
+            });
+            let boxes = found.lock().unwrap().clone();
+            boxes
+        }
+
+        /// Where the grid of the table stands, while there are rows to draw.
+        pub fn grid(&self) -> Option<Rectangle> {
+            let mut sim = Simulator::with_size(Settings::default(), self.ctx.window, self.window());
+            let found = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let sink = found.clone();
+            let _ = sim.find(move |candidate: Candidate<'_>| -> Option<()> {
+                if let Candidate::Container { id: Some(id), bounds, .. } = candidate
+                    && *id == iced::widget::Id::new(crate::grid::ID)
+                {
+                    *sink.lock().unwrap() = Some(bounds);
+                }
+                None
+            });
+            let grid = *found.lock().unwrap();
+            grid
+        }
+
+        /// The words are on screen, whole, inside the window.
+        pub fn shows_whole(&self, words: &str) -> bool {
+            let window = self.ctx.window;
+            self.place(words).is_some_and(|at| at.x >= 0.0 && at.y >= 0.0 && at.x + at.width <= window.width && at.y + at.height <= window.height)
+        }
+
+        /// Presses what carries the words, and lets the table take what the press sends.
+        pub fn press(&mut self, words: &str) {
+            let messages: Vec<Screen> = {
+                let mut sim = Simulator::with_size(Settings::default(), self.ctx.window, self.window());
+                sim.click(words).unwrap_or_else(|_| panic!("nothing to press at «{words}»"));
+                sim.into_messages().collect()
+            };
+            assert!(!messages.is_empty(), "the press at «{words}» sent nothing");
+            for message in messages {
+                let _ = self.screen.update(message, &mut self.ctx);
+            }
+        }
+
         /// Reads the table state back from where the screen saves it.
-        fn on_disk(&self) -> TableView {
+        pub fn on_disk(&self) -> TableView {
             tbs_core::config::load_json(&self.ctx.state_path(STATE))
         }
+
+        /// Saves a picture of the window under `name` in `folder`, for a person to look at.
+        pub fn shoot(&self, folder: &std::path::Path, name: &str) {
+            let mut sim = Simulator::with_size(Settings::default(), self.ctx.window, self.window());
+            let shot = sim.snapshot(&theme::iced_theme(self.ctx.dark)).expect("a snapshot");
+            // The simulator names the file after its renderer and leaves one that is there alone.
+            let staging = folder.join(format!(".{name}"));
+            let _ = std::fs::remove_dir_all(&staging);
+            assert!(shot.matches_image(staging.join(name)).expect("a picture"));
+            let written = std::fs::read_dir(&staging).unwrap().flatten().next().expect("a file").path();
+            std::fs::rename(written, folder.join(format!("{name}.png"))).unwrap();
+            let _ = std::fs::remove_dir_all(&staging);
+        }
+    }
+
+    /// Where the pictures go when somebody asked for them: `TBS_SHOTS=<folder>`.
+    pub fn shots_folder() -> Option<std::path::PathBuf> {
+        let folder = std::path::PathBuf::from(std::env::var("TBS_SHOTS").ok()?);
+        std::fs::create_dir_all(&folder).unwrap();
+        Some(folder)
     }
 
     #[test]
@@ -1569,19 +1680,150 @@ mod tests {
         let mut bench = Bench::new(true);
         bench.screen.table.filters = rich();
         bench.screen.refresh_rows();
-        let narrow = Size::new(900.0, 700.0);
-        let mut sim = Simulator::with_size(Settings::default(), narrow, bench.window());
+        // The smallest window there is, with the rail open: the page has the least room it ever has.
+        bench.resize(SMALL_WINDOW);
+        let rail = bench.ctx.rail;
         let mut bottom: f32 = 0.0;
         for facet in Facet::ALL {
             let chip = facet.chip(&bench.screen.table.filters, &bench.screen.names()).unwrap();
-            let found = sim.find(chip.as_str()).unwrap_or_else(|_| panic!("no chip «{chip}»"));
-            let bounds = found.visible_bounds().unwrap_or_else(|| panic!("«{chip}» is out of sight"));
-            assert!(bounds.x >= 0.0 && bounds.x + bounds.width <= narrow.width, "«{chip}» sticks out: {bounds:?}");
+            let bounds = bench.place(&chip).unwrap_or_else(|| panic!("«{chip}» is out of sight"));
+            assert!(bounds.x >= rail && bounds.x + bounds.width <= SMALL_WINDOW.width, "«{chip}» sticks out: {bounds:?}");
             bottom = bottom.max(bounds.y + bounds.height);
         }
         // Seventeen chips take more than one line, and the table still has its room below them.
-        assert!(bottom > 160.0 && bottom < narrow.height / 2.0, "the chips end at {bottom}");
-        assert!(sim.find("Сбросить всё").is_ok());
+        assert!(bottom > 160.0 && bottom < SMALL_WINDOW.height * 0.7, "the chips end at {bottom}");
+        assert!(bench.shows_whole("Сбросить всё"));
+    }
+
+    #[test]
+    fn the_tools_above_the_table_fit_every_window() {
+        // Counts in the thousands, filters on and a draft waiting: about the widest the tools get.
+        let rows: Vec<Transaction> = (0..2400)
+            .map(|i| Transaction {
+                id: i,
+                transaction_date: Some("2026-03-04T07:16:00".into()),
+                amount: Some("5000.00".into()),
+                currency: Some("UZS".into()),
+                card_last_4: Some("1111".into()),
+                transaction_type: Some(if i % 3 == 0 { "CREDIT" } else { "DEBIT" }.into()),
+                ..Default::default()
+            })
+            .collect();
+        let mut bench = Bench::with(true, rows);
+        bench.screen.table.filters = Filters { currency: Some("UZS".into()), amount_min: Some(1.0), card: Some("1111".into()), ..Default::default() };
+        bench.screen.refresh_rows();
+        bench.screen.open_filters();
+        bench.send(Msg::Day(3));
+        bench.escape();
+        let tools = ["Excel-синхронизация", "Обновить", "Экспорт", "Добавить", "Все", "2\u{a0}400", "Списания", "1\u{a0}600", "Пополнения", "800", "Фильтры · 3 · черновик", "Сначала новые", "Вид"];
+        let edge = ui::PAGE_PADDING.right;
+        for window in [SMALL_WINDOW, Size::new(1100.0, 700.0), WINDOW, Size::new(1360.0, 860.0), Size::new(1920.0, 1080.0)] {
+            bench.resize(window);
+            for words in tools {
+                let at = bench.place(words).unwrap_or_else(|| panic!("«{words}» is out of sight in {window:?}"));
+                assert!(at.x >= bench.ctx.rail + ui::PAGE_PADDING.left - 0.5 && at.x + at.width <= window.width - edge + 0.5, "«{words}» sticks out of {window:?}: {at:?}");
+            }
+            // The one text box on the page is the search, and it is worth typing in.
+            let boxes = bench.inputs();
+            assert_eq!(boxes.len(), 1, "{window:?}");
+            assert!(boxes[0].width >= 220.0, "the search box is {} wide in {window:?}", boxes[0].width);
+            assert!(boxes[0].x + boxes[0].width <= window.width - edge + 0.5, "{window:?}");
+            // The table keeps most of the height, also under two lines of tools and a line of chips.
+            let table = bench.grid().unwrap_or_else(|| panic!("no table in {window:?}"));
+            assert!(table.y < window.height * 0.45 && table.height > window.height * 0.4, "the table is at {table:?} in {window:?}");
+        }
+        // A wide page has them on one line, a narrow one on two.
+        assert!(bench.screen.tools_on_one_line(&bench.ctx));
+        bench.resize(SMALL_WINDOW);
+        assert!(!bench.screen.tools_on_one_line(&bench.ctx));
+        let (search, filters, look) = (bench.inputs()[0], bench.place("Фильтры · 3 · черновик").unwrap(), bench.place("Вид").unwrap());
+        assert!(look.y < search.y && (filters.y - search.y).abs() < 16.0, "search {search:?}, filters {filters:?}, view {look:?}");
+    }
+
+    #[test]
+    fn the_banner_over_an_emptied_table_takes_the_filters_and_the_search_off() {
+        let mut bench = Bench::new(true);
+        bench.screen.table.pinned = 1;
+        bench.screen.search = "ромашка".into();
+        bench.screen.table.filters = Filters { currency: Some("USD".into()), card: Some("9999".into()), ..Default::default() };
+        bench.screen.refresh_rows();
+        assert_eq!(bench.rows_shown(), 0);
+        assert!(bench.sees("Фильтры и поиск скрыли все строки"));
+        let look = bench.screen.table.clone();
+
+        bench.press("Сбросить фильтры и поиск");
+        assert_eq!(bench.rows_shown(), 60);
+        assert_eq!((bench.screen.search.as_str(), bench.applied()), ("", &Filters::default()));
+        assert!(!bench.sees("Фильтры и поиск скрыли все строки"));
+        // The look of the table is not what hid the rows, and it is as it was.
+        assert_eq!(bench.screen.table, TableView { filters: Filters::default(), ..look });
+        assert_eq!(bench.on_disk(), bench.screen.table);
+
+        // The search alone can empty the table too, and the same button brings the rows back.
+        bench.screen.search = "нет такого слова".into();
+        bench.screen.refresh_rows();
+        assert_eq!(bench.rows_shown(), 0);
+        assert!(bench.screen.filter_bar().is_none());
+        bench.press("Сбросить фильтры и поиск");
+        assert_eq!(bench.rows_shown(), 60);
+        // A table that is simply empty has nothing to take off.
+        let empty = Bench::with(true, Vec::new());
+        assert!(!empty.sees("Фильтры и поиск скрыли все строки"));
+    }
+
+    #[test]
+    fn a_draft_that_goes_with_its_filters_says_so() {
+        let mut bench = Bench::new(true);
+        bench.screen.table.filters = Filters { currency: Some("UZS".into()), days_of_week: vec![1, 2], ..Default::default() };
+        bench.screen.refresh_rows();
+        bench.ctx.toasts.clear();
+        // Nothing was waiting: a chip goes without a word.
+        bench.send(Msg::Remove(Facet::Days));
+        assert_eq!(bench.ctx.toasts, []);
+
+        bench.screen.open_filters();
+        bench.send(Msg::Operator(SHOPS[3].into()));
+        bench.escape();
+        assert!(bench.screen.has_filter_draft());
+        assert_eq!(bench.ctx.toasts, []);
+        let _ = bench.screen.update(Screen::Quick(Some("DEBIT")), &mut bench.ctx);
+        assert!(!bench.screen.has_filter_draft());
+        assert_eq!(bench.ctx.toasts, [(Tone::Neutral, DRAFT_DROPPED.to_string())]);
+        // Said once: there is nothing left to drop.
+        bench.send(Msg::RemoveAll);
+        assert_eq!(bench.ctx.toasts.len(), 1);
+    }
+
+    #[test]
+    fn the_sheet_fits_the_smallest_window_with_long_names() {
+        let mut bench = Bench::with(true, crowded_rows(date(2026, 11, 11)));
+        bench.resize(SMALL_WINDOW);
+        bench.screen.open_filters();
+        bench.send(Msg::Fold(Group::Period));
+        bench.send(Msg::Fold(Group::Operators));
+        bench.send(Msg::Operator(LONG_NAMES[0].into()));
+        bench.send(Msg::Operator(LONG_NAMES[1].into()));
+        assert_eq!(bench.form().count, Count::Found { found: 20, total: 190 });
+        // The frame of the sheet is whole: its name, its counter and every button of its foot.
+        for words in ["Фильтры", "не применено", "Найдено 20 из 190", "Отменить изменения", "Сбросить", "Закрыть", "Применить"] {
+            assert!(bench.shows_whole(words), "«{words}» does not fit the smallest window");
+        }
+        // A long name takes more lines; it does not push the list wider than the sheet.
+        let sheet = SMALL_WINDOW.width - WIDTH;
+        for name in LONG_NAMES {
+            let line = bench.place(name).unwrap_or_else(|| panic!("«{name}» is out of sight"));
+            assert!(line.x >= sheet && line.x + line.width <= SMALL_WINDOW.width, "«{name}» sticks out of the sheet: {line:?}");
+            assert!(line.height > 30.0, "«{name}» did not wrap: {line:?}");
+        }
+        // The list says that it is cut, and where to look for the rest.
+        assert!(bench.sees("Выбрано: 2"));
+        assert!(bench.sees(&format!("Показаны первые {} из {}. Уточните поиск, чтобы найти остальные.", ui::PICK_LIMIT, 134)));
+        // Folded, the group says the same in one line that stays inside the sheet.
+        bench.send(Msg::Fold(Group::Operators));
+        let summary = Group::Operators.summary(&bench.form().draft.read().0, &bench.screen.names()).unwrap();
+        assert!(summary.chars().count() <= SUMMARY_LENGTH, "{summary}");
+        let line = bench.place(&summary).unwrap_or_else(|| panic!("«{summary}» is out of sight"));
+        assert!(line.x >= sheet && line.x + line.width <= SMALL_WINDOW.width, "the summary sticks out: {line:?}");
     }
 
     #[test]
@@ -1950,27 +2192,8 @@ mod tests {
         assert!(started.elapsed().as_millis() < 200, "typing took {:?}", started.elapsed());
     }
 
-    /// Saves pictures of the bar and the sheet, for a person to look at. Only when asked:
-    /// `TBS_SHOTS=<folder> ICED_TEST_BACKEND=tiny-skia cargo test -p tbs-app p3_shots`.
-    #[test]
-    fn p3_shots() {
-        let Ok(folder) = std::env::var("TBS_SHOTS") else { return };
-        let folder = std::path::PathBuf::from(folder);
-        std::fs::create_dir_all(&folder).unwrap();
-        let shoot = |bench: &Bench, name: &str| {
-            let mut sim = Simulator::with_size(Settings::default(), WINDOW, bench.window());
-            let shot = sim.snapshot(&theme::iced_theme(false)).expect("a snapshot");
-            // The simulator names the file after its renderer and leaves one that is there alone.
-            let staging = folder.join(format!(".{name}"));
-            let _ = std::fs::remove_dir_all(&staging);
-            assert!(shot.matches_image(staging.join(name)).expect("a picture"));
-            let written = std::fs::read_dir(&staging).unwrap().flatten().next().expect("a file").path();
-            std::fs::rename(written, folder.join(format!("{name}.png"))).unwrap();
-            let _ = std::fs::remove_dir_all(&staging);
-        };
-
-        // Rows of the last sixty days, so that «Этот месяц» always has some.
-        let today = Local::now().date_naive();
+    /// The made-up rows moved to the last sixty days, so that «Этот месяц» always has some.
+    pub fn recent_rows(today: NaiveDate) -> Vec<Transaction> {
         let mut rows = rows();
         for (i, row) in rows.iter_mut().enumerate() {
             let day = today - Duration::days(i as i64);
@@ -1979,7 +2202,42 @@ mod tests {
             row.receiver_name = (i % 4 == 3).then(|| "Получатель Образцов".to_string());
             row.balance_after = Some(format!("{}.00", 5_000_000 - i * 37_500));
         }
-        let mut bench = Bench::with(true, rows);
+        rows
+    }
+
+    const LONG_NAMES: [&str; 2] = ["Общество с ограниченной ответственностью «Ромашка Маркет Плюс», филиал № 12 в Ташкенте", "Индивидуальный предприниматель Константинопольский Варфоломей Аристархович"];
+
+    /// The same rows with two operators of very long names, and a hundred and thirty more operators of a row each.
+    fn crowded_rows(today: NaiveDate) -> Vec<Transaction> {
+        let mut rows = recent_rows(today);
+        for (i, row) in rows.iter_mut().enumerate().filter(|(i, _)| i % 6 < 2) {
+            row.operator_raw = Some(LONG_NAMES[i % 6].into());
+            row.annotation_details = Some("оплата по договору поставки за третий квартал".into());
+        }
+        rows.extend((0..130).map(|i| Transaction {
+            id: 1000 + i,
+            transaction_date: Some(format!("{}T12:{:02}:00", today.format("%Y-%m-%d"), i % 60)),
+            amount: Some(format!("{}.00", 500 + i * 10)),
+            currency: Some("UZS".into()),
+            operator_raw: Some(format!("Поставщик № {:03}", i + 1)),
+            transaction_type: Some("DEBIT".into()),
+            ..Default::default()
+        }));
+        rows
+    }
+
+    /// Saves pictures of the bar and the sheet, for a person to look at. Only when asked:
+    /// `TBS_SHOTS=<folder> cargo test -p tbs-app --features devtools p3_shots`.
+    ///
+    /// Left to itself the simulator draws with wgpu, as the program does; in the Linux image
+    /// that is Mesa in software. `ICED_TEST_BACKEND=tiny-skia` draws too, but lets the text of
+    /// a cut column run past the scrollbar of the grid, which the program does not.
+    #[test]
+    fn p3_shots() {
+        let Some(folder) = shots_folder() else { return };
+        let today = Local::now().date_naive();
+        let (_, month_end) = Span::ThisMonth.range(today);
+        let mut bench = Bench::with(true, recent_rows(today));
         let _ = bench.screen.update(Screen::Year(today.year()), &mut bench.ctx);
 
         // The table with what is on above it.
@@ -1995,39 +2253,68 @@ mod tests {
         bench.send(Msg::State(AnnotationState::Missing));
         bench.send(Msg::Apply);
         assert!(!bench.is_open());
-        shoot(&bench, "p3-bar");
+        bench.shoot(&folder, "p3-bar");
 
         // The sheet with every group folded to its line.
         bench.send(Msg::Fold(Group::Period));
         bench.screen.open_filters();
-        shoot(&bench, "p3-sheet-folded");
+        bench.shoot(&folder, "p3-sheet-folded");
 
         // A period and a searchable list open, with an edit nobody applied yet.
         bench.send(Msg::Fold(Group::Period));
         bench.send(Msg::Fold(Group::Operators));
-        bench.send(Msg::Day(6));
-        bench.send(Msg::Day(0));
+        for day in 1..=5 {
+            bench.send(Msg::Day(day));
+        }
         bench.type_in(Field::OperatorSearch, "ма".into());
-        shoot(&bench, "p3-sheet-open");
+        bench.shoot(&folder, "p3-sheet-open");
 
         // A value that does not read, told under its field after «Применить» was refused.
         bench.send(Msg::Fold(Group::Operators));
-        bench.type_in(Field::DateTo, "31.11.2026".into());
+        bench.type_in(Field::DateTo, &format!("31.02.{}", today.year()));
         bench.type_in(Field::AmountMax, "сорок тысяч".into());
         bench.send(Msg::Apply);
         assert!(bench.is_open());
-        shoot(&bench, "p3-sheet-error");
+        bench.shoot(&folder, "p3-sheet-error");
 
         // The same sheet once the values read again: the counter is back.
-        bench.type_in(Field::DateTo, "30.11.2026".into());
+        bench.type_in(Field::DateTo, &date_text(Some(month_end)));
         bench.type_in(Field::AmountMax, "40000".into());
         bench.settle();
-        shoot(&bench, "p3-sheet-counter");
+        bench.shoot(&folder, "p3-sheet-counter");
 
         // Closed without «Применить»: the draft waits, and the toolbar says so.
         bench.escape();
-        shoot(&bench, "p3-bar-draft");
+        bench.shoot(&folder, "p3-bar-draft");
         bench.screen.open_filters();
-        shoot(&bench, "p3-sheet-draft");
+        bench.shoot(&folder, "p3-sheet-draft");
+
+        // The same draft in the dark theme.
+        bench.ctx.dark = true;
+        bench.shoot(&folder, "p3-sheet-draft-dark");
+        bench.ctx.dark = false;
+        bench.send(Msg::Revert);
+        bench.send(Msg::Close);
+
+        // The smallest window there is: long names on the bar and in a list too long to draw whole.
+        let mut small = Bench::with(true, crowded_rows(today));
+        small.resize(SMALL_WINDOW);
+        let _ = small.screen.update(Screen::Year(today.year()), &mut small.ctx);
+        small.screen.open_filters();
+        small.send(Msg::Operator(LONG_NAMES[0].into()));
+        small.send(Msg::Operator(LONG_NAMES[1].into()));
+        small.send(Msg::Operator("Поставщик № 007".into()));
+        small.send(Msg::Span(Span::Month));
+        small.type_in(Field::Details, "оплата по договору поставки за третий квартал");
+        small.send(Msg::Apply);
+        small.shoot(&folder, "p3-small-bar");
+        small.send(Msg::Fold(Group::Period));
+        small.send(Msg::Edit(Facet::Operators));
+        small.shoot(&folder, "p3-small-sheet-list");
+        small.type_in(Field::OperatorSearch, "поставщик № 1");
+        small.send(Msg::Operator("Поставщик № 101".into()));
+        small.shoot(&folder, "p3-small-sheet-search");
+        small.send(Msg::Fold(Group::Operators));
+        small.shoot(&folder, "p3-small-sheet-folded");
     }
 }
