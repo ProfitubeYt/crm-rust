@@ -614,7 +614,11 @@ impl App {
                 }
             }
             Message::Api(ApiEvent::SessionRevoked) => {
-                self.ctx.toast(Tone::Warning, "Сессия завершена, войдите снова");
+                // Every request the session failed says so: it is told once.
+                let news = "Сессия завершена, войдите снова";
+                if !self.toasts.iter().any(|toast| toast.message == news) {
+                    self.ctx.toast(Tone::Warning, news);
+                }
                 return self.sign_out();
             }
             Message::Api(ApiEvent::LaunchRequired) => {
@@ -1301,6 +1305,10 @@ mod hub_tests {
             assert!(on_the_start_window(&app));
             assert!(app.ctx.user.is_none() && app.tx.is_none());
             assert!(sees(&app, "Вход в Чеки") && sees(&app, "Сессия завершена, войдите снова"));
+            // Two requests failed on the same ended session: still one piece of news.
+            let _ = app.update(Message::Api(ApiEvent::SessionRevoked));
+            assert!(on_the_start_window(&app));
+            assert_eq!(app.toasts.len(), 1);
         }
     }
 
