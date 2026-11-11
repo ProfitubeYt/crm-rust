@@ -30,6 +30,9 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const DRAG_START: f32 = 6.0;
 const EDGE_SCROLL: f32 = 18.0;
 const CELL_PAD: f32 = 8.0;
+/// The line between two columns. iced snaps a quad to the pixel grid, so the
+/// line stays sharp wherever the scroll puts it.
+const SEPARATOR: f32 = 1.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Align {
@@ -535,7 +538,7 @@ impl<'a, D: GridData, Message> Grid<'a, D, Message> {
     ) {
         let selection = self.current(state);
         let scroll = state.scroll;
-        for row in rows {
+        for row in rows.clone() {
             let y = body.y + row as f32 * self.row_height - scroll.y;
             let line = Rectangle { x: clip.x, y, width: clip.width, height: self.row_height };
             let tone = self.data.row_tone(row);
@@ -561,16 +564,6 @@ impl<'a, D: GridData, Message> Grid<'a, D, Message> {
                 }
                 if selection.contains(row, col) {
                     quad(renderer, cell, p.selection);
-                }
-                if selection.cursor == Some((row, col)) {
-                    renderer.fill_quad(
-                        Quad {
-                            bounds: cell,
-                            border: Border { color: p.selection_edge, width: 1.5, radius: 0.0.into() },
-                            ..Quad::default()
-                        },
-                        Background::Color(Color::TRANSPARENT),
-                    );
                 }
                 let value = self.data.cell(row, col);
                 if value.is_empty() {
@@ -605,6 +598,31 @@ impl<'a, D: GridData, Message> Grid<'a, D, Message> {
                     visible,
                 );
             }
+        }
+
+        // The lines between columns go over every fill, so a painted, hovered or
+        // selected cell keeps its edge, and under the frame of the cursor. They
+        // end with the last row.
+        let foot = (body.y + self.content_height() - scroll.y).min(clip.y + clip.height);
+        if foot > clip.y {
+            for col in range.clone() {
+                quad(renderer, separator(columns, col, scroll.x, body.x, clip.y, foot - clip.y), p.border_strong);
+            }
+        }
+        if let Some((row, col)) = selection.cursor
+            && rows.contains(&row)
+            && range.contains(&col)
+        {
+            let cell = Rectangle {
+                x: body.x + columns.screen_x(col, scroll.x),
+                y: body.y + row as f32 * self.row_height - scroll.y,
+                width: columns.widths[col],
+                height: self.row_height,
+            };
+            renderer.fill_quad(
+                Quad { bounds: cell, border: Border { color: p.selection_edge, width: 1.5, radius: 0.0.into() }, ..Quad::default() },
+                Background::Color(Color::TRANSPARENT),
+            );
         }
     }
 
@@ -686,6 +704,8 @@ impl<'a, D: GridData, Message> Grid<'a, D, Message> {
             if state.hover_header == Some(col) && column.sortable {
                 quad(renderer, cell, p.hover);
             }
+            // The same line as between the cells below, so the two meet.
+            quad(renderer, separator(columns, col, state.scroll.x, header.x, header.y, header.height), p.border_strong);
             let arrow_room = if column.sorted.is_some() { 14.0 } else { 0.0 };
             let (anchor, align_x) = match column.align {
                 Align::Left => (x + CELL_PAD, text::Alignment::Left),
@@ -738,6 +758,18 @@ impl<'a, D: GridData, Message> Grid<'a, D, Message> {
 
 fn quad(renderer: &mut iced::Renderer, bounds: Rectangle, color: Color) {
     renderer.fill_quad(Quad { bounds, ..Quad::default() }, Background::Color(color));
+}
+
+/// The line at a column's right edge, `height` tall from `top`. The header and
+/// the rows both ask here, so their lines stand at the same place.
+fn separator(columns: &Columns, col: usize, scroll_x: f32, origin_x: f32, top: f32, height: f32) -> Rectangle {
+    Rectangle { x: origin_x + columns.edge_x(col, scroll_x) - SEPARATOR, y: top, width: SEPARATOR, height }
+}
+
+/// Where the pinned columns end. Darker than the lines between columns, so it
+/// still reads as the place the scrolling starts from.
+fn pinned_edge(area: Rectangle) -> Rectangle {
+    Rectangle { x: area.x + area.width - SEPARATOR, width: SEPARATOR, ..area }
 }
 
 fn rounded(renderer: &mut iced::Renderer, bounds: Rectangle, color: Color) {
@@ -1059,7 +1091,7 @@ where
             renderer.with_layer(fixed, |r| {
                 quad(r, fixed, p.surface);
                 self.draw_body(r, p, state, &columns, 0..columns.pinned, fixed, body, rows.clone());
-                quad(r, Rectangle { x: fixed.x + fixed.width - 1.0, width: 1.0, ..fixed }, p.border_strong);
+                quad(r, pinned_edge(fixed), p.control_edge);
             });
         }
         let header_moving = Rectangle { x: frame.header.x + pinned_w, width: (frame.header.width - pinned_w).max(0.0), ..frame.header };
@@ -1072,6 +1104,7 @@ where
         if pinned_w > 0.0 {
             renderer.with_layer(header_fixed, |r| {
                 self.draw_header(r, p, state, &columns, 0..columns.pinned, header_fixed, frame.header);
+                quad(r, pinned_edge(header_fixed), p.control_edge);
             });
         }
         renderer.with_layer(bounds, |r| {
@@ -1199,5 +1232,153 @@ fn record_draw(took: Duration) {
             worst as f64 / 1e6
         );
         *start = Instant::now();
+    }
+}
+
+/// Reads the lines back from a picture of the grid. The simulator draws through
+/// the same code as the window, at twice the size. Needs `png`, so it runs with
+/// `--features devtools`.
+#[cfg(all(test, feature = "devtools"))]
+mod tests {
+    use iced_test::Simulator;
+    use iced_test::core::Settings;
+
+    use super::*;
+
+    const WINDOW: Size = Size::new(420.0, 200.0);
+    const HEADER: f32 = 30.0;
+    const ROW: f32 = 28.0;
+
+    /// Cells without text: a pixel is then a fill or a line and nothing else.
+    struct Blank(usize);
+
+    impl GridData for Blank {
+        fn row_count(&self) -> usize {
+            self.0
+        }
+
+        fn cell(&self, _row: usize, _col: usize) -> Cow<'_, str> {
+            Cow::Borrowed("")
+        }
+    }
+
+    struct Picture {
+        width: usize,
+        rgba: Vec<u8>,
+    }
+
+    impl Picture {
+        /// The colour at a point of the layout; the picture is twice as large.
+        fn at(&self, x: f32, y: f32) -> Color {
+            let at = ((y * 2.0) as usize * self.width + (x * 2.0) as usize) * 4;
+            Color::from_rgb8(self.rgba[at], self.rgba[at + 1], self.rgba[at + 2])
+        }
+
+        fn is(&self, x: f32, y: f32, wanted: Color) -> bool {
+            let seen = self.at(x, y);
+            let near = |a: f32, b: f32| (a - b).abs() <= 3.0 / 255.0;
+            near(seen.r, wanted.r) && near(seen.g, wanted.g) && near(seen.b, wanted.b)
+        }
+    }
+
+    fn widths(all: &[f32]) -> Vec<GridColumn> {
+        all.iter().map(|width| GridColumn::new("", *width)).collect()
+    }
+
+    fn draw(columns: &[GridColumn], pinned: usize, rows: usize, selection: &Selection, dark: bool, scroll: f32) -> Picture {
+        let table: Element<'_, ()> = grid(Blank(rows), columns, selection, |_| ()).pinned(pinned).into();
+        let mut sim = Simulator::with_size(Settings::default(), WINDOW, table);
+        if scroll != 0.0 {
+            sim.point_at(Point::new(WINDOW.width / 2.0, WINDOW.height / 2.0));
+            let _ = sim.simulate([Event::Mouse(mouse::Event::WheelScrolled { delta: mouse::ScrollDelta::Pixels { x: -scroll, y: 0.0 } })]);
+        }
+        let shot = sim.snapshot(&theme::iced_theme(dark)).expect("a snapshot");
+        // The simulator names the file after its renderer.
+        let folder = tempfile::tempdir().unwrap();
+        assert!(shot.matches_image(folder.path().join("grid")).expect("a picture"));
+        let file = std::fs::read_dir(folder.path()).unwrap().flatten().next().expect("a file").path();
+        let mut reader = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(file).unwrap())).read_info().unwrap();
+        let mut rgba = vec![0; reader.output_buffer_size().expect("a picture that fits in memory")];
+        let info = reader.next_frame(&mut rgba).unwrap();
+        rgba.truncate(info.buffer_size());
+        Picture { width: info.width as usize, rgba }
+    }
+
+    fn palette(dark: bool) -> &'static Palette {
+        if dark { &theme::DARK } else { &theme::LIGHT }
+    }
+
+    /// The middle of the header, and of a row.
+    fn header_y() -> f32 {
+        HEADER / 2.0
+    }
+
+    fn row_y(row: usize) -> f32 {
+        HEADER + row as f32 * ROW + ROW / 2.0
+    }
+
+    #[test]
+    fn a_line_parts_every_column_in_the_header_and_in_the_rows_of_both_themes() {
+        let columns = widths(&[60.0, 90.0, 70.0, 120.0]);
+        let edges = [60.0, 150.0, 220.0, 340.0];
+        for dark in [false, true] {
+            let p = palette(dark);
+            assert_ne!(p.border_strong, p.surface);
+            let picture = draw(&columns, 0, 4, &Selection::default(), dark, 0.0);
+            for edge in edges {
+                for y in [header_y(), row_y(0), row_y(3)] {
+                    assert!(picture.is(edge - 0.5, y, p.border_strong), "no line at {edge}, {y} (dark: {dark}): {:?}", picture.at(edge - 0.5, y));
+                    assert!(picture.is(edge - 2.5, y, p.surface), "the line at {edge}, {y} is too wide on the left (dark: {dark})");
+                    assert!(picture.is(edge + 1.5, y, p.surface), "the line at {edge}, {y} is too wide on the right (dark: {dark})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_lines_end_with_the_last_row() {
+        let columns = widths(&[60.0, 90.0]);
+        let picture = draw(&columns, 0, 2, &Selection::default(), false, 0.0);
+        assert!(picture.is(59.5, row_y(1), theme::LIGHT.border_strong));
+        assert!(picture.is(59.5, row_y(3), theme::LIGHT.surface));
+    }
+
+    #[test]
+    fn the_lines_scroll_with_their_columns_and_the_pinned_ones_stay() {
+        // 800 of columns in a 410 body: 37 to the right puts every scrolling edge off its old place.
+        let columns = widths(&[60.0, 90.0, 110.0, 100.0, 130.0, 150.0, 160.0]);
+        let scroll = 37.0;
+        for dark in [false, true] {
+            let p = palette(dark);
+            let picture = draw(&columns, 2, 4, &Selection::default(), dark, scroll);
+            for y in [header_y(), row_y(1)] {
+                // Pinned: the line between the two, and the darker edge where they end.
+                assert!(picture.is(59.5, y, p.border_strong), "the pinned line moved at {y} (dark: {dark})");
+                assert!(picture.is(149.5, y, p.control_edge), "no pinned edge at {y} (dark: {dark}): {:?}", picture.at(149.5, y));
+                // Scrolling: at their columns' new edges, in the header as in the rows.
+                for edge in [260.0, 360.0] {
+                    let x = edge - scroll - 0.5;
+                    assert!(picture.is(x, y, p.border_strong), "no line at {x}, {y} (dark: {dark}): {:?}", picture.at(x, y));
+                    assert!(picture.is(edge - 0.5, y, p.surface), "a line stayed behind at {edge}, {y} (dark: {dark})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_selected_cell_keeps_its_line_and_the_cursor_keeps_its_frame() {
+        let columns = widths(&[60.0, 90.0, 70.0]);
+        let mut selection = Selection::single(0, 0);
+        selection.extend_to((1, 1));
+        let p = &theme::LIGHT;
+        let picture = draw(&columns, 0, 4, &selection, false, 0.0);
+        // Selected, not the cursor: the fill, and the line over it.
+        assert!(picture.is(30.0, row_y(0), p.selection));
+        assert!(picture.is(59.5, row_y(0), p.border_strong));
+        // The cursor: its frame is whole, over the line of its own column.
+        assert!(picture.is(149.5, row_y(1), p.selection_edge), "{:?}", picture.at(149.5, row_y(1)));
+        assert!(picture.is(60.5, row_y(1), p.selection_edge));
+        // The line before the cursor's cell belongs to the neighbour and stays.
+        assert!(picture.is(59.5, row_y(1), p.border_strong));
     }
 }

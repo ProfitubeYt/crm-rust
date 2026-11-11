@@ -50,6 +50,12 @@ impl Columns {
         if self.is_pinned(col) { start } else { start - scroll_x }
     }
 
+    /// Where a column's right edge sits inside the viewport: its resize grip,
+    /// and the line that parts it from the next column.
+    pub fn edge_x(&self, col: usize, scroll_x: f32) -> f32 {
+        self.screen_x(col, scroll_x) + self.widths[col]
+    }
+
     /// The scrolling columns that intersect a viewport of `width`.
     pub fn visible(&self, scroll_x: f32, width: f32) -> Range<usize> {
         let left = self.pinned_width + scroll_x;
@@ -81,10 +87,7 @@ impl Columns {
 
     /// The column whose right edge is within grip distance of `x`.
     pub fn grip_at(&self, x: f32, scroll_x: f32) -> Option<usize> {
-        let near = |col: usize| {
-            let edge = self.screen_x(col, scroll_x) + self.widths[col];
-            (edge - x).abs() <= GRIP
-        };
+        let near = |col: usize| (self.edge_x(col, scroll_x) - x).abs() <= GRIP;
         if let Some(col) = (0..self.pinned).rev().find(|c| near(*c)) {
             return Some(col);
         }
@@ -295,6 +298,54 @@ mod tests {
         assert_eq!(c.grip_at(149.0, 0.0), Some(1));
         assert_eq!(c.grip_at(100.0, 0.0), None);
         assert_eq!(c.grip_at(51.0, 0.0), Some(0));
+    }
+
+    #[test]
+    fn a_column_ends_where_the_next_one_starts() {
+        let c = cols();
+        for scroll in [0.0, 37.5, 120.0] {
+            for col in 0..c.len() - 1 {
+                // Not across the pinned edge: there the scrolling column slides under.
+                if c.is_pinned(col) == c.is_pinned(col + 1) {
+                    assert_eq!(c.edge_x(col, scroll), c.screen_x(col + 1, scroll), "column {col} at scroll {scroll}");
+                }
+            }
+        }
+        assert_eq!(c.edge_x(4, 0.0), c.total);
+    }
+
+    #[test]
+    fn edges_scroll_with_their_columns_and_pinned_ones_stay() {
+        let c = cols();
+        assert_eq!(c.edge_x(0, 0.0), 50.0);
+        assert_eq!(c.edge_x(0, 80.0), 50.0);
+        assert_eq!(c.edge_x(2, 0.0), 250.0);
+        assert_eq!(c.edge_x(2, 80.0), 170.0);
+    }
+
+    #[test]
+    fn an_edge_moves_with_its_column_when_columns_are_resized_or_moved() {
+        // The widths as they are while «100» is dragged out to 160, and after two columns swap.
+        let resized = Columns::new(vec![50.0, 160.0, 100.0], 1);
+        assert_eq!(resized.edge_x(1, 0.0), 210.0);
+        assert_eq!(resized.edge_x(2, 0.0), 310.0);
+        let moved = Columns::new(vec![50.0, 100.0, 160.0], 1);
+        assert_eq!(moved.edge_x(1, 0.0), 150.0);
+        assert_eq!(moved.edge_x(2, 0.0), 310.0);
+    }
+
+    #[test]
+    fn the_grip_is_on_the_line_between_columns() {
+        let c = cols();
+        for scroll in [0.0, 40.0] {
+            for col in c.visible(scroll, 400.0) {
+                let line = c.edge_x(col, scroll) - 1.0;
+                if line > c.pinned_width {
+                    assert_eq!(c.grip_at(line, scroll), Some(col), "column {col} at scroll {scroll}");
+                }
+            }
+        }
+        assert_eq!(c.grip_at(c.edge_x(0, 40.0) - 1.0, 40.0), Some(0));
     }
 
     #[test]
