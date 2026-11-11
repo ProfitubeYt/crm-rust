@@ -22,6 +22,11 @@ wry = "0.57"
 rfd = { version = "0.15", default-features = false, features = ["tokio"] }
 png = { version = "0.18", optional = true }
 
+# Windows needs no dialog backend; elsewhere rfd refuses to build without one.
+# This is what lets the test suite run on a Linux machine.
+[target.'cfg(not(windows))'.dependencies]
+rfd = { version = "0.15", default-features = false, features = ["tokio", "xdg-portal"] }
+
 [features]
 devtools = ["dep:png"]
 

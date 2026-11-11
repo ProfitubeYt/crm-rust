@@ -17,7 +17,7 @@ use sha1::Sha1;
 use tbs_core::api::{Api, NewTransaction, NewUser};
 use tbs_core::secret::{MemoryStore, SecretStore};
 use tbs_core::store::Store;
-use tbs_core::sync::{SyncResult, fetch_all, sync_transactions};
+use tbs_core::sync::{Mode, SyncResult, fetch_all, sync_transactions};
 
 struct Creds {
     url: String,
@@ -196,14 +196,14 @@ async fn locked_period_refuses(api: Api) {
 async fn sync_sees_a_change(api: Api) {
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(Store::open(&dir.path().join("cache.db")).expect("store"));
-    let first = sync_transactions(&api, store.clone(), false, |_, _| {}).await.expect("first sync");
+    let first = sync_transactions(&api, store.clone(), Mode::Quick, |_, _| {}).await.expect("first sync");
     assert!(matches!(first, SyncResult::Updated(_)), "the first sync brought nothing");
-    let quiet = sync_transactions(&api, store.clone(), false, |_, _| {}).await.expect("second sync");
+    let quiet = sync_transactions(&api, store.clone(), Mode::Quick, |_, _| {}).await.expect("second sync");
     assert!(matches!(quiet, SyncResult::Unchanged { .. }), "an idle sync downloaded again");
 
     let row = api.create_transaction(&new_row(&format!("E2E SYNC {}", stamp()))).await.expect("create");
     // The manifest stays cached after a write, so only a forced sync sees it now.
-    let after = sync_transactions(&api, store.clone(), true, |_, _| {}).await.expect("forced sync");
+    let after = sync_transactions(&api, store.clone(), Mode::Verify, |_, _| {}).await.expect("forced sync");
     assert!(matches!(&after, SyncResult::Updated(rows) if rows.iter().any(|t| t.id == row.id)), "the new row was not fetched");
     assert!(fetch_all(&api, |_, _| {}).await.unwrap().iter().any(|t| t.id == row.id));
     api.delete_transaction(row.id).await.expect("cleanup");

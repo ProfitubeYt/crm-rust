@@ -10,17 +10,50 @@ use tbs_core::query::{Dataset, Filters, Sort};
 
 use crate::grid::{Align, CellStyle, GridColumn, GridData, RowTone};
 
-/// Columns a fresh table starts without: the date and time already sit in
-/// «Дата и время», and the rest rarely changes. The columns menu brings them back.
-pub const QUIET: [Column; 5] = [Column::TransactionDate, Column::Time, Column::Day, Column::Currency, Column::SourceType];
+/// Columns a fresh table starts without. The date and time already sit in
+/// «Дата и время»; «Описание» is the per-operator note, which the ledger does
+/// not carry (its notes are «Подробности»). The view panel brings them back.
+pub const QUIET: [Column; 4] = [Column::TransactionDate, Column::Time, Column::Day, Column::Description];
 
-/// A fresh table's column order: who was paid, how much and which way come
-/// first, so they stay on screen however many of the text fields are filled.
+/// A fresh table reads like the customer's ledger, column for column: service,
+/// operation, operator, application, money, card, then the bookkeeping notes,
+/// and the receiver last. People check one against the other side by side.
 pub fn default_order() -> Vec<Column> {
+    let ledger = [
+        Column::RowNumber,
+        Column::OperationNumber,
+        Column::DateTime,
+        Column::SourceType,
+        Column::TransactionType,
+        Column::OperatorRaw,
+        Column::ApplicationMapped,
+        Column::Amount,
+        Column::BalanceAfter,
+        Column::CardLast4,
+        Column::IsP2p,
+        Column::AnnotationDetails,
+        Column::AnnotationPersonCode,
+        Column::AnnotationPeriod,
+        Column::AnnotationArticleCode,
+        Column::Currency,
+        Column::ReceiverName,
+        Column::ReceiverCard,
+    ];
+    let mut order = ledger.to_vec();
+    order.extend(columns::ALL.iter().copied().filter(|c| !ledger.contains(c)));
+    order
+}
+
+/// Which arrangement of the defaults a saved view was made under.
+pub const LAYOUT: u32 = 2;
+
+/// What a fresh table looked like before it followed the ledger: four columns
+/// that are nearly always empty came first and pushed the notes off the screen.
+fn first_layout() -> (Vec<Column>, [Column; 5]) {
     let lead = [Column::RowNumber, Column::OperationNumber, Column::DateTime, Column::OperatorRaw, Column::Amount, Column::TransactionType];
     let mut order = lead.to_vec();
     order.extend(columns::ALL.iter().copied().filter(|c| !lead.contains(c)));
-    order
+    (order, [Column::TransactionDate, Column::Time, Column::Day, Column::Currency, Column::SourceType])
 }
 
 pub const LOW_CONFIDENCE: f64 = 0.6;
@@ -194,6 +227,9 @@ mod cell_paint {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TableView {
+    /// Absent in views saved before the ledger layout, which reads as zero.
+    #[serde(default)]
+    pub layout: u32,
     pub order: Vec<Column>,
     pub hidden: Vec<Column>,
     pub widths: HashMap<Column, f32>,
@@ -210,6 +246,7 @@ pub struct TableView {
 impl Default for TableView {
     fn default() -> Self {
         Self {
+            layout: LAYOUT,
             order: default_order(),
             hidden: QUIET.to_vec(),
             widths: HashMap::new(),
@@ -240,6 +277,28 @@ impl TableView {
         }
         self.hidden.retain(|c| *c != LOCKED);
         self.pinned = self.pinned.min(MAX_PINNED);
+        self.adopt_ledger_layout();
+    }
+
+    /// A view nobody rearranged gets the ledger layout once. One that was
+    /// arranged by hand is the user's own and stays as it is.
+    fn adopt_ledger_layout(&mut self) {
+        if self.layout >= LAYOUT {
+            return;
+        }
+        self.layout = LAYOUT;
+        let (order, hidden) = first_layout();
+        let untouched = self.order == order && self.hidden.len() == hidden.len() && hidden.iter().all(|c| self.hidden.contains(c));
+        if untouched {
+            self.order = default_order();
+            self.hidden = QUIET.to_vec();
+        }
+    }
+
+    /// The ledger's order and set of columns, keeping widths, paint and filters.
+    pub fn use_ledger_columns(&mut self) {
+        self.order = default_order();
+        self.hidden = QUIET.to_vec();
     }
 
     pub fn visible(&self) -> Vec<Column> {
@@ -358,14 +417,83 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_table_puts_the_amount_before_the_text_fields() {
+    fn a_fresh_table_reads_like_the_ledger() {
         let view = TableView::default();
         let visible = view.visible();
-        let at = |c: Column| visible.iter().position(|v| *v == c).unwrap();
-        assert!(at(Column::Amount) < at(Column::ApplicationMapped));
-        assert!(at(Column::TransactionType) < at(Column::Description));
+        // The workbook's own order: Сервис, Операция, Оператор, Приложение, Сумма,
+        // Остаток, ПК, p2p, Подробности, Лицо, Период, Статья, Валюта, Получатель, Карта.
+        let ledger = [
+            Column::RowNumber,
+            Column::OperationNumber,
+            Column::DateTime,
+            Column::SourceType,
+            Column::TransactionType,
+            Column::OperatorRaw,
+            Column::ApplicationMapped,
+            Column::Amount,
+            Column::BalanceAfter,
+            Column::CardLast4,
+            Column::IsP2p,
+            Column::AnnotationDetails,
+            Column::AnnotationPersonCode,
+            Column::AnnotationPeriod,
+            Column::AnnotationArticleCode,
+            Column::Currency,
+            Column::ReceiverName,
+            Column::ReceiverCard,
+        ];
+        assert_eq!(visible, ledger);
         assert_eq!(view.order.len(), columns::ALL.len());
-        assert!(!visible.contains(&Column::Time));
+        // Not in the ledger: the split date and the per-operator note.
+        for quiet in [Column::TransactionDate, Column::Time, Column::Day, Column::Description] {
+            assert!(view.hidden.contains(&quiet) && view.order.contains(&quiet), "{quiet:?}");
+        }
+    }
+
+    #[test]
+    fn an_untouched_old_view_moves_to_the_ledger_layout_once() {
+        let (order, hidden) = first_layout();
+        let saved = serde_json::json!({ "order": order, "hidden": hidden, "pinned": 2, "widths": { "amount": 140.0 } });
+        let mut view: TableView = serde_json::from_value(saved).unwrap();
+        assert_eq!(view.layout, 0, "a view saved before the field must not pass for a new one");
+        view.repair();
+        assert_eq!(view.order, default_order());
+        assert_eq!(view.hidden, QUIET);
+        // What the user did set survives the move.
+        assert_eq!((view.pinned, view.width(Column::Amount)), (2, 140.0));
+        assert_eq!(view.layout, LAYOUT);
+        // And it is not done twice: hiding the same columns again is now a choice.
+        let (order, hidden) = first_layout();
+        let mut chosen = TableView { order: order.clone(), hidden: hidden.to_vec(), ..view };
+        chosen.repair();
+        assert_eq!(chosen.order, order);
+    }
+
+    #[test]
+    fn a_view_arranged_by_hand_is_left_alone() {
+        let (mut order, hidden) = first_layout();
+        order.swap(3, 4);
+        let mut moved: TableView = serde_json::from_value(serde_json::json!({ "order": order, "hidden": hidden })).unwrap();
+        moved.repair();
+        assert_eq!(moved.order, order);
+        assert_eq!(moved.layout, LAYOUT);
+
+        let (order, _) = first_layout();
+        let mut shown: TableView = serde_json::from_value(serde_json::json!({ "order": order, "hidden": [Column::Time] })).unwrap();
+        shown.repair();
+        assert_eq!(shown.order, order);
+        assert_eq!(shown.hidden, [Column::Time]);
+    }
+
+    #[test]
+    fn the_ledger_columns_can_be_asked_for_again() {
+        let mut view = TableView { order: vec![Column::Amount, Column::RowNumber], hidden: vec![Column::Amount], pinned: 1, ..Default::default() };
+        view.repair();
+        view.widths.insert(Column::Amount, 200.0);
+        view.use_ledger_columns();
+        assert_eq!(view.order, default_order());
+        assert_eq!(view.hidden, QUIET);
+        assert_eq!((view.pinned, view.width(Column::Amount)), (1, 200.0));
     }
 
     #[test]

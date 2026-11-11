@@ -9,7 +9,18 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::model::Transaction;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
+
+/// Names this build's picture of a row. The cache keeps rows as this build
+/// writes them, so a build that learns a field must not trust rows saved
+/// without it: they would show that field empty until something else changed.
+fn schema_stamp() -> String {
+    let fields = match serde_json::to_value(Transaction::default()) {
+        Ok(serde_json::Value::Object(map)) => map.keys().cloned().collect::<Vec<_>>().join(","),
+        _ => String::new(),
+    };
+    format!("{SCHEMA_VERSION}:{fields}")
+}
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -35,10 +46,10 @@ impl Store {
              CREATE TABLE IF NOT EXISTS transactions (id INTEGER PRIMARY KEY, seq INTEGER NOT NULL, body TEXT NOT NULL);",
         )?;
         let store = Store { conn: Mutex::new(conn) };
-        let version = store.get("schema_version")?.and_then(|v| v.parse::<i64>().ok());
-        if version != Some(SCHEMA_VERSION) {
+        let stamp = schema_stamp();
+        if store.get("schema_version")?.as_deref() != Some(stamp.as_str()) {
             store.clear()?;
-            store.set("schema_version", &SCHEMA_VERSION.to_string())?;
+            store.set("schema_version", &stamp)?;
         }
         Ok(store)
     }
@@ -74,7 +85,10 @@ impl Store {
     }
 
     /// Atomic: a crash leaves the previous snapshot, never half of a new one.
-    pub fn replace_transactions(&self, rows: &[Transaction], checksum: Option<&str>) -> rusqlite::Result<()> {
+    ///
+    /// `checksum` is what the server's manifest said when the rows were taken;
+    /// `digest` is what the rows themselves add up to (see [`crate::sync`]).
+    pub fn replace_transactions(&self, rows: &[Transaction], checksum: Option<&str>, digest: Option<&str>) -> rusqlite::Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM transactions", [])?;
@@ -85,10 +99,12 @@ impl Store {
                 insert.execute(params![row.id, seq as i64, body])?;
             }
         }
-        match checksum {
-            Some(c) => tx.execute("INSERT INTO kv (key, value) VALUES ('tx_checksum', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [c])?,
-            None => tx.execute("DELETE FROM kv WHERE key = 'tx_checksum'", [])?,
-        };
+        for (key, value) in [("tx_checksum", checksum), ("tx_digest", digest)] {
+            match value {
+                Some(v) => tx.execute("INSERT INTO kv (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [key, v])?,
+                None => tx.execute("DELETE FROM kv WHERE key = ?1", [key])?,
+            };
+        }
         tx.commit()
     }
 
@@ -96,16 +112,33 @@ impl Store {
         self.get("tx_checksum")
     }
 
-    /// Keeps the cache honest after an edit. The next sync sees a new server
-    /// checksum and refreshes the snapshot anyway.
+    /// The manifest moved but the rows turned out the same: remember the new
+    /// manifest so the next quick check does not download them again.
+    pub fn set_checksum(&self, checksum: Option<&str>) -> rusqlite::Result<()> {
+        match checksum {
+            Some(value) => self.set("tx_checksum", value),
+            None => self.conn.lock().unwrap().execute("DELETE FROM kv WHERE key = 'tx_checksum'", []).map(|_| ()),
+        }
+    }
+
+    /// What the whole snapshot added up to when it was saved, or `None` once a
+    /// single row has been written over it.
+    pub fn digest(&self) -> rusqlite::Result<Option<String>> {
+        self.get("tx_digest")
+    }
+
+    /// Keeps the cache honest after an edit. The snapshot is no longer the one
+    /// the digest was taken from, so the next verification replaces it whole.
     pub fn put_transaction(&self, row: &Transaction) -> rusqlite::Result<()> {
         let body = serde_json::to_string(row).expect("transaction serialises");
-        self.conn.lock().unwrap().execute(
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
             "INSERT INTO transactions (id, seq, body)
              VALUES (?1, (SELECT COALESCE(MAX(seq), -1) + 1 FROM transactions), ?2)
              ON CONFLICT(id) DO UPDATE SET body = excluded.body",
             params![row.id, body],
         )?;
+        conn.execute("DELETE FROM kv WHERE key = 'tx_digest'", [])?;
         Ok(())
     }
 
@@ -118,6 +151,7 @@ impl Store {
                 delete.execute([id])?;
             }
         }
+        tx.execute("DELETE FROM kv WHERE key = 'tx_digest'", [])?;
         tx.commit()
     }
 }
@@ -133,17 +167,18 @@ mod tests {
     #[test]
     fn snapshot_replaces_and_keeps_order() {
         let s = Store::in_memory().unwrap();
-        s.replace_transactions(&[tx(3), tx(1)], Some("sha:1")).unwrap();
-        s.replace_transactions(&[tx(9), tx(2), tx(5)], Some("sha:2")).unwrap();
+        s.replace_transactions(&[tx(3), tx(1)], Some("sha:1"), Some("d1")).unwrap();
+        s.replace_transactions(&[tx(9), tx(2), tx(5)], Some("sha:2"), Some("d2")).unwrap();
         let ids: Vec<i64> = s.load_transactions().unwrap().iter().map(|t| t.id).collect();
         assert_eq!(ids, [9, 2, 5]);
         assert_eq!(s.checksum().unwrap().as_deref(), Some("sha:2"));
+        assert_eq!(s.digest().unwrap().as_deref(), Some("d2"));
     }
 
     #[test]
     fn single_rows_update_in_place_and_append() {
         let s = Store::in_memory().unwrap();
-        s.replace_transactions(&[tx(3), tx(1)], Some("sha:1")).unwrap();
+        s.replace_transactions(&[tx(3), tx(1)], Some("sha:1"), Some("d1")).unwrap();
         let mut edited = tx(3);
         edited.operator_raw = Some("edited".into());
         s.put_transaction(&edited).unwrap();
@@ -155,23 +190,62 @@ mod tests {
     }
 
     #[test]
+    fn a_local_write_forgets_what_the_snapshot_added_up_to() {
+        let s = Store::in_memory().unwrap();
+        s.replace_transactions(&[tx(1), tx(2)], Some("sha:1"), Some("d1")).unwrap();
+        s.put_transaction(&tx(1)).unwrap();
+        assert_eq!(s.digest().unwrap(), None);
+        // The manifest mark stays: it is the server's word, not the rows'.
+        assert_eq!(s.checksum().unwrap().as_deref(), Some("sha:1"));
+        s.replace_transactions(&[tx(1), tx(2)], Some("sha:1"), Some("d1")).unwrap();
+        s.remove_transactions(&[2]).unwrap();
+        assert_eq!(s.digest().unwrap(), None);
+    }
+
+    #[test]
     fn survives_reopen_and_clears_checksum() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("cache.sqlite");
         {
             let s = Store::open(&path).unwrap();
-            s.replace_transactions(&[tx(1)], Some("a")).unwrap();
+            s.replace_transactions(&[tx(1)], Some("a"), Some("d")).unwrap();
         }
         let s = Store::open(&path).unwrap();
         assert_eq!(s.load_transactions().unwrap(), vec![tx(1)]);
-        s.replace_transactions(&[], None).unwrap();
+        assert_eq!(s.digest().unwrap().as_deref(), Some("d"));
+        s.replace_transactions(&[], None, None).unwrap();
         assert_eq!(s.checksum().unwrap(), None);
+        assert_eq!(s.digest().unwrap(), None);
+        s.set_checksum(Some("b")).unwrap();
+        assert_eq!(s.checksum().unwrap().as_deref(), Some("b"));
+        s.set_checksum(None).unwrap();
+        assert_eq!(s.checksum().unwrap(), None);
+    }
+
+    #[test]
+    fn a_cache_from_a_build_with_other_fields_is_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.sqlite");
+        {
+            let s = Store::open(&path).unwrap();
+            s.replace_transactions(&[tx(1)], Some("a"), Some("d")).unwrap();
+            // What the first builds wrote: a bare number, whatever their fields.
+            s.set("schema_version", "1").unwrap();
+        }
+        let s = Store::open(&path).unwrap();
+        assert!(s.load_transactions().unwrap().is_empty());
+        assert_eq!(s.checksum().unwrap(), None);
+        assert!(schema_stamp().contains("receiver_card") && schema_stamp().contains("description"));
+        // The same build finds its own cache again.
+        s.replace_transactions(&[tx(2)], Some("b"), Some("e")).unwrap();
+        drop(s);
+        assert_eq!(Store::open(&path).unwrap().load_transactions().unwrap(), vec![tx(2)]);
     }
 
     #[test]
     fn unreadable_row_is_skipped() {
         let s = Store::in_memory().unwrap();
-        s.replace_transactions(&[tx(1)], None).unwrap();
+        s.replace_transactions(&[tx(1)], None, None).unwrap();
         s.conn.lock().unwrap().execute("INSERT INTO transactions VALUES (2, 1, 'not json')", []).unwrap();
         assert_eq!(s.load_transactions().unwrap().len(), 1);
     }

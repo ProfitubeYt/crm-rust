@@ -66,6 +66,8 @@ pub struct TransactionPage {
     pub page: i64,
     pub page_size: i64,
     pub items: Vec<Transaction>,
+    /// `null` when the server has no rows to page through, as for a locked period.
+    #[serde(deserialize_with = "null_default")]
     pub has_more: bool,
     pub locked_notice: Option<serde_json::Value>,
     pub latest_transaction_at: Option<String>,
@@ -139,6 +141,13 @@ mod tests {
         assert_eq!(a.balance_after.as_deref(), Some("12.5"));
         let b: Transaction = serde_json::from_str(r#"{"id":2,"amount":null}"#).unwrap();
         assert_eq!(b.amount, None);
+    }
+
+    #[test]
+    fn a_locked_period_answers_without_pages() {
+        let page: TransactionPage = serde_json::from_str(r#"{"ok":true,"total":0,"page":1,"page_size":1000,"items":[],"has_more":null,"locked_notice":"Период закрыт"}"#).unwrap();
+        assert!(!page.has_more);
+        assert!(page.items.is_empty());
     }
 
     #[test]

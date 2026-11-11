@@ -107,6 +107,16 @@ pub fn type_label(code: Option<&str>) -> Option<&'static str> {
     }
 }
 
+/// The bookkeeping month the way the ledger writes it: the server stores
+/// `2026-03-01`, people read and type `03.2026`.
+pub fn period(raw: &str) -> String {
+    let raw = raw.trim();
+    match (raw.get(0..4), raw.get(4..5), raw.get(5..7)) {
+        (Some(year), Some("-"), Some(month)) if year.bytes().chain(month.bytes()).all(|b| b.is_ascii_digit()) => format!("{month}.{year}"),
+        _ => raw.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,5 +148,15 @@ mod tests {
     fn plurals() {
         let p = |n| plural(n, "запись", "записи", "записей");
         assert_eq!([p(1), p(2), p(5), p(11), p(21), p(112)], ["запись", "записи", "записей", "записей", "запись", "записей"]);
+    }
+
+    #[test]
+    fn a_period_reads_as_a_month() {
+        assert_eq!(period("2026-07-01"), "07.2026");
+        assert_eq!(period("2026-07"), "07.2026");
+        assert_eq!(period("07.2026"), "07.2026");
+        assert_eq!(period(" 2026-12-01 "), "12.2026");
+        assert_eq!(period("июль"), "июль");
+        assert_eq!(period(""), "");
     }
 }

@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 
-use crate::columns::{self, Column};
+use crate::columns::{self, Column, Labels};
 use crate::format;
 use crate::model::Transaction;
 
@@ -33,19 +33,26 @@ pub struct Row {
 }
 
 impl Row {
-    fn new(tx: Transaction) -> Self {
+    fn new(tx: Transaction, labels: &Labels) -> Self {
         let when = tx.transaction_date.as_deref().and_then(format::parse_datetime);
-        let cells = columns::ALL.iter().map(|c| c.display(&tx, when)).collect();
+        let cells = columns::ALL.iter().map(|c| c.display(&tx, when, labels)).collect();
         let parsed = tx.amount.as_deref().and_then(|a| a.trim().parse::<f64>().ok());
         let s = |v: &Option<String>| v.clone().unwrap_or_default();
-        let blob = format!(
-            "{} {} {} {} {}",
-            s(&tx.operator_raw),
-            s(&tx.application_mapped),
-            s(&tx.raw_message),
-            s(&tx.amount),
-            s(&tx.currency)
-        )
+        // Everything a person may remember a receipt by: who was paid, what the
+        // bank wrote, and what the bookkeeper noted next to it.
+        let blob = [
+            &tx.operator_raw,
+            &tx.application_mapped,
+            &tx.raw_message,
+            &tx.amount,
+            &tx.currency,
+            &tx.annotation_details,
+            &tx.description,
+            &tx.receiver_name,
+            &tx.receiver_card,
+        ]
+        .map(|value| value.as_deref().unwrap_or(""))
+        .join(" ")
         .to_lowercase();
         let status_blob =
             format!("{} {} {}", s(&tx.parsing_method), s(&tx.transaction_type_display), s(&tx.source_display)).to_lowercase();
@@ -73,6 +80,13 @@ impl Row {
 
     pub fn cell(&self, column: Column) -> &str {
         &self.cells[column.index()]
+    }
+
+    /// Rewrites the cells whose text comes from the dictionaries.
+    fn relabel(&mut self, labels: &Labels) {
+        for column in columns::ALL.into_iter().filter(|c| c.is_labelled()) {
+            self.cells[column.index()] = column.display(&self.tx, self.when, labels);
+        }
     }
 
     fn annotated(&self) -> bool {
@@ -106,6 +120,7 @@ pub fn period_key(raw: &str) -> Option<i32> {
 pub struct Dataset {
     pub rows: Vec<Row>,
     by_id: HashMap<i64, usize>,
+    labels: Labels,
     pub operators: Vec<String>,
     pub apps: Vec<String>,
     pub cards: Vec<String>,
@@ -116,7 +131,11 @@ pub struct Dataset {
 
 impl Dataset {
     pub fn build(txs: Vec<Transaction>) -> Self {
-        let rows: Vec<Row> = txs.into_iter().map(Row::new).collect();
+        Self::build_with(txs, Labels::default())
+    }
+
+    pub fn build_with(txs: Vec<Transaction>, labels: Labels) -> Self {
+        let rows: Vec<Row> = txs.into_iter().map(|tx| Row::new(tx, &labels)).collect();
         let by_id = rows.iter().enumerate().map(|(i, r)| (r.tx.id, i)).collect();
         let mut operators = BTreeSet::new();
         let mut apps = BTreeSet::new();
@@ -144,6 +163,7 @@ impl Dataset {
         Dataset {
             rows,
             by_id,
+            labels,
             operators: operators.into_iter().collect(),
             apps: apps.into_iter().collect(),
             cards: cards.into_iter().collect(),
@@ -157,10 +177,26 @@ impl Dataset {
         self.by_id.get(&id).map(|i| &self.rows[*i])
     }
 
+    pub fn labels(&self) -> &Labels {
+        &self.labels
+    }
+
+    /// The dictionaries arrive after the rows, and again whenever someone edits
+    /// them. Only the cells they name are rewritten.
+    pub fn set_labels(&mut self, labels: Labels) {
+        if self.labels == labels {
+            return;
+        }
+        for row in &mut self.rows {
+            row.relabel(&labels);
+        }
+        self.labels = labels;
+    }
+
     /// Replaces a row in place, or appends a new one, without rebuilding the
     /// rest. An edit must not cost a pass over the whole dataset.
     pub fn upsert(&mut self, tx: Transaction) {
-        let row = Row::new(tx);
+        let row = Row::new(tx, &self.labels);
         let add = |list: &mut Vec<String>, value: &Option<String>| {
             if let Some(value) = value.as_deref().filter(|v| !v.is_empty())
                 && let Err(at) = list.binary_search_by(|probe| probe.as_str().cmp(value))
@@ -839,6 +875,45 @@ mod tests {
         assert_eq!(ds.by_id(3).unwrap().cell(Column::Amount), "20,50");
         assert!(ds.by_id(99).is_none());
         assert_eq!(Filters { card: Some("1".into()), ..Default::default() }.active_count(), 1);
+    }
+
+    #[test]
+    fn dictionaries_name_the_codes_whenever_they_arrive() {
+        let coded = Transaction { annotation_article_code: Some("р1".into()), annotation_person_code: Some("ДиК".into()), ..tx(1, "2026-01-01T10:00:00", "1.00", "a") };
+        let mut ds = Dataset::build(vec![coded.clone()]);
+        assert_eq!(ds.rows[0].cell(Column::AnnotationArticleCode), "р1");
+        let labels = Labels::new([("ДиК".to_string(), "Дильшод К.".to_string())], [("р1".to_string(), "ФЗП,ФМП,МП".to_string())]);
+        ds.set_labels(labels.clone());
+        assert_eq!(ds.rows[0].cell(Column::AnnotationArticleCode), "р1=ФЗП,ФМП,МП");
+        assert_eq!(ds.rows[0].cell(Column::AnnotationPersonCode), "ДиК — Дильшод К.");
+        // A row that comes later, and a whole new snapshot, read the same way.
+        ds.upsert(Transaction { id: 2, ..coded.clone() });
+        assert_eq!(ds.by_id(2).unwrap().cell(Column::AnnotationArticleCode), "р1=ФЗП,ФМП,МП");
+        let rebuilt = Dataset::build_with(vec![coded], labels);
+        assert_eq!(rebuilt.rows[0].cell(Column::AnnotationArticleCode), "р1=ФЗП,ФМП,МП");
+        // The filter and the request body still speak in codes.
+        let by_code = Filters { annotation_articles: vec!["р1".into()], ..Default::default() };
+        assert_eq!(ids(&ds, &by_code), [1, 2]);
+        ds.set_labels(Labels::default());
+        assert_eq!(ds.rows[0].cell(Column::AnnotationArticleCode), "р1");
+    }
+
+    #[test]
+    fn search_reads_the_ledger_fields_too() {
+        let noted = Transaction {
+            annotation_details: Some("Аренда склада".into()),
+            receiver_name: Some("IVANOV IVAN".into()),
+            receiver_card: Some("860012******0907".into()),
+            description: Some("Интернет-магазин".into()),
+            ..tx(1, "2026-01-01T10:00:00", "1.00", "a")
+        };
+        let ds = Dataset::build(vec![noted, tx(2, "2026-01-02T10:00:00", "2.00", "b")]);
+        let s = |q: &str| ids(&ds, &Filters { search: q.into(), ..Default::default() });
+        assert_eq!(s("склада"), [1]);
+        assert_eq!(s("ivanov"), [1]);
+        assert_eq!(s("0907"), [1]);
+        assert_eq!(s("интернет"), [1]);
+        assert_eq!(s("-склада"), [2]);
     }
 
     #[test]

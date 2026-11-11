@@ -1,8 +1,43 @@
 //! The transaction table's columns: order, titles, default widths.
 
+use std::collections::HashMap;
+
 use crate::format;
 use crate::model::Transaction;
 use chrono::NaiveDateTime;
+
+/// The dictionaries behind the bookkeeping codes. A row stores `р1`; the
+/// ledger, and so the table, says `р1=ФЗП,ФМП,МП`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Labels {
+    pub persons: HashMap<String, String>,
+    pub articles: HashMap<String, String>,
+}
+
+impl Labels {
+    pub fn new(persons: impl IntoIterator<Item = (String, String)>, articles: impl IntoIterator<Item = (String, String)>) -> Self {
+        Self { persons: persons.into_iter().collect(), articles: articles.into_iter().collect() }
+    }
+
+    /// A name worth showing: present, and more than the code said again.
+    fn named<'a>(names: &'a HashMap<String, String>, code: &str) -> Option<&'a str> {
+        names.get(code).map(|name| name.trim()).filter(|name| !name.is_empty() && *name != code)
+    }
+
+    pub fn article(&self, code: &str) -> String {
+        match Self::named(&self.articles, code) {
+            Some(label) => format!("{code}={label}"),
+            None => code.to_string(),
+        }
+    }
+
+    pub fn person(&self, code: &str) -> String {
+        match Self::named(&self.persons, code) {
+            Some(name) => format!("{code} — {name}"),
+            None => code.to_string(),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -210,9 +245,11 @@ impl Column {
         v.clone().unwrap_or_default()
     }
 
-    pub fn display(self, tx: &Transaction, when: Option<NaiveDateTime>) -> String {
+    /// The text of a cell, as the ledger and the old client write it.
+    pub fn display(self, tx: &Transaction, when: Option<NaiveDateTime>, labels: &Labels) -> String {
         let text = |v: &Option<String>| v.as_deref().filter(|s| !s.is_empty()).unwrap_or(format::EMPTY).to_string();
         let blank = |v: &Option<String>| v.clone().unwrap_or_default();
+        let coded = |v: &Option<String>, name: fn(&Labels, &str) -> String| v.as_deref().map(str::trim).filter(|code| !code.is_empty()).map(|code| name(labels, code)).unwrap_or_default();
         match self {
             Column::RowNumber | Column::OperationNumber => String::new(),
             Column::DateTime => format::datetime(when),
@@ -234,18 +271,27 @@ impl Column {
                     String::new()
                 }
             }
-            Column::TransactionType => format::type_label(tx.transaction_type.as_deref())
-                .map(str::to_string)
-                .or_else(|| tx.transaction_type_display.clone())
+            // The server reads the receipt itself and may say «Изменение счета»
+            // where the bare code would read as a debit, so its wording wins.
+            Column::TransactionType => tx
+                .transaction_type_display
+                .clone()
+                .filter(|shown| !shown.trim().is_empty())
+                .or_else(|| format::type_label(tx.transaction_type.as_deref()).map(str::to_string))
                 .or_else(|| tx.transaction_type.clone())
                 .unwrap_or_else(|| format::EMPTY.into()),
             Column::Currency => text(&tx.currency),
             Column::SourceType => source_label(tx),
             Column::AnnotationDetails => blank(&tx.annotation_details),
-            Column::AnnotationPersonCode => blank(&tx.annotation_person_code),
-            Column::AnnotationPeriod => blank(&tx.annotation_period),
-            Column::AnnotationArticleCode => blank(&tx.annotation_article_code),
+            Column::AnnotationPersonCode => coded(&tx.annotation_person_code, Labels::person),
+            Column::AnnotationPeriod => tx.annotation_period.as_deref().map(format::period).unwrap_or_default(),
+            Column::AnnotationArticleCode => coded(&tx.annotation_article_code, Labels::article),
         }
+    }
+
+    /// Whether the cell's text depends on the dictionaries, not on the row alone.
+    pub fn is_labelled(self) -> bool {
+        matches!(self, Column::AnnotationPersonCode | Column::AnnotationArticleCode)
     }
 }
 
@@ -285,5 +331,53 @@ mod tests {
         assert_eq!(source_label(&tx), "Канал");
         tx.source_chat_title = Some("HUMO".into());
         assert_eq!(source_label(&tx), "HUMO");
+    }
+
+    fn ledger() -> Labels {
+        Labels::new(
+            [("СТ".to_string(), "СТ".to_string()), ("ДиК".to_string(), "Дильшод К.".to_string())],
+            [("р1".to_string(), "ФЗП,ФМП,МП".to_string()), ("п9".to_string(), "  ".to_string())],
+        )
+    }
+
+    #[test]
+    fn bookkeeping_columns_read_like_the_ledger() {
+        let tx = Transaction {
+            annotation_article_code: Some("р1".into()),
+            annotation_person_code: Some("ДиК".into()),
+            annotation_period: Some("2026-07-01".into()),
+            ..Default::default()
+        };
+        let labels = ledger();
+        assert_eq!(Column::AnnotationArticleCode.display(&tx, None, &labels), "р1=ФЗП,ФМП,МП");
+        assert_eq!(Column::AnnotationPersonCode.display(&tx, None, &labels), "ДиК — Дильшод К.");
+        assert_eq!(Column::AnnotationPeriod.display(&tx, None, &labels), "07.2026");
+        // What is edited, pasted and sent stays the code.
+        assert_eq!(Column::AnnotationArticleCode.raw_value(&tx), "р1");
+    }
+
+    #[test]
+    fn a_code_without_a_name_stays_a_code() {
+        let labels = ledger();
+        let tx = |person: &str, article: &str| Transaction { annotation_person_code: Some(person.into()), annotation_article_code: Some(article.into()), ..Default::default() };
+        // The name repeats the code, the label is blank, the code is unknown.
+        assert_eq!(Column::AnnotationPersonCode.display(&tx("СТ", "п9"), None, &labels), "СТ");
+        assert_eq!(Column::AnnotationArticleCode.display(&tx("СТ", "п9"), None, &labels), "п9");
+        assert_eq!(Column::AnnotationArticleCode.display(&tx("СТ", "р7"), None, &Labels::default()), "р7");
+        assert_eq!(Column::AnnotationArticleCode.display(&Transaction::default(), None, &labels), "");
+        assert_eq!(Column::AnnotationPeriod.display(&Transaction::default(), None, &labels), "");
+    }
+
+    #[test]
+    fn the_type_is_worded_by_the_server() {
+        let labels = Labels::default();
+        let mut tx = Transaction { transaction_type: Some("DEBIT".into()), transaction_type_display: Some("Изменение счета".into()), ..Default::default() };
+        assert_eq!(Column::TransactionType.display(&tx, None, &labels), "Изменение счета");
+        tx.transaction_type_display = Some(" ".into());
+        assert_eq!(Column::TransactionType.display(&tx, None, &labels), "Списание");
+        tx.transaction_type = Some("OTHER".into());
+        assert_eq!(Column::TransactionType.display(&tx, None, &labels), "OTHER");
+        tx.transaction_type = None;
+        assert_eq!(Column::TransactionType.display(&tx, None, &labels), format::EMPTY);
     }
 }

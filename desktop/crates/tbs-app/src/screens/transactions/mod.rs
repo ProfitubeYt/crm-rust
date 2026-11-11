@@ -10,18 +10,18 @@ mod menus;
 pub mod table;
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use iced::event::{self, Event};
 use iced::keyboard::{self, Key, key::Named};
 use iced::widget::{Id, Space, Stack, column, container, opaque, operation, row};
 use iced::{Alignment, Fill, Subscription, Task, window};
 use tbs_core::api::Api;
-use tbs_core::columns::Column;
+use tbs_core::columns::{Column, Labels};
 use tbs_core::model::Transaction;
 use tbs_core::query::{Dataset, Scope, Sort};
 use tbs_core::store::Store;
-use tbs_core::sync::{SyncResult, sync_transactions};
+use tbs_core::sync::{Mode, SyncResult, sync_transactions};
 
 use crate::ctx::{Ctx, SyncState, text_error};
 use crate::grid::{self, GridColumn, GridEvent, GridKey, Selection};
@@ -42,6 +42,9 @@ const STATE: &str = "transactions";
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(200);
 const SEARCH_ID: &str = "tx-search";
 const FOOTER_HEIGHT: f32 = 36.0;
+/// How long the manifest alone is believed. It cannot see everything (see
+/// `tbs_core::sync`), so this often the rows themselves are compared.
+const VERIFY_EVERY: Duration = Duration::from_secs(300);
 
 /// A value too heavy to clone that must still ride in a message once.
 pub struct Parcel<T>(Arc<Mutex<Option<T>>>);
@@ -74,7 +77,7 @@ pub enum Msg {
     Enter,
     Cached(Parcel<Dataset>),
     Sync(bool),
-    SyncDone(Result<Option<Parcel<Dataset>>, String>),
+    SyncDone(Mode, Result<Option<Parcel<Dataset>>, String>),
     Options(Result<(Vec<String>, Vec<String>), String>),
     Choices(Result<Choices, String>),
     Search(String),
@@ -153,6 +156,8 @@ pub struct Transactions {
     admin: bool,
     offline: bool,
     want_sync: Option<bool>,
+    /// When the rows on screen were last proven equal to the server's.
+    verified_at: Option<Instant>,
     loaded: bool,
     reveal: Option<(u64, usize)>,
     reveal_token: u64,
@@ -182,8 +187,8 @@ async fn build(rows: Vec<Transaction>) -> Parcel<Dataset> {
     Parcel::new(data)
 }
 
-async fn run_sync(api: Api, store: Arc<Store>, force: bool) -> Result<Option<Parcel<Dataset>>, String> {
-    match sync_transactions(&api, store, force, |_, _| {}).await.map_err(text_error)? {
+async fn run_sync(api: Api, store: Arc<Store>, mode: Mode) -> Result<Option<Parcel<Dataset>>, String> {
+    match sync_transactions(&api, store, mode, |_, _| {}).await.map_err(text_error)? {
         SyncResult::Unchanged { .. } => Ok(None),
         SyncResult::Updated(rows) => Ok(Some(build(rows).await)),
     }
@@ -250,6 +255,7 @@ impl Transactions {
             admin: ctx.is_admin(),
             offline: !ctx.online,
             want_sync: None,
+            verified_at: None,
             loaded: false,
             reveal: None,
             reveal_token: 0,
@@ -334,6 +340,11 @@ impl Transactions {
         self.access.data_scope(self.year)
     }
 
+    /// The dictionaries as the table's cells need them: a name for each code.
+    fn labels(&self) -> Labels {
+        Labels::new(self.choices.persons.iter().cloned(), self.choices.articles.iter().cloned())
+    }
+
     fn locked_view(&self) -> bool {
         self.access.locked_view(self.admin, self.year)
     }
@@ -415,6 +426,8 @@ impl Transactions {
     fn accept(&mut self, data: Dataset, ctx: &Ctx) {
         let before = self.row_ids();
         self.data = data;
+        let labels = self.labels();
+        self.data.set_labels(labels);
         self.loaded = true;
         merge(&mut self.operator_options, self.data.operators.clone());
         merge(&mut self.app_options, self.data.apps.clone());
@@ -476,7 +489,10 @@ impl Transactions {
             Msg::Noop => {}
             Msg::Enter => {
                 self.refresh_keeping_selection();
-                return access::fetch_all(ctx);
+                // Another screen, or another person, may have changed the rows or
+                // the dictionaries while the table was out of sight, and the
+                // manifest is too slow a witness for that: the rows are compared.
+                return Task::batch([access::fetch_all(ctx), Self::fetch_dictionaries(ctx), Task::done(Msg::Sync(true))]);
             }
             Msg::Cached(parcel) => {
                 if let Some(data) = parcel.take()
@@ -484,7 +500,9 @@ impl Transactions {
                 {
                     self.accept(data, ctx);
                 }
-                return Task::done(Msg::Sync(false));
+                // The cache is what the table said last time. It is shown at once
+                // and proven against the server straight after.
+                return Task::done(Msg::Sync(true));
             }
             Msg::Sync(force) => {
                 let Some(store) = ctx.store.clone() else { return Task::none() };
@@ -493,15 +511,25 @@ impl Transactions {
                     return Task::none();
                 }
                 if ctx.sync == SyncState::Syncing {
+                    // A demanded refresh must not be lost to the one in flight,
+                    // which may have read the server before the change it is for.
+                    if force {
+                        self.want_sync = Some(true);
+                    }
                     return Task::none();
                 }
+                let stale = self.verified_at.is_none_or(|at| at.elapsed() >= VERIFY_EVERY);
+                let mode = if force || stale { Mode::Verify } else { Mode::Quick };
                 ctx.sync = SyncState::Syncing;
-                return Task::perform(run_sync(ctx.api.clone(), store, force), Msg::SyncDone);
+                return Task::perform(run_sync(ctx.api.clone(), store, mode), move |result| Msg::SyncDone(mode, result));
             }
-            Msg::SyncDone(result) => {
+            Msg::SyncDone(mode, result) => {
                 match result {
                     Ok(parcel) => {
                         ctx.sync = SyncState::Idle;
+                        if mode == Mode::Verify {
+                            self.verified_at = Some(Instant::now());
+                        }
                         if let Some(data) = parcel.and_then(|p| p.take()) {
                             self.accept(data, ctx);
                         }
@@ -509,10 +537,19 @@ impl Transactions {
                     Err(reason) => ctx.sync = SyncState::Error(reason),
                 }
                 self.loaded = true;
+                if !self.locked_view()
+                    && let Some(force) = self.want_sync.take()
+                {
+                    return Task::done(Msg::Sync(force));
+                }
             }
             Msg::Options(Ok((operators, apps))) => self.add_options(operators, apps),
             Msg::Options(Err(reason)) => tracing::warn!("operator list: {reason}"),
-            Msg::Choices(Ok(choices)) => self.choices = choices,
+            Msg::Choices(Ok(choices)) => {
+                self.choices = choices;
+                let labels = self.labels();
+                self.data.set_labels(labels);
+            }
             Msg::Choices(Err(reason)) => tracing::warn!("annotation dictionaries: {reason}"),
             Msg::Search(value) => {
                 self.search = value;

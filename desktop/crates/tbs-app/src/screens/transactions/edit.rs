@@ -87,12 +87,9 @@ pub fn field_of(column: Column) -> Option<&'static str> {
     }
 }
 
-/// `2026-03-01` is shown and typed as `03.2026`.
+/// `2026-03-01` is shown and typed as `03.2026`, in the cell and in its editor alike.
 fn month_text(raw: &str) -> String {
-    match (raw.get(0..4), raw.get(5..7)) {
-        (Some(year), Some(month)) if year.bytes().all(|b| b.is_ascii_digit()) => format!("{month}.{year}"),
-        _ => raw.to_string(),
-    }
+    format::period(raw)
 }
 
 /// The text an editor opens with, and the text a copy puts on the clipboard.

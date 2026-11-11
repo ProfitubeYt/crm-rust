@@ -151,7 +151,9 @@ mod tests {
     #[test]
     fn the_watch_state_survives_a_restart() {
         let dir = tempfile::tempdir().unwrap();
-        let state = WatchState { file_path: Some("C:\\book.xlsm".into()), enabled: true, last_sha256: Some("ab".into()), last_run_at: None };
+        // A path of this platform, so the file name is found on any of them.
+        let path = dir.path().join("book.xlsm");
+        let state = WatchState { file_path: Some(path), enabled: true, last_sha256: Some("ab".into()), last_run_at: None };
         state.save(dir.path());
         assert_eq!(WatchState::load(dir.path()), state);
         assert_eq!(state.file_name().as_deref(), Some("book.xlsm"));

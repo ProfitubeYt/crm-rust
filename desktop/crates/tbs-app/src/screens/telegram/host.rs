@@ -17,7 +17,7 @@ use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use wry::dpi::{LogicalPosition, LogicalSize};
 use wry::http::{Request, Response, StatusCode};
-use wry::{NewWindowResponse, PageLoadEvent, PermissionKind, PermissionResponse, Rect, RequestAsyncResponder, WebContext, WebView, WebViewBuilder, WebViewBuilderExtWindows};
+use wry::{NewWindowResponse, PageLoadEvent, PermissionKind, PermissionResponse, Rect, RequestAsyncResponder, WebContext, WebView, WebViewBuilder};
 
 use super::assets::{self, CONTENT_SECURITY_POLICY, ENTRY, ORIGIN};
 
@@ -188,10 +188,24 @@ fn page_new_window(url: String) -> NewWindowResponse {
     NewWindowResponse::Deny
 }
 
-#[cfg(feature = "devtools")]
+#[cfg(all(windows, feature = "devtools"))]
 fn debug_port(offset: u16) -> Option<String> {
     let port: u16 = std::env::var("TBS_WEB_DEBUG").ok()?.parse().ok()?;
     Some(format!("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={}", port + offset))
+}
+
+/// The browser's own shortcuts (F5, Ctrl+F…) and its context menu are WebView2
+/// switches. The other platforms have none, and the program is only built
+/// there to run its tests.
+#[cfg(windows)]
+fn without_browser_chrome(builder: WebViewBuilder<'_>) -> WebViewBuilder<'_> {
+    use wry::WebViewBuilderExtWindows;
+    builder.with_browser_accelerator_keys(false).with_default_context_menus(false)
+}
+
+#[cfg(not(windows))]
+fn without_browser_chrome(builder: WebViewBuilder<'_>) -> WebViewBuilder<'_> {
+    builder
 }
 
 pub fn create_page(window: &dyn Window, spec: PageSpec, runtime: Handle) -> Result<(), String> {
@@ -204,9 +218,8 @@ pub fn create_page(window: &dyn Window, spec: PageSpec, runtime: Handle) -> Resu
         .with_background_color(background(spec.dark))
         .with_visible(false)
         .with_devtools(cfg!(feature = "devtools"))
-        .with_hotkeys_zoom(false)
-        .with_browser_accelerator_keys(false)
-        .with_default_context_menus(false)
+        .with_hotkeys_zoom(false);
+    let builder = without_browser_chrome(builder)
         .with_initialization_script("window.__TBS_NATIVE_SHELL__ = true;")
         .with_asynchronous_custom_protocol("tbs".into(), move |_, request, responder| serve(&api, &runtime, request, responder))
         .with_ipc_handler(|request| emit(Signal::Page(request.into_body())))
@@ -217,9 +230,12 @@ pub fn create_page(window: &dyn Window, spec: PageSpec, runtime: Handle) -> Resu
             _ => PermissionResponse::Deny,
         })
         .with_url(format!("{ORIGIN}/{ENTRY}?theme={theme}"));
-    #[cfg(feature = "devtools")]
+    #[cfg(all(windows, feature = "devtools"))]
     let builder = match debug_port(0) {
-        Some(args) => builder.with_additional_browser_args(args),
+        Some(args) => {
+            use wry::WebViewBuilderExtWindows;
+            builder.with_additional_browser_args(args)
+        }
         None => builder,
     };
     let view = builder.build_as_child(&window).map_err(|error| error.to_string())?;
@@ -240,9 +256,8 @@ pub fn create_mini(window: &dyn Window, url: &str, area: Area, dir: PathBuf) -> 
         .with_background_color(background(true))
         .with_visible(false)
         .with_devtools(false)
-        .with_hotkeys_zoom(false)
-        .with_browser_accelerator_keys(false)
-        .with_default_context_menus(false)
+        .with_hotkeys_zoom(false);
+    let builder = without_browser_chrome(builder)
         .with_initialization_script_for_main_only(MINI_BRIDGE, true)
         .with_ipc_handler(|request| {
             let raw = request.into_body();
@@ -274,9 +289,12 @@ pub fn create_mini(window: &dyn Window, url: &str, area: Area, dir: PathBuf) -> 
         })
         .with_permission_handler(|_| PermissionResponse::Deny)
         .with_url(url);
-    #[cfg(feature = "devtools")]
+    #[cfg(all(windows, feature = "devtools"))]
     let builder = match debug_port(1) {
-        Some(args) => builder.with_additional_browser_args(args).with_devtools(true),
+        Some(args) => {
+            use wry::WebViewBuilderExtWindows;
+            builder.with_additional_browser_args(args).with_devtools(true)
+        }
         None => builder,
     };
     let view = builder.build_as_child(&window).map_err(|error| error.to_string())?;

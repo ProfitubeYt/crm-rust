@@ -12,7 +12,7 @@ use tbs_core::query::{Dataset, Filters, Scope, Sort};
 use tbs_core::reqwest;
 use tbs_core::secret::{MemoryStore, SecretStore};
 use tbs_core::store::Store;
-use tbs_core::sync::{SyncResult, fetch_all, sync_transactions};
+use tbs_core::sync::{Mode, SyncResult, fetch_all, sync_transactions};
 
 struct Creds {
     url: String,
@@ -83,12 +83,12 @@ async fn concurrent_calls_recover_from_a_dead_access_token(api: &Api) {
 
 async fn sync_downloads_then_stays_quiet(api: &Api) {
     let store = Arc::new(Store::in_memory().unwrap());
-    let first = sync_transactions(api, store.clone(), false, |_, _| {}).await.unwrap();
+    let first = sync_transactions(api, store.clone(), Mode::Quick, |_, _| {}).await.unwrap();
     let SyncResult::Updated(rows) = first else { panic!("first sync must download") };
     assert!(!rows.is_empty());
     assert_eq!(store.load_transactions().unwrap().len(), rows.len());
 
-    let second = sync_transactions(api, store.clone(), false, |_, _| {}).await.unwrap();
+    let second = sync_transactions(api, store.clone(), Mode::Quick, |_, _| {}).await.unwrap();
     assert!(matches!(second, SyncResult::Unchanged { .. }), "{second:?}");
 }
 
