@@ -4,8 +4,10 @@ The desktop client in Rust: iced for the interface, WebView2 only for the
 Telegram section, whose page is built from `frontend/` and embedded at compile
 time. The Electron client in `frontend/` stays until the switch.
 
-The program is called TBS inform CRM wherever a person reads its name. The
-executable, the data folder, the keyring entry and the setup's file name keep
+The program is called TBS inform CRM wherever a person reads its name: on its
+window, on the start window every launch opens with, in the setup. A workspace
+opened from the start window goes by its own name in its rail, «Чеки» for now.
+The executable, the data folder, the keyring entry and the setup's file name keep
 `tbsparcer`: installed clients find their settings and their updates by them.
 
 - `crates/tbs-core`: API, cache, exports, no interface. A future CRM can reuse it.
@@ -29,6 +31,21 @@ and `TBS_CMD` hooks. Release builds do not have them.
 
 `live_writes` (`TBS_E2E_WRITES=1`) and the `live_ui` flow (`TBS_E2E_LOGIN=<login.json>`)
 change data. Run them against a local copy of the database, never the server.
+
+## A window without Windows
+
+`tools/linux-dev.Dockerfile` builds and tests the client on Linux. To see the
+real window there, with no server and no desktop at hand:
+
+    python3 tools/window-check.py up start shot first-launch
+    python3 tools/window-check.py click 610 178 type anna click 610 253 type anna-secret key Return wait 9 shot table
+    python3 tools/window-check.py down
+
+`tools/stub-server.py` stands in for the backend (sign-in, session, eighty made-up
+rows; it is not the backend and checks nothing a server would), Xvfb is the
+screen, a keyring on a private D-Bus keeps the saved session, and xdotool is the
+mouse and the keyboard. The pictures are of that screen, not of the test
+simulator. `window-check.py` lists what it needs installed and every step.
 
 ## Setup
 
