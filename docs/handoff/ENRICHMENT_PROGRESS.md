@@ -103,10 +103,12 @@ receipt is predicted only from earlier confirmed ones:
   cards (112 of 121 such notes): the note records the counterpart card of an internal transfer.
   The receipt itself does not contain that card, so it works as part of a confirmed pattern, not
   as something to generate.
-- «ДиК» is an accountable-person code (28 receipts). A number such as `0626` after it occurs
-  nowhere in production. The owner confirmed on 2026-11-11 that «DIK 0626» was given as an
-  example of an existing label and that its number must not be interpreted or generated: a label
-  is reused whole, and only when the matching evidence is sufficient.
+- «ДиК» is an accountable-person code (28 receipts). A number such as `0626` after it was not
+  found in any receipt field that was queried. What the number in the task's example «DIK 0626»
+  stands for is **not established**: asked on 2026-11-11, the owner chose "something else" than
+  the readings offered, and the follow-up question about its meaning has no answer yet. Until it
+  has one, the number is not interpreted, split or generated: a confirmed note is reused whole,
+  and only when the matching evidence is sufficient.
 - The 106 agent-written and 28 rule-written values are the system's own output and are never
   used as training evidence.
 
@@ -120,11 +122,14 @@ sheets) heads the assembled block: `№`, `1`, **`Дата_Время`**, **`(Б
 - `(Без дубля)` — the same timestamp made unique: the n-th receipt with an identical timestamp
   on a sheet gets `+ n × 0.0001 day` (8.64 s). It is how the workbook tells same-minute receipts
   apart; it is not a second clock and never a different date.
+- Format: both are Excel date-time cells with one number format, `dd/mm/yy hh:mm` (one template
+  row of the CardXabar sheet has `dd/mm/yy h:mm`). At that format the two columns read alike on
+  the sheet; the shift is in the value, not in what is shown.
 
 The workbook export already follows this, and it is not changed by this work: the owner
 clarified on 2026-11-11 that item 4 is about the desktop table only, with the workbook as the
-reference for the order. The desktop table has no `(Без дубля)` column, and «Тип» stands between
-«Операция» and «Оператор».
+reference for the order. Before this work the desktop table had no `(Без дубля)` column, and
+«Тип» stood between «Операция» and «Оператор» (section 10).
 
 ## 7. Plan
 
@@ -270,12 +275,131 @@ and 392 different notes occur among 1 064. That is a limit of the source, not of
 Verification (verified): `tests/test_details_matching.py` 28 passed; backend suite
 `1226 passed, 1 skipped` (`--ignore=tools`).
 
-## 10. Status
+## 10. Milestone 4 — desktop column order (2026-11-11)
+
+Two commits that touch `desktop/` only, `a3e1835` and `afdf88b` (the second narrows what a click
+on the new column does; take both): `tbs-core` `columns.rs`, `format.rs`, `query.rs`; `tbs-app`
+`screens/transactions/table.rs`, `edit.rs`, and literal counts in the tests of `view.rs`. No
+backend, API, export, workbook, grid-rendering, hub, authentication or menu code.
+
+A fresh table, left to right:
+
+| | Desktop title | Workbook heading | What the cell holds |
+|---|---|---|---|
+| | `№`, `№ опер.` | `№`, `1` | position in the table; number through time |
+| 1 | `Дата и время` | `Дата_Время` | the receipt's own time, to the minute |
+| 2 | `(Без дубля)` | `(Без дубля)` | the same time made unique, to the second — **new** |
+| 3 | `Источник` | `Сервис` | where the receipt came from: CardXabar, HUMO Card, … |
+| 4 | `Операция` | `Операция` | the bank's own line: payment, account change, … |
+| 5 | `Оператор/Продавец` | same | |
+| 6 | `Приложение` | same | section 4 |
+| 7 | `Сумма` | same | |
+| 8 | `Остаток` | same | |
+| 9 | `ПК` | same | last four digits as text, zeros in front kept |
+| 10 | `П2П` | `p2p` | `1` or an empty cell |
+| 11 | `Подробности` | same | |
+
+Then, as before, `Лицо`, `Период`, `Статья`, and after them `Тип`, `Валюта`, `Получатель`,
+`Карта получателя`. `Дата`, `Время`, `День`, `Описание` stay one tick away in the view panel.
+No column was removed: a fresh table shows 20 of 24 (19 of 23 before).
+
+- **`(Без дубля)`** follows the rule of the workbook export: the receipt's time plus 8.64 s for
+  every earlier receipt with the same timestamp. "Earlier" is the order of arrival (receipt id),
+  counted over all sources as on the workbook's combined first sheet, so a receipt's value does
+  not change with sorting, filtering or paging; it is recomputed when a receipt's time is edited
+  or a receipt is deleted. The export counts down its own sheet: oldest-first it gives the same
+  values, newest-first the steps fall on the receipts of one timestamp in reverse, and a
+  per-bank sheet counts within the bank. Shown to the second, because at the workbook's minute
+  format the two dates would read alike on screen. Read-only, sortable, copied as shown; an
+  export sorted by it is sorted by time. The server needed no change.
+- **«Тип»** left the ledger's run and stands after «Статья». «Операция» (the bank's line) and
+  «Тип» (the server's word, the one that is edited) remain two columns.
+- **«П2П»** cells read `1` or nothing; they used to read «П2П». The editor is unchanged.
+- **«ПК»** needed no change: it is text from the API model to the cell, the sort, the copy and
+  both exports. Tests now pin a card ending `0626`.
+- **Titles are as they were** («Дата и время», «Источник», «П2П»): the same words label the
+  filters and the view panel. The workbook's wording is a one-line change per title in
+  `Column::title` — the owner's call, not made here.
+
+Saved views (`LAYOUT` 3 → 4), each case under test:
+
+| Saved view | After the update |
+|---|---|
+| untouched default of any earlier build | the new sequence, once; widths, pinning, density, sorting, filters, paint and page size kept |
+| arranged by hand (a column moved, shown or hidden) | its columns in their places; `(Без дубля)` waits unticked at the end; «Как в книге Excel» applies the new sequence on request |
+| named saved views | the same two rules, view by view |
+| saved by this build and opened again | nothing moves |
+
+Verification (verified; Linux container, Rust 1.99.1): `cargo test -p tbs-core` 120 unit and 2
+integration tests passed; `cargo test -p tbs-app --features devtools` 268 passed. The suite's
+own picture test (`p4_shots`) was run and looked at: the header reads `№`, `№ опер.`,
+`Дата и время`, `(Без дубля)`, `Источник`, `Операция`, `Оператор/Продавец`, `Приложение`, and
+the view panel lists all 24 columns in the order above, 20 ticked.
+
+Not verified: the Windows build and installer, and the table on a real screen with live data.
+
+## 11. Integration notes for the hub / UI session
+
+- **Nothing of yours is edited.** The two desktop commits do not touch `crates/tbs-app/src/grid/`,
+  `app.rs`, `ui.rs`, `theme.rs`, the hub, authentication or menu screens, the transactions
+  screen's `mod.rs`, nor `UI_PROGRESS.md`, `BACKEND_PROGRESS.md`, `IMPLEMENTATION_PLAN.md`.
+- **Where the branches can meet**: `screens/transactions/table.rs`. The hunks here are
+  `default_order`, `LAYOUT`, `LATER`, `third_layout`, `repair`, `adopt_ledger_layout`,
+  `date_linked`, one arm of `TxGrid::cell` (the word «П2П» removed) and tests; `grid_columns`,
+  `cell_style` and `row_tone` are untouched. A conflict there is textual: keep both sides.
+- **If your branch adds a column or changes the default order**: a new column goes last in
+  `Column` and `columns::ALL`, is listed in `LATER` in the order it came, and `LAYOUT` goes up by
+  one with the previous default kept as a `*_layout()` function. Otherwise an untouched saved
+  view is taken for one arranged by hand and stops following the ledger.
+- **Literal counts in tests**: tests that say «Показано 19 из …», «Столбцы · 19» or
+  «Столбцов: 19» need 20, and 21 where one more column is ticked.
+- **Pinned block**: with three columns pinned, the pinned edge now falls between «Дата и время»
+  and «(Без дубля)». Nothing to change in the separator code; it is the place to look at.
+- **Pictures**: `desktop/docs/screenshots/p3-*.png` and `p4-*.png` were made before this order
+  and are left alone. Make them again once both branches are in:
+  `TBS_SHOTS=<folder> cargo test -p tbs-app --features devtools p3_shots`, then `p4_shots`.
+- **Rolling the client back**: a view saved by this build names `date_time_dedup`. Client 2.0.1
+  cannot read that name, so it starts from its default view and an empty list of saved views.
+  Keep a copy of the client's state folder before a rollback.
+- **Backend of this branch** (`3dbdbf4`, `92f3a4a`): revision `20261112_0033` adds
+  `transactions.application_src` and `application_confidence` and must be applied before the new
+  code serves; there is no other schema change. The transaction responses carry both fields; the
+  desktop does not read them yet. No route was added or removed.
+- **Historical processing is applied nowhere.** Both scripts print aggregates and write nothing
+  without `--apply`. From `backend/`, after the migration: `python -m scripts.backfill_applications`
+  (`--revalidate` also corrects or clears earlier automatic values, `--top N` lists the most
+  frequent operators left empty and may print names) and `python -m scripts.enrich_details`
+  (`--revalidate` with `--apply` also corrects or takes back notes an earlier rule wrote).
+  `--apply` on production needs the owner's explicit go-ahead and a backup first.
+
+## 12. Open questions and limits
+
+- **«DIK 0626»**: what the number stands for is unanswered (section 5). Nothing waits on it: no
+  rule reads inside a note.
+- **About twenty operator families** name something the owner never filed (section 8). One
+  dictionary line each, entered in the reference screen, settles old and new receipts alike.
+- **For review, unchanged**: 4 stored `UzumBank` where the evidence says `Uzum`; 2 receipts
+  ambiguous between `Paynet` and `Xazna`.
+- **AI**: no provider or budget decision is needed for what was built. The existing switch
+  `AI_APPLICATION_MAPPING_ENABLED` stays off; no adapter was added and no call was made.
+- **«Подробности»**: about one automatic note in twenty is expected to differ from what the
+  accountant would write (section 9); such a note carries the `rule` provenance and any manual
+  edit replaces it.
+- **Desktop titles**: «Источник» / `Сервис`, «Дата и время» / `Дата_Время`, «П2П» / `p2p`
+  (section 10).
+- **Not verified here**: the Windows build and installer; `--apply` of either script against
+  real data (local tests and read-only dry-runs only).
+
+## 13. Status
 
 | Milestone | State |
 |---|---|
 | 1. Investigation and plan | measured, pushed `9287e0f` |
 | 2. Application detection, provenance, dry-run | verified, pushed `3dbdbf4` |
-| 3. Details matching, dry-run | verified, pushed |
-| 4. Desktop column order (separate commit) | not started |
+| 3. Details matching, dry-run | verified, pushed `92f3a4a` |
+| 4. Desktop column order (separate commits) | verified on Linux, pushed `a3e1835`, `afdf88b` |
 | 5. Optional AI adapter | not built: not justified (section 8) |
+
+Final check on the tree of `afdf88b` (verified): backend `1226 passed, 1 skipped`
+(`--ignore=tools`), tools `2 passed`; `tbs-core` 120 + 2 passed; `tbs-app` 268 passed.
+Branch `work/receipt-enrichment`; this file is the last commit on it.
