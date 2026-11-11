@@ -18,7 +18,10 @@ fn chosen() -> Option<PathBuf> {
 
 #[cfg(not(test))]
 async fn ask_where(name: &str) -> Option<PathBuf> {
-    let target = rfd::AsyncFileDialog::new().set_file_name(name).add_filter("Книга Excel", &["xlsx"]).save_file().await?;
+    // The dialog offers the kind of workbook the name says it is: a macro
+    // workbook saved as .xlsx would not open.
+    let kind = std::path::Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("xlsx").to_owned();
+    let target = rfd::AsyncFileDialog::new().set_file_name(name).add_filter("Книга Excel", &[kind.as_str()]).save_file().await?;
     Some(target.path().to_path_buf())
 }
 

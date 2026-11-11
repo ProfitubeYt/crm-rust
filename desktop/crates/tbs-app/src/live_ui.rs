@@ -607,29 +607,35 @@ async fn export(d: &mut Drive) {
     choose_file(None);
 }
 
-/// A connection made in the panel is on the server and can be withdrawn.
+/// A workbook made in the panel is on the server, its file is saved, and it
+/// can be taken away again.
 async fn excel(d: &mut Drive) {
     let name = format!("E2EUI {}", stamp());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("book.xlsm");
+    choose_file(Some(path.clone()));
     d.click("Excel-синхронизация");
     d.until_seen("Название книги").await;
     d.fill("Название книги", &name);
+    d.fill("Пароль книги", "e2e-Book-12345");
     d.pump(Duration::from_millis(800)).await; // the button waits for the list
-    d.click("Создать подключение");
+    d.click("Создать и скачать книгу");
     let wanted = name.clone();
-    let grants = d.until_server("the grant", async |api| api.excel_grants().await.unwrap(), move |all| all.iter().any(|g| g.name == wanted)).await;
-    let id = grants.iter().find(|g| g.name == name).unwrap().id.clone();
+    let made = d.until_server("the workbook", async |api| api.excel_activations().await.unwrap(), move |all| all.iter().any(|a| a.name.as_deref() == Some(wanted.as_str()))).await;
+    let id = made.iter().find(|a| a.name.as_deref() == Some(name.as_str())).unwrap().workbook_id.clone();
+    saved(d, &path).await;
     d.until_seen(&name).await;
-    println!("ok    excel connection made");
+    println!("ok    excel workbook made and saved");
 
-    d.pump(Duration::from_millis(300)).await;
-    let live = grants.iter().filter(|g| g.revoked_at.is_none()).count();
-    assert_eq!(live, 1, "a live grant is left over from an earlier run");
-    d.click("Отозвать");
+    d.pump(Duration::from_millis(500)).await; // the panel is busy until the file is written
+    // The newest workbook is the first in the list.
+    d.click("Убрать пароль");
     let gone = id.clone();
-    d.until_server("the revocation", async |api| api.excel_grants().await.unwrap(), move |all| all.iter().filter(|g| g.id == gone).all(|g| g.revoked_at.is_some())).await;
+    d.until_server("the removal", async |api| api.excel_activations().await.unwrap(), move |all| all.iter().all(|a| a.workbook_id != gone)).await;
     d.pump(Duration::from_millis(500)).await; // closing waits for the reply
     d.click("Готово");
-    println!("ok    excel connection withdrawn");
+    choose_file(None);
+    println!("ok    excel workbook removed");
 }
 
 fn ledger_book(operator: &str, details: &str, year: i32) -> Vec<u8> {

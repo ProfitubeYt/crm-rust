@@ -23,12 +23,15 @@ pub struct ExcelGrant {
     pub device_bound: bool,
 }
 
-/// The owner's password that lets a new computer open a shared workbook.
+/// The owner's password that lets a new computer open a shared workbook. A
+/// workbook the server made has a name too; one connected by hand has none.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct ExcelActivation {
     #[serde(deserialize_with = "null_default")]
     pub workbook_id: String,
+    pub name: Option<String>,
+    pub created_at: Option<String>,
     pub updated_at: Option<String>,
     pub locked_until: Option<String>,
 }
@@ -63,7 +66,28 @@ struct ActivationReply {
     activation: ExcelActivation,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct WorkbookReply {
+    workbook: ExcelActivation,
+}
+
 impl Api {
+    /// Makes a workbook on the server: a new id with this password behind it.
+    /// Its file comes configured, so in Excel only the password is left to type.
+    /// The server writes into the file the address this client reaches it by.
+    pub async fn excel_create_workbook(&self, name: &str, password: &str) -> Result<ExcelActivation, ApiError> {
+        let body = json!({ "name": name, "password": password, "server_url": self.base() });
+        let reply: WorkbookReply = self.post("/api/excel/workbooks", &body).await?;
+        Ok(reply.workbook)
+    }
+
+    /// The configured file of a workbook, and the name the server gives it.
+    /// It holds no token and no password, so it can be fetched again any time.
+    pub async fn excel_workbook_file(&self, workbook_id: &str) -> Result<(Option<String>, Vec<u8>), ApiError> {
+        self.download(&format!("/api/excel/workbooks/{workbook_id}/file"), &[("server_url", self.base())]).await
+    }
+
     pub async fn excel_grants(&self) -> Result<Vec<ExcelGrant>, ApiError> {
         let reply: Grants = self.get("/api/excel/grants", &[]).await?;
         Ok(reply.grants)
@@ -109,5 +133,17 @@ mod tests {
         assert_eq!(grant.id, "12");
         assert_eq!(grant.name, "");
         assert!(!grant.device_bound);
+    }
+
+    #[test]
+    fn a_workbook_reads_with_and_without_a_name() {
+        let made: WorkbookReply =
+            serde_json::from_str(r#"{"workbook":{"workbook_id":"w1","name":"Касса","created_at":"2026-11-11T10:00:00","updated_at":"2026-11-11T10:00:00","locked_until":null}}"#).unwrap();
+        assert_eq!(made.workbook.workbook_id, "w1");
+        assert_eq!(made.workbook.name.as_deref(), Some("Касса"));
+        // A server that has not learnt names yet sends neither field.
+        let old: ExcelActivation = serde_json::from_str(r#"{"workbook_id":"w2","updated_at":null,"locked_until":null}"#).unwrap();
+        assert_eq!(old.name, None);
+        assert_eq!(old.created_at, None);
     }
 }

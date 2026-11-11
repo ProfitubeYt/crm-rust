@@ -415,6 +415,49 @@ async fn excel(api: Api, url: String) {
     let workbook = api.excel_workbook().await;
     println!("      workbook -> {:?}", workbook.as_ref().map(Vec::len));
     assert_eq!(&workbook.expect("workbook")[..2], b"PK");
+
+    // A workbook the server makes: its file is ready, and the password alone
+    // connects a computer, the way the macro does it.
+    let name = format!("E2E книга {}", stamp());
+    let made = api.excel_create_workbook(&name, "e2e-Book-12345").await.expect("create workbook");
+    assert!(!made.workbook_id.is_empty(), "the workbook came back without an id");
+    assert_eq!(made.name.as_deref(), Some(name.as_str()));
+    assert!(api.excel_activations().await.unwrap().iter().any(|a| a.workbook_id == made.workbook_id && a.name.as_deref() == Some(name.as_str())), "the workbook is not listed");
+    let (file_name, file) = api.excel_workbook_file(&made.workbook_id).await.expect("workbook file");
+    println!("      configured workbook -> {} bytes as {file_name:?}", file.len());
+    assert_eq!(&file[..2], b"PK");
+    assert!(file_name.is_some_and(|n| n.ends_with(".xlsm")), "the file has no workbook name");
+
+    let http = reqwest::Client::new();
+    let device = format!("e2e-device-{}", stamp());
+    let activate = |password: &'static str| {
+        http.post(format!("{url}/api/excel/v1/activate"))
+            .header("X-Excel-Workbook", &made.workbook_id)
+            .header("X-Excel-Device", &device)
+            .json(&json!({ "device_name": "E2E ПК", "password": password }))
+            .send()
+    };
+    assert_eq!(activate("not-the-password").await.expect("activate call").status().as_u16(), 401);
+    let activated = activate("e2e-Book-12345").await.expect("activate call");
+    assert_eq!(activated.status().as_u16(), 201);
+    let reply: Value = activated.json().await.expect("activation reply");
+    let token = reply["token"].as_str().expect("a token for this computer");
+    let receipts = http
+        .get(format!("{url}/api/excel/v1/snapshot"))
+        .bearer_auth(token)
+        .header("X-Excel-Workbook", &made.workbook_id)
+        .header("X-Excel-Device", &device)
+        .send()
+        .await
+        .expect("snapshot call");
+    assert!(receipts.status().is_success(), "{}", receipts.status());
+
+    let grants = api.excel_grants().await.unwrap();
+    let computer = grants.iter().find(|g| g.workbook_id.as_deref() == Some(made.workbook_id.as_str()) && g.revoked_at.is_none()).expect("the computer's connection");
+    assert!(computer.device_bound, "the connection is not tied to the computer");
+    api.excel_revoke_grant(&computer.id).await.expect("disconnect the computer");
+    api.excel_remove_password(&made.workbook_id).await.expect("remove the workbook");
+    assert!(!api.excel_activations().await.unwrap().iter().any(|a| a.workbook_id == made.workbook_id));
 }
 
 async fn gates(api: Api) {
