@@ -600,7 +600,7 @@ mod tests {
         assert!(by_amount.starts_with("Сейчас: по столбцу «Сумма», по убыванию."), "{by_amount}");
         assert!(sort_words(&Sort { column: Column::Operation, descending: false }).contains("«Операция», по возрастанию"));
 
-        assert_eq!(describe(&TableView::default()), "Столбцов: 19 · Средний");
+        assert_eq!(describe(&TableView::default()), "Столбцов: 20 · Средний");
         let narrowed = TableView {
             hidden: Vec::new(),
             density: Density::Ultra,
@@ -616,8 +616,8 @@ mod tests {
         bench.press("Вид");
         assert!(matches!(bench.screen.sheet, Sheet::View(_)));
         // Columns first: how many are shown, of all there are today.
-        assert!(bench.sees("Вид таблицы") && bench.sees(&shown_of_all(19)) && bench.sees("закреплено слева: 3"));
-        assert!(bench.sees("Столбцы · 19") && bench.sees("Отображение") && bench.sees("Сохранённые виды"));
+        assert!(bench.sees("Вид таблицы") && bench.sees(&shown_of_all(20)) && bench.sees("закреплено слева: 3"));
+        assert!(bench.sees("Столбцы · 20") && bench.sees("Отображение") && bench.sees("Сохранённые виды"));
         bench.press("Отображение");
         for name in ["Плотность строк", "Строк на странице", "Закреплённые столбцы", "Порядок строк"] {
             assert!(bench.sees(name), "no «{name}»");
@@ -645,13 +645,13 @@ mod tests {
         act(&mut bench, Msg::Search("опис".into()));
         bench.press("Описание");
         assert!(bench.screen.columns.contains(&Column::Description));
-        assert!(bench.sees(&shown_of_all(20)) && bench.sees("Столбцы · 20"));
+        assert!(bench.sees(&shown_of_all(21)) && bench.sees("Столбцы · 21"));
         assert!(!bench.on_disk().hidden.contains(&Column::Description));
         act(&mut bench, Msg::Search(String::new()));
         bench.press("Сумма");
         assert!(!bench.screen.columns.contains(&Column::Amount));
         assert!(bench.on_disk().hidden.contains(&Column::Amount));
-        assert!(bench.sees(&shown_of_all(19)));
+        assert!(bench.sees(&shown_of_all(20)));
         // The row number stays, whatever is pressed or sent.
         assert!(!bench.try_press("№"));
         act(&mut bench, Msg::Toggle(LOCKED, false));
@@ -711,7 +711,7 @@ mod tests {
         assert_eq!(bench.screen.columns, columns);
         assert!(bench.sees("Стрелки порядка вернутся, когда поиск будет пуст."));
         // The tally above the list is of the table, not of what the search left.
-        assert!(bench.sees(&shown_of_all(19)));
+        assert!(bench.sees(&shown_of_all(20)));
         act(&mut bench, Msg::Search("нет такого".into()));
         assert!(bench.sees("Такого столбца нет. Измените поиск."));
         bench.press("Очистить");
@@ -853,7 +853,7 @@ mod tests {
         assert_eq!(bench.screen.presets[0].view, saved);
         assert_eq!(bench.screen.preset_name, "");
         assert!(bench.sees("Сохранённые виды · 1") && bench.sees("применён"));
-        assert!(bench.sees("Столбцов: 20 · Компактный · фильтров: 1"));
+        assert!(bench.sees("Столбцов: 21 · Компактный · фильтров: 1"));
         let on_disk = Transactions::load_presets(&bench.ctx);
         assert_eq!((on_disk.len(), &on_disk[0].view), (1, &saved));
 
@@ -971,11 +971,11 @@ mod tests {
             Filters { date_from: day(1), date_to: day(30), transaction_types: vec!["DEBIT".into()], source_channel: Some("TELEGRAM".into()), source_chat_ids: vec![-1001234567890], ..Default::default() }
         );
 
-        // One arranged by hand («Описание» shown) keeps its columns; the new one waits unticked at the end.
+        // One arranged by hand («Описание» shown) keeps its columns; the new ones wait unticked at the end.
         let unmarked = &presets[1].view;
-        assert_eq!(unmarked.hidden, [Column::TransactionDate, Column::Time, Column::Day, Column::Operation]);
-        assert_eq!(unmarked.order.last(), Some(&Column::Operation));
-        assert_eq!(unmarked.visible().len(), columns::COUNT - 4);
+        assert_eq!(unmarked.hidden, [Column::TransactionDate, Column::Time, Column::Day, Column::Operation, Column::DateTimeDedup]);
+        assert_eq!(unmarked.order[columns::COUNT - 2..], [Column::Operation, Column::DateTimeDedup]);
+        assert_eq!(unmarked.visible().len(), columns::COUNT - 5);
         assert!(unmarked.visible().contains(&Column::Description));
         assert_eq!((unmarked.width(Column::Description), unmarked.density, unmarked.pinned, unmarked.page_size), (320.0, Density::Compact, 1, PageSize::All));
         assert_eq!(unmarked.sort, Sort { column: Column::Amount, descending: true });
@@ -1055,10 +1055,10 @@ mod tests {
             assert!(at.x >= sheet && at.x + at.width <= SMALL_WINDOW.width && at.y >= 0.0 && at.y + at.height <= SMALL_WINDOW.height, "«{words}» sticks out of the sheet: {at:?}");
         };
         act(&mut bench, Msg::Open(Tab::Columns));
-        for words in ["Вид таблицы", "Столбцы · 19", "Отображение", "Сохранённые виды", "Показать все", "Как в книге Excel", "Сбросить ширину", "Скрыть все", "Сбросить вид", "Готово", "№", "Сумма"] {
+        for words in ["Вид таблицы", "Столбцы · 20", "Отображение", "Сохранённые виды", "Показать все", "Как в книге Excel", "Сбросить ширину", "Скрыть все", "Сбросить вид", "Готово", "№", "Сумма"] {
             inside(&bench, words);
         }
-        inside(&bench, &shown_of_all(19));
+        inside(&bench, &shown_of_all(20));
         // The list scrolls under its own search; the head and the foot stay where they are.
         let (list, foot) = (bench.place("№").unwrap(), bench.place("Готово").unwrap());
         assert!(list.y > bench.place("Показать все").unwrap().y && list.y < foot.y, "list {list:?}, foot {foot:?}");
@@ -1092,7 +1092,7 @@ mod tests {
         let mut bench = Bench::with(true, recent_rows(today));
         tell(&mut bench, Screen::Year(today.year()));
 
-        // The columns of a fresh table: the ledger's nineteen, three of them pinned.
+        // The columns of a fresh table: the ledger's twenty, three of them pinned.
         act(&mut bench, Msg::Open(Tab::Columns));
         bench.shoot(&folder, "p4-columns");
         act(&mut bench, Msg::Search("получ".into()));

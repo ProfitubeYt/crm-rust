@@ -46,6 +46,14 @@ pub fn datetime_str(raw: Option<&str>) -> String {
     datetime(raw.and_then(parse_datetime))
 }
 
+/// To the second: what tells two receipts of one minute apart in «(Без дубля)».
+pub fn datetime_seconds(v: Option<NaiveDateTime>) -> String {
+    match v {
+        Some(d) => format!("{} {}:{:02}", date(v), time(v), d.second()),
+        None => EMPTY.into(),
+    }
+}
+
 pub fn weekday(v: Option<NaiveDateTime>) -> &'static str {
     v.map_or(EMPTY, |d| WEEKDAYS[d.weekday().num_days_from_sunday() as usize])
 }

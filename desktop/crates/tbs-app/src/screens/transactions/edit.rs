@@ -41,8 +41,9 @@ pub enum Kind {
 
 /// These cells open the detail sheet instead of an editor. «Операция» only
 /// selects: it is read off the receipt, and «Тип» is where the type is set.
+/// «(Без дубля)» is worked out from the times of the receipts, not typed.
 pub fn read_only(column: Column) -> bool {
-    matches!(column, Column::RowNumber | Column::OperationNumber | Column::TransactionDate | Column::Day | Column::Operation)
+    matches!(column, Column::RowNumber | Column::OperationNumber | Column::TransactionDate | Column::Day | Column::Operation | Column::DateTimeDedup)
 }
 
 /// The dictionary choices for the annotation columns.
@@ -539,7 +540,7 @@ impl Transactions {
             let value = match column {
                 Column::RowNumber => (self.position(row) + 1).to_string(),
                 Column::OperationNumber => super::table::operation_number(&self.table.sort, self.matched_len(), self.position(row)).to_string(),
-                Column::TransactionDate | Column::Day | Column::Operation => item.cell(column).to_string(),
+                Column::TransactionDate | Column::Day | Column::Operation | Column::DateTimeDedup => item.cell(column).to_string(),
                 _ => edit_text(column, &item.tx, item.when),
             };
             lines.entry(row).or_default().push((col, value));
@@ -844,10 +845,28 @@ mod tests {
 
     #[test]
     fn read_only_columns_have_no_field() {
-        for column in [Column::RowNumber, Column::OperationNumber, Column::TransactionDate, Column::Day, Column::Operation] {
+        for column in [Column::RowNumber, Column::OperationNumber, Column::TransactionDate, Column::Day, Column::Operation, Column::DateTimeDedup] {
             assert!(read_only(column));
             assert!(to_field(column, "1", None).is_err());
         }
+    }
+
+    #[test]
+    fn the_second_date_copies_as_it_reads_and_is_not_pasted_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut screen, _) = Transactions::new(&Ctx::for_tests(dir.path()));
+        let receipt = |id| Transaction { id, transaction_date: Some("2026-01-12T10:00:00".into()), ..Default::default() };
+        screen.data = tbs_core::query::Dataset::build(vec![receipt(1), receipt(2)]);
+        screen.rows = vec![0, 1];
+        screen.columns = vec![Column::DateTime, Column::DateTimeDedup];
+        screen.selection = crate::grid::Selection::single(0, 0);
+        screen.selection.extend_to((1, 1));
+        // The first date as its editor has it; the second as the cell reads, the repeat moved on.
+        assert_eq!(screen.copy_selection().as_deref(), Some("12.01.2026 10:00\t12.01.2026 10:00:00\n12.01.2026 10:00\t12.01.2026 10:00:08"));
+
+        // Pasted over with anything, the column is passed by: nothing changes and nothing counts as unread.
+        let (changes, skipped) = screen.plan_paste("12.01.2026 10:00\t13.01.2026 11:00:00\n12.01.2026 10:00\tчто-то");
+        assert_eq!((changes.len(), skipped), (0, 0));
     }
 
     #[test]

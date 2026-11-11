@@ -18,6 +18,8 @@ pub struct Row {
     pub when: Option<NaiveDateTime>,
     pub cells: Box<[String]>,
     ts: i64,
+    /// «(Без дубля)» in milliseconds: `when`, moved on by the receipts that share it.
+    unique_ms: i64,
     amount_abs: Option<f64>,
     amount_signed: f64,
     balance: f64,
@@ -65,6 +67,7 @@ impl Row {
             when,
             cells,
             ts: when.map_or(0, |d| d.and_utc().timestamp()),
+            unique_ms: when.map_or(0, |d| d.and_utc().timestamp_millis()),
             amount_abs: parsed.map(f64::abs),
             amount_signed: parsed.unwrap_or(0.0),
             balance: tx.balance_after.as_deref().and_then(|a| a.parse().ok()).unwrap_or(0.0),
@@ -83,6 +86,21 @@ impl Row {
 
     pub fn cell(&self, column: Column) -> &str {
         &self.cells[column.index()]
+    }
+
+    /// Places the row among the receipts of its own timestamp: `repeat` of
+    /// them came before it.
+    fn set_repeat(&mut self, repeat: i64) {
+        let unique = self.when.map(|when| when + chrono::Duration::milliseconds(DEDUP_STEP_MS * repeat));
+        self.unique_ms = unique.map_or(0, |d| d.and_utc().timestamp_millis());
+        self.cells[Column::DateTimeDedup.index()] = format::datetime_seconds(unique);
+    }
+
+    /// Takes the place `other` has among the receipts of its timestamp.
+    fn keep_stamp(&mut self, other: &Row) {
+        let cell = Column::DateTimeDedup.index();
+        self.unique_ms = other.unique_ms;
+        self.cells[cell].clone_from(&other.cells[cell]);
     }
 
     /// Rewrites the cells whose text comes from the dictionaries.
@@ -119,6 +137,38 @@ pub fn period_key(raw: &str) -> Option<i32> {
     (1..=12).contains(&m).then_some(y * 100 + m)
 }
 
+/// What the ledger's «(Без дубля)» adds for each receipt that repeats a
+/// timestamp: a ten-thousandth of a day.
+const DEDUP_STEP_MS: i64 = 8_640;
+
+/// «(Без дубля)» for the receipts that share `when`: the first to arrive keeps
+/// the time as it is, the next stands one step after it, and so on. The order
+/// is the order of arrival (the id), so the value of a receipt does not depend
+/// on how the table is sorted or filtered. Receipts are counted across all
+/// services, as on the first sheet of the exported workbook.
+fn stamp_at(rows: &mut [Row], when: NaiveDateTime) {
+    let mut same: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].when == Some(when)).collect();
+    same.sort_by_key(|&i| rows[i].tx.id);
+    for (repeat, i) in same.into_iter().enumerate() {
+        rows[i].set_repeat(repeat as i64);
+    }
+}
+
+/// `stamp_at` for every timestamp at once: one sort instead of a scan each.
+fn stamp_all(rows: &mut [Row]) {
+    let mut order: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].when.is_some()).collect();
+    order.sort_by_key(|&i| (rows[i].when, rows[i].tx.id));
+    let mut previous = None;
+    let mut repeat = 0;
+    for i in order {
+        repeat = if rows[i].when == previous { repeat + 1 } else { 0 };
+        previous = rows[i].when;
+        if repeat > 0 {
+            rows[i].set_repeat(repeat);
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Dataset {
     pub rows: Vec<Row>,
@@ -138,7 +188,8 @@ impl Dataset {
     }
 
     pub fn build_with(txs: Vec<Transaction>, labels: Labels) -> Self {
-        let rows: Vec<Row> = txs.into_iter().map(|tx| Row::new(tx, &labels)).collect();
+        let mut rows: Vec<Row> = txs.into_iter().map(|tx| Row::new(tx, &labels)).collect();
+        stamp_all(&mut rows);
         let by_id = rows.iter().enumerate().map(|(i, r)| (r.tx.id, i)).collect();
         let mut operators = BTreeSet::new();
         let mut apps = BTreeSet::new();
@@ -199,7 +250,7 @@ impl Dataset {
     /// Replaces a row in place, or appends a new one, without rebuilding the
     /// rest. An edit must not cost a pass over the whole dataset.
     pub fn upsert(&mut self, tx: Transaction) {
-        let row = Row::new(tx, &self.labels);
+        let mut row = Row::new(tx, &self.labels);
         let add = |list: &mut Vec<String>, value: &Option<String>| {
             if let Some(value) = value.as_deref().filter(|v| !v.is_empty())
                 && let Err(at) = list.binary_search_by(|probe| probe.as_str().cmp(value))
@@ -217,20 +268,37 @@ impl Dataset {
             self.years.push(year);
             self.years.sort_unstable_by(|a, b| b.cmp(a));
         }
-        match self.by_id.get(&row.tx.id) {
-            Some(&at) => self.rows[at] = row,
+        let at = self.by_id.get(&row.tx.id).copied();
+        let (now, before) = (row.when, at.and_then(|at| self.rows[at].when));
+        match at {
+            // The time is as it was, and so is the row's place among the receipts that share it.
+            Some(at) if now == before => {
+                row.keep_stamp(&self.rows[at]);
+                self.rows[at] = row;
+                return;
+            }
+            Some(at) => self.rows[at] = row,
             None => {
                 self.by_id.insert(row.tx.id, self.rows.len());
                 self.rows.push(row);
             }
+        }
+        // Only the receipts of the time it has, and of the time it had, can move.
+        for when in [now, before].into_iter().flatten() {
+            stamp_at(&mut self.rows, when);
         }
     }
 
     /// Drops rows by id. Positions shift, so any view must be recomputed.
     pub fn remove(&mut self, ids: &[i64]) {
         let gone: HashSet<i64> = ids.iter().copied().collect();
+        let freed: BTreeSet<NaiveDateTime> = self.rows.iter().filter(|row| gone.contains(&row.tx.id)).filter_map(|row| row.when).collect();
         self.rows.retain(|row| !gone.contains(&row.tx.id));
         self.by_id = self.rows.iter().enumerate().map(|(i, r)| (r.tx.id, i)).collect();
+        // The receipts that stood after a dropped one close up.
+        for when in freed {
+            stamp_at(&mut self.rows, when);
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -389,6 +457,7 @@ impl Sort {
             Column::RowNumber | Column::OperationNumber | Column::DateTime | Column::TransactionDate | Column::Time | Column::Day => {
                 Key::Num(r.ts as f64)
             }
+            Column::DateTimeDedup => Key::Num(r.unique_ms as f64),
             Column::Amount => Key::Num(r.amount_signed),
             Column::BalanceAfter => Key::Num(r.balance),
             Column::IsP2p => Key::Num(r.tx.is_p2p as u8 as f64),
@@ -597,7 +666,8 @@ pub fn export_params(
     range: Option<(NaiveDate, NaiveDate)>,
 ) -> Vec<(&'static str, String)> {
     let mut out: Vec<(&'static str, String)> = Vec::new();
-    let positional = matches!(sort.column, Column::RowNumber | Column::OperationNumber | Column::DateTime);
+    // The server has no «(Без дубля)»: sorted by it, the table is in the order of time.
+    let positional = matches!(sort.column, Column::RowNumber | Column::OperationNumber | Column::DateTime | Column::DateTimeDedup);
     out.push(("sort_by", if positional { "transaction_date" } else { sort.column.id() }.to_string()));
     out.push(("sort_dir", if sort.descending { "desc" } else { "asc" }.to_string()));
 
@@ -735,6 +805,14 @@ mod tests {
         let params = export_params(&filters, &Scope::default(), &Sort::default(), &[], Some((day(5), day(9))));
         assert!(params.contains(&("date_from", "2025-03-05T00:00:00".to_string())));
         assert!(params.contains(&("date_to", "2025-03-09T23:59:59".to_string())));
+    }
+
+    #[test]
+    fn export_sorted_by_the_second_date_is_sorted_by_time() {
+        let sort = Sort { column: Column::DateTimeDedup, descending: false };
+        let params = export_params(&Filters::default(), &Scope::default(), &sort, &[Column::DateTime, Column::DateTimeDedup], None);
+        assert!(params.contains(&("sort_by", "transaction_date".to_string())));
+        assert!(params.contains(&("sort_dir", "asc".to_string())));
     }
 
     #[test]
@@ -918,6 +996,53 @@ mod tests {
         assert_eq!(s("0907"), [1]);
         assert_eq!(s("интернет"), [1]);
         assert_eq!(s("-склада"), [2]);
+    }
+
+    #[test]
+    fn the_second_date_tells_the_receipts_of_one_minute_apart() {
+        let unique = |ds: &Dataset, id: i64| ds.by_id(id).unwrap().cell(Column::DateTimeDedup).to_string();
+        // The order of arrival is the id, whatever order the server sends the rows in.
+        let mut ds = Dataset::build(vec![
+            tx(7, "2026-01-01T10:00:00", "3.00", "c"),
+            tx(3, "2026-01-01T10:00:00", "1.00", "a"),
+            tx(5, "2026-01-01T10:00:00", "2.00", "b"),
+            tx(9, "2026-01-01T10:01:00", "4.00", "d"),
+            Transaction { id: 11, ..Default::default() },
+        ]);
+        // The first to arrive keeps its time; each next one stands 8.64 s after it, as in the ledger.
+        assert_eq!(unique(&ds, 3), "01.01.2026 10:00:00");
+        assert_eq!(unique(&ds, 5), "01.01.2026 10:00:08");
+        assert_eq!(unique(&ds, 7), "01.01.2026 10:00:17");
+        assert_eq!(unique(&ds, 9), "01.01.2026 10:01:00");
+        assert_eq!(unique(&ds, 11), format::EMPTY);
+        // The first date is the receipt's own time and is the same for all three.
+        for id in [3, 5, 7] {
+            assert_eq!(ds.by_id(id).unwrap().cell(Column::DateTime), "01.01.2026 10:00");
+        }
+
+        // Sorted by it, the receipts of one minute stand in the order they arrived, both ways.
+        let sorted = |ds: &Dataset, descending: bool| -> Vec<i64> {
+            let sort = Sort { column: Column::DateTimeDedup, descending };
+            ds.view(&Filters::default(), &Scope::default(), &sort).iter().map(|i| ds.rows[*i as usize].tx.id).collect()
+        };
+        assert_eq!(sorted(&ds, false), [11, 3, 5, 7, 9]);
+        assert_eq!(sorted(&ds, true), [9, 7, 5, 3, 11]);
+        // Narrowing the table does not renumber what is left.
+        let narrowed = Filters { search: "c".into(), ..Default::default() };
+        assert_eq!(ids(&ds, &narrowed), [7]);
+        assert_eq!(unique(&ds, 7), "01.01.2026 10:00:17");
+
+        // A receipt that leaves the minute frees its place; one that joins takes the last.
+        ds.upsert(tx(5, "2026-01-01T10:01:00", "2.00", "b"));
+        assert_eq!((unique(&ds, 3), unique(&ds, 7)), ("01.01.2026 10:00:00".to_string(), "01.01.2026 10:00:08".to_string()));
+        assert_eq!((unique(&ds, 5), unique(&ds, 9)), ("01.01.2026 10:01:00".to_string(), "01.01.2026 10:01:08".to_string()));
+        ds.upsert(tx(12, "2026-01-01T10:00:00", "5.00", "e"));
+        assert_eq!(unique(&ds, 12), "01.01.2026 10:00:17");
+        // An edit that leaves the time alone moves nothing.
+        ds.upsert(tx(7, "2026-01-01T10:00:00", "30.00", "c"));
+        assert_eq!((unique(&ds, 7), unique(&ds, 12)), ("01.01.2026 10:00:08".to_string(), "01.01.2026 10:00:17".to_string()));
+        ds.remove(&[3]);
+        assert_eq!((unique(&ds, 7), unique(&ds, 12)), ("01.01.2026 10:00:00".to_string(), "01.01.2026 10:00:08".to_string()));
     }
 
     #[test]

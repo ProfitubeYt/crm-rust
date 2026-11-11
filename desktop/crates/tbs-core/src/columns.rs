@@ -68,9 +68,13 @@ pub enum Column {
     /// The receipt's own headline. New columns go last, here and in [`ALL`]:
     /// a view saved before them is recognised by the order of the rest.
     Operation,
+    /// The ledger's «(Без дубля)»: the receipt's own time made unique. Each
+    /// receipt that repeats a timestamp stands a ten-thousandth of a day
+    /// (8.64 s) after the one before it; see `query::Dataset`.
+    DateTimeDedup,
 }
 
-pub const ALL: [Column; 23] = [
+pub const ALL: [Column; 24] = [
     Column::RowNumber,
     Column::OperationNumber,
     Column::DateTime,
@@ -94,6 +98,7 @@ pub const ALL: [Column; 23] = [
     Column::AnnotationPeriod,
     Column::AnnotationArticleCode,
     Column::Operation,
+    Column::DateTimeDedup,
 ];
 
 pub const COUNT: usize = ALL.len();
@@ -135,6 +140,7 @@ impl Column {
             Column::AnnotationPeriod => "Период",
             Column::AnnotationArticleCode => "Статья",
             Column::Operation => "Операция",
+            Column::DateTimeDedup => "(Без дубля)",
         }
     }
 
@@ -163,6 +169,8 @@ impl Column {
             Column::AnnotationPeriod => 100.0,
             Column::AnnotationArticleCode => 150.0,
             Column::Operation => 150.0,
+            // Seconds as well: that is where two receipts of one minute differ.
+            Column::DateTimeDedup => 150.0,
         }
     }
 
@@ -211,6 +219,7 @@ impl Column {
             Column::AnnotationPeriod => "annotation_period",
             Column::AnnotationArticleCode => "annotation_article_code",
             Column::Operation => "operation",
+            Column::DateTimeDedup => "date_time_dedup",
         }
     }
 
@@ -296,6 +305,9 @@ impl Column {
             Column::AnnotationArticleCode => coded(&tx.annotation_article_code, Labels::article),
             // Not the server's wording of the type, which is «Тип»: the line the bank wrote.
             Column::Operation => operation::display(tx),
+            // Alone, a receipt repeats nobody's time; the dataset moves the
+            // ones that do (`query::Dataset`).
+            Column::DateTimeDedup => format::datetime_seconds(when),
         }
     }
 
@@ -393,18 +405,48 @@ mod tests {
 
     #[test]
     fn saved_names_and_places_do_not_move() {
-        // Saved views name columns this way; `ALL` had the first 22 in this order before «Операция».
+        // Saved views name columns this way; `ALL` had the first 22 in this order before «Операция»,
+        // and the first 23 before «(Без дубля)».
         let saved = [
             "row_number", "operation_number", "date_time", "transaction_date", "time", "day", "operator_raw", "application_mapped",
             "description", "receiver_name", "receiver_card", "amount", "balance_after", "card_last4", "is_p2p", "transaction_type",
             "currency", "source_type", "annotation_details", "annotation_person_code", "annotation_period", "annotation_article_code",
-            "operation",
+            "operation", "date_time_dedup",
         ];
         assert_eq!(serde_json::to_value(ALL).unwrap(), serde_json::json!(saved));
         // The server's names differ in one place.
         let wire: Vec<&str> = saved.iter().map(|name| if *name == "card_last4" { "card_last_4" } else { *name }).collect();
         assert_eq!(ALL.map(Column::id).to_vec(), wire);
-        assert_eq!(Column::Operation.index(), COUNT - 1);
+        assert_eq!((Column::Operation.index(), Column::DateTimeDedup.index()), (COUNT - 2, COUNT - 1));
+    }
+
+    #[test]
+    fn the_second_date_is_the_ledgers_and_is_not_edited() {
+        let labels = Labels::default();
+        let tx = Transaction { transaction_date: Some("2026-01-12T10:00:00".into()), ..Default::default() };
+        let when = format::parse_datetime("2026-01-12T10:00:00");
+        // The first date reads to the minute; the second, alone, is the same moment to the second.
+        assert_eq!(Column::DateTime.display(&tx, when, &labels), "12.01.2026 10:00");
+        assert_eq!(Column::DateTimeDedup.display(&tx, when, &labels), "12.01.2026 10:00:00");
+        assert_eq!(Column::DateTimeDedup.display(&tx, None, &labels), format::EMPTY);
+
+        assert_eq!(Column::DateTimeDedup.title(), "(Без дубля)");
+        assert_eq!((Column::DateTimeDedup.edit_field(), Column::DateTimeDedup.raw_value(&tx)), (None, String::new()));
+        assert!(Column::DateTimeDedup.sortable() && !Column::DateTimeDedup.is_positional() && !Column::DateTimeDedup.is_labelled());
+    }
+
+    #[test]
+    fn the_card_keeps_its_zeros_and_p2p_is_one_or_nothing() {
+        let labels = Labels::default();
+        // As the server sends it: «ПК» is text, and a card ending in 0626 is not card 626.
+        let tx: Transaction = serde_json::from_value(serde_json::json!({ "id": 1, "card_last_4": "0626", "is_p2p": true })).unwrap();
+        assert_eq!(Column::CardLast4.display(&tx, None, &labels), "0626");
+        assert_eq!(Column::CardLast4.raw_value(&tx), "0626");
+        // Only right-aligned columns go out to a workbook as numbers.
+        assert_eq!(Column::CardLast4.align(), Align::Center);
+        // «П2П» is the ledger's flag: 1, or an empty cell.
+        assert_eq!(Column::IsP2p.display(&tx, None, &labels), "1");
+        assert_eq!(Column::IsP2p.display(&Transaction::default(), None, &labels), "");
     }
 
     #[test]

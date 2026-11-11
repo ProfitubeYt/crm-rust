@@ -230,7 +230,7 @@ fn merge(into: &mut Vec<String>, items: impl IntoIterator<Item = String>) {
 
 /// A press on these opens the operation rather than an editor.
 fn opens_detail(column: Column) -> bool {
-    matches!(column, Column::RowNumber | Column::OperationNumber | Column::TransactionDate | Column::Day)
+    matches!(column, Column::RowNumber | Column::OperationNumber | Column::TransactionDate | Column::Day | Column::DateTimeDedup)
 }
 
 fn hotkey(event: Event, _status: event::Status, _window: window::Id) -> Option<Msg> {
