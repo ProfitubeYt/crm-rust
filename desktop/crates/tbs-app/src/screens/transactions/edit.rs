@@ -41,7 +41,8 @@ pub enum Kind {
 
 /// These cells open the detail sheet instead of an editor. «Операция» only
 /// selects: it is read off the receipt, and «Тип» is where the type is set.
-/// «(Без дубля)» is worked out from the times of the receipts, not typed.
+/// «(Без дубля)» only selects too: it is worked out from the times of the
+/// receipts, not typed.
 pub fn read_only(column: Column) -> bool {
     matches!(column, Column::RowNumber | Column::OperationNumber | Column::TransactionDate | Column::Day | Column::Operation | Column::DateTimeDedup)
 }
