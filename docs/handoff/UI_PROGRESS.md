@@ -163,6 +163,116 @@ Not verified here: the backend branch itself. It is in the other session's
 repository and was not fetched or merged; the field names are the owner's.
 A live check against a server that sends the fields belongs to integration.
 
+## Milestone 4 — P4 «Вид» completed (2026-11-11)
+
+Code: `881d938` (the sheet) and `2fad9f1` (the toolbar button sends the sheet's own
+message, which removes a dead-code warning from the normal build).
+`screens/transactions/view.rs` is new; the view popup, its messages and the saved
+views left `menus.rs`.
+
+| Plan item | What is there |
+| --- | --- |
+| P4.1 sheet | «Вид» on the toolbar opens the side sheet «Вид таблицы» with the tabs Столбцы · Отображение · Сохранённые виды, on the tab it was left on. The sheet has no draft: a press changes the table at once and is saved, like a drag on a column header. Esc closes an open question first, then the sheet. |
+| P4.2 Столбцы | Search by title (narrows the list, never the table); a tick shows or hides a column (the row number cannot be hidden); arrows move a column one place and are not drawn while the search narrows the list; the first shown columns carry «закреплён»; «Показать все», «Как в книге Excel» (the ledger's set and order, widths stay), «Сбросить ширину», «Скрыть все»; the counter «Показано N из 23». |
+| P4.3 Отображение | Density, rows per page, pinned columns 0–3, «Сначала новые» (one setting with the toolbar button) with the current order said in words. |
+| P4.4 Сохранённые виды | Save (the same name replaces the view, and the button then says «Заменить вид»), apply, rename (an empty or taken name is refused under the box), default (one at most; pressed again, the mark comes off), delete (asks first). The view that equals the table is marked «применён». |
+| «Сбросить вид» | Asks first, then resets the layout only: columns, widths, column formatting, density, pinning, sorting, page size. Filters, search, an unapplied filter draft, hand-formatted cells and saved views stay. |
+
+Differences from the plan and from the build before, to know at integration:
+
+- The counter says «из 23», not «из 22» as the plan words it: «Операция» is the
+  23rd column, and the number is `columns::COUNT`.
+- «Сбросить вид» used to reset filters and search too, at once and without a
+  question. It is the layout only now; filters have «Сбросить всё» on their bar.
+- Saved views keep their file and format (`transactions-presets`). They are now
+  repaired on load the way the table's own state is, so a view saved by an older
+  build gets today's columns; `fixtures/presets.json` holds three such views.
+- A default view starts only a table that has no saved state of its own. The
+  rule is unchanged and now has a test.
+- `Popup::View` and `menus::Msg::{ToggleColumn, ShowAll, HideAll, Density, Pinned,
+  Reset, Preset*}` are gone; `view::Msg` replaces them. Devtools: `TBS_OPEN=view`
+  opens the sheet on Столбцы, `view-display` and `view-saved` on the other tabs.
+- New helper `ui::btn_small`, a lower text button for a line that holds several.
+- The arrows step past hidden columns too: the list shows every column, and one
+  press is one place in it. As with a drag on a header, a column may be put
+  before the row number; only hiding the row number is refused.
+- The `use_ledger_columns` warning noted in milestone 2 is gone: «Как в книге
+  Excel» uses it.
+
+Tests added (`tbs-app`, 243 → 264):
+
+| Area | Tests |
+| --- | --- |
+| Move, reset, ledger order (`table::tests`) | `a_column_moves_one_place_and_stops_at_the_ends`, `a_hidden_column_is_a_place_in_the_order_too`, `resetting_the_layout_keeps_the_filters_and_the_painted_cells`, `a_fresh_layout_is_told_from_one_that_was_arranged`, `pinned_columns_are_counted_among_the_shown` |
+| Sheet and tabs (`view::tests`) | `the_sheet_opens_on_the_tab_it_was_left_on`, `a_tick_shows_and_hides_a_column_at_once`, `arrows_move_a_column_and_the_table_follows`, `the_search_narrows_the_list_and_leaves_the_table_alone`, `show_all_the_ledger_and_the_widths_each_have_a_button`, `the_tab_of_display_changes_the_table_at_once`, `the_tab_of_display_offers_every_page_size_and_pin_count`, `the_order_of_the_rows_and_a_saved_view_are_said_in_words`, `escape_closes_the_question_first_and_then_the_sheet` |
+| Reset and filters | `resetting_the_view_asks_first_and_leaves_what_narrows_the_table`, `applying_a_view_drops_a_filter_draft_and_opening_the_sheet_keeps_it`; `filters::tests::a_draft_does_not_outlive_the_filters_it_was_made_from` now expects a reset of the look to keep the draft |
+| Saved views | `a_view_is_saved_applied_renamed_made_default_and_deleted`, `the_views_saved_by_older_builds_load_and_apply`, `a_default_view_starts_a_table_that_has_no_state_of_its_own`; `saving_a_name_again_replaces_the_view` and `only_one_preset_stays_default` moved here from `menus.rs` |
+| Small window | `the_sheet_fits_the_smallest_window` (1024×640: the controls of the three tabs stand inside the sheet, the list scrolls between head and foot, a long view name is cut so its buttons keep their place) |
+| Pictures | `p4_shots` (returns at once without `TBS_SHOTS`) |
+
+Pictures (synthetic rows only, generated by the test, no production data):
+
+    TBS_SHOTS=<folder> cargo test -p tbs-app --features devtools --locked p4_shots
+
+writes 12 PNG files. It was run on the clean clones of `881d938` and `2fad9f1`, and
+both runs gave the same bytes for the seven kept in `desktop/docs/screenshots/`:
+`p4-columns-arranged.png` (Столбцы after arranging by hand: one column shown, one
+hidden, «Сумма» moved up beside the date, two pinned), `p4-display.png`,
+`p4-saved.png` (a default view that is on, a long name, «Заменить вид»),
+`p4-reset-ask.png` (the question before the reset), `p4-table-reset.png` (the
+table after it: the default layout, both filters still on), `p4-small-columns.png`
+and `p4-small-display-dark.png` (1024×640). All seven were looked at. The limits
+of the P3 pictures apply: software Vulkan, the image fonts, no emoji font.
+
+## Milestone 5 — final desktop checks (2026-11-11)
+
+Clean clone of `2fad9f1`, `git status --porcelain --untracked-files=all` empty,
+image `tbs-linux-dev:1.99.1`:
+
+| Command | Result |
+| --- | --- |
+| `cargo test -p tbs-core --locked` | exit 0: lib 116 passed, 0 failed; `tests/live_backend.rs` 1 passed; `tests/live_writes.rs` 1 passed; doc-tests 0 |
+| `cargo test -p tbs-app --features devtools --locked` | exit 0: 264 passed, 0 failed |
+| `cargo build -p tbs-app --locked` | exit 0, no compiler warnings, only the `windres` warning of the build script. `tbsparcer`: ELF x86-64, 283 329 416 bytes |
+| `cargo build -p tbs-app --locked --target x86_64-pc-windows-gnu` | exit 0 (11m 55s cold on `881d938`, 18 s after it). `tbsparcer.exe`: PE32+ x86-64, 259 235 719 bytes, `WebView2Loader.dll` beside it |
+| The Linux binary under Xvfb (1280×860×24) for 30 s | still running after 30 s, nothing on stdout or stderr, stopped by SIGTERM. The framebuffer shows the sign-in window drawn in full: «Вход в Чеки», «Сервер недоступен», version 2.0.0 |
+
+The headless run, inside the image, with an empty `HOME` and no server:
+
+    Xvfb :99 -screen 0 1280x860x24 -fbdir /tmp/fb -nolisten tcp &
+    DISPLAY=:99 /target/debug/tbsparcer
+
+`/tmp/fb/Xvfb_screen0` is the framebuffer as an XWD image; converted to PNG it is
+`desktop/docs/screenshots/smoke-login-linux.png`.
+
+What these checks do and do not show:
+
+- `live_backend`, `live_writes` and `live_ui` return early without `TBS_E2E_*`.
+  No server was started or contacted: **no integration coverage**.
+- The Windows build shows that the dev profile compiles and links for
+  `x86_64-pc-windows-gnu` with the MinGW of the image. The executable was **not
+  run**: there is no Windows and no Wine here. Nothing about its behaviour on
+  Windows follows from it (GPU rendering, Segoe UI widths, emoji, WebView2, the
+  keyring, updates). The release profile and the installer were not built.
+- The cross-built executable has no icon and no version resource (no `.rsrc`
+  section): `build.rs` runs `windres`, which the image has only as
+  `x86_64-w64-mingw32-windres`. A build on Windows with MinGW's `windres` on the
+  path is not affected, and `build.rs` was left as it is.
+- The headless run reaches the sign-in window only. Without a server there is no
+  session, so the table, the filter sheet and «Вид» were not seen in a real
+  window: their pictures come from the test simulator with synthetic rows.
+- Times in this file are the sandbox clock's.
+
+Left for integration, not done here:
+
+- A run on Windows: the real window with its GPU, fonts and emoji, and the installer.
+- A live check against a server that sends `stored_transaction_type` and `excel_bank`.
+- `IMPLEMENTATION_PLAN.md` still shows P3 and P4 unticked: it is not this
+  session's file to edit.
+- `desktop/tools/linux-dev.Dockerfile` points to `desktop/README.md` for its use,
+  and the README has no such section; the commands are under "Environment" above.
+- No branch was merged into this one, and this one into none.
+
 ## Plan of this session
 
 1. P3 filters: verify the existing implementation, add the missing checks
@@ -178,11 +288,12 @@ A live check against a server that sends the fields belongs to integration.
 - [x] Baseline verified on a clean clone (milestone 1).
 - [x] P3 filters completed and verified (milestone 2).
 - [x] «Операция» fallback by `stored_transaction_type` with tests (milestone 3).
-- [ ] P4 View: implemented in the commit that follows `85403e7`. The working tree passed
-  `cargo test -p tbs-app --features devtools --locked` with 264 tests before the last
-  wording change of the reset question. Clean-clone runs, pictures and the milestone
-  notes come with the next commit.
-- [ ] Final desktop checks (clean-clone tests, Windows cross-build, headless run).
+- [x] P4 View implemented and verified on a clean clone (milestone 4).
+- [x] Final desktop checks: clean-clone tests, normal build, Windows GNU
+  cross-build, headless start of the real binary (milestone 5).
+
+The code verified is `2fad9f1`. The commit after it adds only this file's notes
+and the pictures under `desktop/docs/screenshots/`.
 
 ## Verification log
 
@@ -192,3 +303,14 @@ A live check against a server that sends the fields belongs to integration.
 | 2026-11-11 18:59 | `a83b044` | clean clone | `cargo test -p tbs-app --features devtools --locked` | 235 passed, exit 0 |
 | 2026-11-11 19:13 | `62c86e6` | clean clone | `cargo test -p tbs-core --locked` | 108 + 1 + 1 passed, exit 0 |
 | 2026-11-11 19:13 | `62c86e6` | clean clone | `cargo test -p tbs-app --features devtools --locked` | 243 passed, exit 0 |
+| 2026-11-11, 19:27–19:30 | `85403e7` | clean clone | `cargo test -p tbs-core --locked` | 116 + 1 + 1 passed, exit 0 (the minute was not written down) |
+| 2026-11-11, 19:27–19:30 | `85403e7` | clean clone | `cargo test -p tbs-app --features devtools --locked` | 243 passed, exit 0 (the minute was not written down) |
+| 2026-11-11 19:42 | `881d938` | clean clone | `cargo test -p tbs-core --locked` | 116 + 1 + 1 passed, exit 0 |
+| 2026-11-11 19:42 | `881d938` | clean clone | `cargo test -p tbs-app --features devtools --locked` | 264 passed, exit 0 |
+| 2026-11-11 19:43 | `881d938` | clean clone | `cargo build -p tbs-app --locked` | exit 0, 1 dead-code warning (`view::Msg::Open`), fixed in `2fad9f1` |
+| 2026-11-11 19:54 | `881d938` | clean clone | `cargo build -p tbs-app --locked --target x86_64-pc-windows-gnu` | exit 0, cold, 11m 55s |
+| 2026-11-11 19:58 | `2fad9f1` | clean clone | `cargo test -p tbs-core --locked` | 116 + 1 + 1 passed, exit 0 |
+| 2026-11-11 19:59 | `2fad9f1` | clean clone | `cargo test -p tbs-app --features devtools --locked` | 264 passed, exit 0 |
+| 2026-11-11 19:59 | `2fad9f1` | clean clone | `cargo build -p tbs-app --locked` | exit 0, no compiler warnings |
+| 2026-11-11 19:59 | `2fad9f1` | clean clone | `cargo build -p tbs-app --locked --target x86_64-pc-windows-gnu` | exit 0, `tbsparcer.exe` 259 235 719 bytes, not run |
+| 2026-11-11 20:01 | `2fad9f1` | its Linux binary | `tbsparcer` under Xvfb for 30 s | alive, sign-in window drawn, no output |
