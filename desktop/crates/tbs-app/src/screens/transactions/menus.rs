@@ -189,6 +189,7 @@ impl Transactions {
         self.table = view;
         self.table.repair();
         self.search = self.table.filters.search.clone();
+        self.forget_filter_draft();
         self.refresh_columns();
         self.refresh_rows();
     }

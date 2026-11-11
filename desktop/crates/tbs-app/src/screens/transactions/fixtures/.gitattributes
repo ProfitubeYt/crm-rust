@@ -1,0 +1,2 @@
+# Compared byte for byte with what the client writes: no CRLF on a Windows checkout.
+*.json text eol=lf
