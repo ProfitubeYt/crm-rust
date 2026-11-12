@@ -21,7 +21,7 @@ use tokio_stream::{Stream, StreamExt};
 use crate::app::AppState;
 use crate::db::{month_bounds, Employee, Message, NewAudit, NewMessage, Period};
 use crate::excel;
-use crate::service::{EditError, Engine, MarkEdit, MessageView};
+use crate::service::{EditError, MarkEdit, MessageView};
 
 const INDEX_HTML: &str = include_str!("../assets/index.html");
 const APP_JS: &str = include_str!("../assets/app.js");
@@ -159,6 +159,10 @@ fn is_authed(state: &AppState, headers: &HeaderMap) -> bool {
             return true;
         }
     }
+    // С общими учётными записями своих сессий нет: сюда приходит только шлюз.
+    if state.cfg.hub_mode() {
+        return false;
+    }
     session_of(headers).is_some_and(|sid| {
         state
             .sessions
@@ -273,8 +277,11 @@ async fn meta(State(state): State<AppState>, headers: HeaderMap) -> Json<Value> 
         "auth_required": state.cfg.auth_required(),
         "authed": authed,
         "today": now.date(),
+        "hub": state.cfg.hub_mode(),
     });
     if authed {
+        // По этому числу интерфейс без потока событий узнаёт, что данные изменились.
+        out["revision"] = json!(state.revision());
         out["now"] = json!(now.format("%Y-%m-%d %H:%M:%S").to_string());
         out["bot"] = json!(state.bot_status(|s| s.clone()));
         out["last_message_at"] = json!(state.db.last_message_at().ok().flatten());
@@ -289,6 +296,10 @@ struct Login {
 }
 
 async fn login(State(state): State<AppState>, Json(body): Json<Login>) -> ApiResult<Response> {
+    // Пароль программы — не учётная запись: с общими учётными записями этого входа нет.
+    if state.cfg.hub_mode() {
+        return Err(ApiError::not_found());
+    }
     let secrets = [
         state.cfg.password.as_deref(),
         state.cfg.api_token.as_deref(),
@@ -329,7 +340,7 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
 // ---------------------------------------------------------------- месяц и отметки
 
 fn month_json(state: &AppState, year: i32, month: u32) -> ApiResult<Response> {
-    let engine = Engine::new(&state.db)?;
+    let engine = state.engine()?;
     Ok(Json(engine.month(year, month, state.now().date())?).into_response())
 }
 
@@ -342,7 +353,7 @@ async fn day(
     State(state): State<AppState>,
     Path((employee, date)): Path<(i64, String)>,
 ) -> ApiResult<Response> {
-    let engine = Engine::new(&state.db)?;
+    let engine = state.engine()?;
     Ok(Json(engine.day_detail(employee, parse_date(&date)?, state.now().date())?).into_response())
 }
 
@@ -353,7 +364,7 @@ async fn put_mark(
     Json(edit): Json<MarkEdit>,
 ) -> ApiResult<Response> {
     let date = parse_date(&date)?;
-    Engine::new(&state.db)?.edit_mark(employee, date, &edit, &user_of(&headers), state.now())?;
+    state.engine()?.edit_mark(employee, date, &edit, &user_of(&headers), state.now())?;
     state.notify();
     month_json(&state, date.year(), date.month())
 }
@@ -364,7 +375,7 @@ async fn lock_month(
     headers: HeaderMap,
 ) -> ApiResult<Response> {
     let (year, month) = parse_ym(&ym)?;
-    Engine::new(&state.db)?.lock_month(year, month, &user_of(&headers), state.now())?;
+    state.engine()?.lock_month(year, month, &user_of(&headers), state.now())?;
     state.notify();
     month_json(&state, year, month)
 }
@@ -422,7 +433,7 @@ async fn messages(
 ) -> ApiResult<Json<Vec<MessageView>>> {
     let (year, month) = parse_ym(&q.ym)?;
     let (first, last) = month_bounds(year, month);
-    Ok(Json(Engine::new(&state.db)?.messages(first, last)?))
+    Ok(Json(state.engine()?.messages(first, last)?))
 }
 
 #[derive(Deserialize)]
@@ -555,7 +566,7 @@ async fn parse(
     let sent_at: NaiveDateTime = date
         .and_hms_opt(time as u32 / 60, time as u32 % 60, 0)
         .ok_or_else(|| ApiError::bad("некорректное время"))?;
-    let engine = Engine::new(&state.db)?;
+    let engine = state.engine()?;
     let probe = Message {
         id: 0,
         source: "probe".into(),
@@ -1029,7 +1040,7 @@ async fn audit(
 
 async fn export(State(state): State<AppState>, Path(ym): Path<String>) -> ApiResult<Response> {
     let (year, month) = parse_ym(ym.trim_end_matches(".xlsx"))?;
-    let view = Engine::new(&state.db)?.month(year, month, state.now().date())?;
+    let view = state.engine()?.month(year, month, state.now().date())?;
     let bytes = excel::export_month(&view)?;
     let headers = [
         (

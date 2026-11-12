@@ -5,6 +5,9 @@ mod config;
 mod db;
 mod demo;
 mod excel;
+mod hub;
+#[cfg(test)]
+mod hub_tests;
 mod service;
 mod tgtext;
 
@@ -18,7 +21,6 @@ use tracing_subscriber::EnvFilter;
 use crate::app::AppState;
 use crate::config::{Command, Config};
 use crate::db::Db;
-use crate::service::Engine;
 
 fn main() -> Result<()> {
     // .env читается до запуска потоков: менять окружение безопасно только так
@@ -26,6 +28,7 @@ fn main() -> Result<()> {
     let cfg = Config::parse().normalized();
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt().with_env_filter(filter).init();
+    cfg.check().map_err(anyhow::Error::msg)?;
 
     let db = Db::open(&cfg.db)?;
     match cfg.command.clone().unwrap_or(Command::Serve) {
@@ -63,7 +66,7 @@ fn main() -> Result<()> {
                 .filter(|(_, m)| (1..=12).contains(m))
                 .context("месяц указывается как ГГГГ-ММ")?;
             let state = AppState::new(db, cfg);
-            let view = Engine::new(&state.db)?.month(year, m, state.now().date())?;
+            let view = state.engine()?.month(year, m, state.now().date())?;
             let path = out.unwrap_or_else(|| format!("TimeList-{year}-{m:02}.xlsx").into());
             std::fs::write(&path, excel::export_month(&view)?)
                 .with_context(|| format!("не удалось записать {}", path.display()))?;
@@ -79,6 +82,15 @@ fn main() -> Result<()> {
 
 async fn serve(db: Db, cfg: Config) -> Result<()> {
     let state = AppState::new(db, cfg);
+    if state.cfg.hub_mode() {
+        info!("режим общих учётных записей: вход и доступ — через сервер учётных записей");
+        if state.cfg.password.is_some() {
+            warn!("TIMELIST_PASSWORD в режиме общих учётных записей не используется");
+        }
+        if state.cfg.bot_token.is_some() && state.cfg.chat_ids().is_empty() {
+            warn!("TELEGRAM_CHAT_ID не задан: бот отвечает на /id и /help, но отметок не принимает ни из одной группы");
+        }
+    }
     let listener = tokio::net::TcpListener::bind(&state.cfg.listen)
         .await
         .with_context(|| format!("не удалось занять адрес {}", state.cfg.listen))?;
