@@ -253,9 +253,9 @@ def test_the_bot_is_answered_from_the_account_as_it_is_right_now(client, db_sess
     assert _ask(999).json() == {"allowed": False, "reason": "not_linked"}
 
     # Each administrative change is the bot's very next answer: nothing is cached.
-    client.patch(f"/api/admin/users/{anna.id}", headers=admin_headers, json={"time_role": ""})
+    client.patch(f"/api/admin/users/{anna.id}", headers=admin_headers, json={"workspaces": {"time": None}})
     assert (_ask(111).json()["allowed"], _ask(111).json()["reason"]) == (False, "no_time_access")
-    client.patch(f"/api/admin/users/{anna.id}", headers=admin_headers, json={"time_role": "manager"})
+    client.patch(f"/api/admin/users/{anna.id}", headers=admin_headers, json={"workspaces": {"time": "manager"}})
     assert _ask(111).json()["allowed"] is True
 
     client.delete(f"/api/admin/users/{anna.id}", headers=admin_headers)

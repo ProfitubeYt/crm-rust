@@ -33,6 +33,8 @@ from services.internal_api_key_service import _PROXY_HEADERS, _ip_in_allowlist
 from services.workspace_access import (
     TIME_ROLE_MANAGER,
     TIME_ROLE_VIEWER,
+    WORKSPACE_TIME,
+    snapshot_workspace_role,
     time_bot_decision,
     time_role_allows,
 )
@@ -177,7 +179,7 @@ async def time_gateway(
     needed = required_role(method, path)
     if needed is None:
         raise HTTPException(status_code=404, detail={"error": "time_route_not_found"})
-    role = current_user.get("time_role")
+    role = snapshot_workspace_role(current_user, WORKSPACE_TIME)
     if not time_role_allows(role, needed):
         raise HTTPException(status_code=403, detail={"error": "time_role_forbidden", "required": needed})
     if not is_configured():

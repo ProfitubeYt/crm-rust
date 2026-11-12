@@ -83,11 +83,19 @@ def seed(
     role: str = "operator",
     checks: bool = True,
     time_role: Optional[str] = None,
+    global_admin: Optional[bool] = None,
     tabs: Optional[Iterable[str]] = None,
     telegram_id: Optional[int] = None,
     active: bool = True,
     password: str = PASSWORD,
 ) -> User:
+    """An account as it sits in the database.
+
+    ``role`` is the Checks role. Left unsaid, ``global_admin`` is what the
+    migration makes of an account from before the split: a Checks
+    administrator was the one who administered accounts, so it still is.
+    Tests about the split say it by name.
+    """
     password_hash, salt = hash_password(password)
     if tabs is None:
         allowed_tabs = ADMIN_TABS if role == "admin" else '["dashboard"]'
@@ -108,6 +116,7 @@ def seed(
         is_active=active,
         checks_access=checks,
         time_role=time_role,
+        global_admin=(role == "admin") if global_admin is None else global_admin,
         telegram_id=telegram_id,
     )
     db_session.add(user)

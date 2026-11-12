@@ -41,7 +41,13 @@ from services.auth_service import (
     verify_user_token,
 )
 from services.user_service import authenticate, build_permissions_snapshot
-from services.workspace_access import ALL_WORKSPACES, WORKSPACE_CHECKS, snapshot_workspaces
+from services.workspace_access import (
+    WORKSPACE_CHECKS,
+    exempt_from_expiry,
+    is_global_admin,
+    snapshot_workspaces,
+    workspace_ids,
+)
 from api.dependencies import get_effective_folder_scope_for_user
 from services.totp_service import verify_2fa_code
 from services.system_settings_service import is_totp_2fa_enabled
@@ -153,20 +159,30 @@ class UserInfoResponse(BaseModel):
     force_2fa: bool = False
     session_ttl_days: int = 7
     exp: Optional[int] = None
-    # What the Hub lists. Asked again by a running client, so a grant or a
-    # revocation shows up without signing in again.
+    # What the Hub shows. Asked again by a running client, so a grant or a
+    # revocation shows up without signing in again. `workspaces` are the ones
+    # it lists, `workspace_roles` every role held, `global_admin` whether it
+    # offers CRM administration; none of the three implies another.
     workspaces: list[str] = Field(default_factory=list)
-    checks_access: bool = True
-    time_role: Optional[str] = None
+    workspace_roles: Dict[str, str] = Field(default_factory=dict)
+    global_admin: bool = False
 
 
 def _workspace_fields(user: Optional[dict]) -> Dict[str, Any]:
-    """The workspace part of a snapshot, in the Hub's order."""
+    """The Hub part of a snapshot, workspaces in the Hub's order."""
     granted = snapshot_workspaces(user)
+    roles = (user or {}).get("workspace_roles")
+    if not isinstance(roles, dict):
+        # A hand-made snapshot from before workspaces: a Checks account.
+        roles = (
+            {WORKSPACE_CHECKS: str((user or {}).get("role") or "operator")}
+            if WORKSPACE_CHECKS in granted
+            else {}
+        )
     return {
-        "workspaces": [name for name in ALL_WORKSPACES if name in granted],
-        "checks_access": WORKSPACE_CHECKS in granted,
-        "time_role": (user or {}).get("time_role"),
+        "workspaces": [name for name in workspace_ids() if name in granted],
+        "workspace_roles": {str(key): str(value) for key, value in roles.items()},
+        "global_admin": is_global_admin(user),
     }
 
 
@@ -339,10 +355,12 @@ def _requires_2fa(user: User, db: Session) -> bool:
     if AUTH_DISABLE_LOGIN_2FA:
         return False
     # Policy by product decision:
-    # - global totp_2fa_enabled enforces 2FA for admin only,
-    # - operator is enforced only when force_2fa=true.
+    # - global totp_2fa_enabled enforces 2FA for administrators only: the
+    #   Checks administrator, as before, and the CRM administrator,
+    # - everyone else is enforced only when force_2fa=true.
     role = str(user.role or "operator").lower()
-    return bool(user.force_2fa or (is_totp_2fa_enabled(db) and role == "admin"))
+    administrator = role == "admin" or is_global_admin(user)
+    return bool(user.force_2fa or (is_totp_2fa_enabled(db) and administrator))
 
 
 async def _check_2fa_lock(user_id: int) -> Optional[int]:
@@ -1173,7 +1191,7 @@ async def get_entitlement(
             days_left = (moment - datetime.now(timezone.utc)).days
 
     expired = bool(expires_at and expires_at <= datetime.now(timezone.utc))
-    is_admin = str((current_user or {}).get("role") or "").lower() == "admin"
+    is_admin = exempt_from_expiry(current_user)
 
     return {
         "ok": (not expired) or is_admin,

@@ -35,7 +35,9 @@ from services.root_access_config_service import (
 from services.user_service import build_permissions_snapshot
 from services.system_settings_service import is_launch_gate_enabled, is_otp_enabled
 from services.workspace_access import (
+    exempt_from_expiry,
     has_workspace,
+    is_global_admin,
     required_workspace_for_path,
     workspace_denied_detail,
 )
@@ -245,6 +247,9 @@ async def get_current_user(
                 "can_toggle_sources": True,
                 "permissions_version": 1,
                 "session_ttl_days": 7,
+                # Single-user local mode has no accounts to separate: the one
+                # local user owns the installation, administration included.
+                "global_admin": True,
                 "token_kind": "local",
                 "phone": "local",
                 "exp": None,
@@ -335,9 +340,9 @@ async def get_current_app_user(
 ) -> dict:
     if current_user.get("role") and str(current_user.get("token_kind") or "").lower() in {"app_user", "local"}:
         expired_at = access_expired_at(current_user)
-        # Admins are never locked out by an expiry: someone has to be able to
-        # extend everyone else's, and that includes their own.
-        if expired_at and str(current_user.get("role") or "").lower() != "admin":
+        # Administrators are never locked out by an expiry: someone has to be
+        # able to extend everyone else's, and that includes their own.
+        if expired_at and not exempt_from_expiry(current_user):
             raise HTTPException(
                 status_code=403,
                 detail={"error": "access_expired", "expired_at": expired_at},
@@ -353,9 +358,48 @@ async def get_current_app_user(
 async def require_admin_user(
     current_user: dict = Depends(get_current_app_user),
 ) -> dict:
+    """The Checks administrator: the senior role inside the Checks workspace.
+
+    The path has already been matched to its workspace, so this is reached
+    only with Checks access. It says nothing about CRM administration.
+    """
     if str(current_user.get("role") or "").lower() != "admin":
         raise HTTPException(status_code=403, detail="admin_only")
     return current_user
+
+
+async def require_global_admin(
+    current_user: dict = Depends(get_current_app_user),
+) -> dict:
+    """The CRM administrator: accounts, workspace access, sessions, system security.
+
+    Independent of every workspace in both directions: no workspace is needed
+    to hold it, and no workspace role, however senior, stands in for it.
+    """
+    if not is_global_admin(current_user):
+        raise HTTPException(status_code=403, detail="global_admin_required")
+    return current_user
+
+
+# What CRM administration writes to the audit journal: its own actions and the
+# auth bot's user commands. LIKE patterns, escaped with a backslash.
+ACCOUNT_ADMINISTRATION_AUDIT = ("admin\\_%", "authbot\\_user\\_%")
+
+
+def hide_account_administration(query, current_user: Optional[dict]):
+    """Leave the account-administration records out of a journal query.
+
+    The Checks journal is read by the Checks administrator. Who created,
+    changed or signed out which account is the CRM administrator's to read,
+    in the Checks journal as much as in the panel.
+    """
+    if is_global_admin(current_user):
+        return query
+    from database.models import AccessAuditLog
+
+    for pattern in ACCOUNT_ADMINISTRATION_AUDIT:
+        query = query.filter(AccessAuditLog.action.notlike(pattern, escape="\\"))
+    return query
 
 
 def require_tab_access(tab_name: str):

@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from api.dependencies import get_system_access_context, require_admin_user
+from api.dependencies import get_system_access_context, require_global_admin
 from database.connection import get_db_session
 from services.access_control_service import write_audit_log
 from services.auth_bot_service import publish_auth_event
@@ -64,7 +64,7 @@ def _audit(
 @router.get("", response_model=SystemSettingsResponse)
 async def get_system_settings(
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
     _system: Optional[Dict[str, Any]] = Depends(get_system_access_context),
 ) -> SystemSettingsResponse:
     _ = current_user, _system
@@ -76,7 +76,7 @@ async def patch_system_settings(
     payload: SystemSettingsUpdateRequest,
     request: Request,
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
     _system: Optional[Dict[str, Any]] = Depends(get_system_access_context),
 ) -> SystemSettingsResponse:
     row = update_settings(

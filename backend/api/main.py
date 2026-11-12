@@ -1154,3 +1154,9 @@ app.include_router(excel_sync.router, tags=["Excel"])
 # its bot asks. The second is outside /api and so outside the public proxy.
 app.include_router(time_gateway.router, tags=["Time"])
 app.include_router(time_gateway.internal_router, tags=["TimeInternal"])
+
+# The CRM administration panel: three static files under /admin/. Its data
+# comes from /api/admin/*, which authorises every call on its own.
+from api import admin_panel  # noqa: E402
+
+app.include_router(admin_panel.router)

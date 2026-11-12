@@ -60,8 +60,12 @@ def test_an_account_reaches_exactly_the_workspaces_it_was_granted(client, db_ses
     me = client.get("/api/auth/me", headers=headers)
     assert me.status_code == 200, me.text
     assert me.json()["workspaces"] == listed
-    assert me.json()["checks_access"] is checks
-    assert me.json()["time_role"] == time_role
+    expected_roles = {"checks": "operator"} if checks else {}
+    if time_role:
+        expected_roles["time"] = time_role
+    assert me.json()["workspace_roles"] == expected_roles
+    # No workspace, in any combination, makes a CRM administrator.
+    assert me.json()["global_admin"] is False
 
     for path in CHECKS_READS:
         response = client.get(path, headers=headers)
@@ -87,7 +91,8 @@ def test_one_sign_in_serves_both_workspaces_and_says_which_ones(client, db_sessi
     assert body["ok"] is True
     # The Hub reads the list off the sign-in answer; nothing else is asked.
     assert body["user"]["workspaces"] == ["checks", "time"]
-    assert body["user"]["time_role"] == "viewer"
+    assert body["user"]["workspace_roles"] == {"checks": "operator", "time": "viewer"}
+    assert body["user"]["global_admin"] is False
 
     headers = {"Authorization": f"Bearer {body['token']}"}
     assert client.get(CHECKS_READS[0], headers=headers).status_code == 200
@@ -115,7 +120,8 @@ def test_an_account_with_nothing_granted_still_signs_in_and_is_told_so(client, d
 
 
 _USER_DEPENDENCIES = {
-    "get_current_user", "get_current_app_user", "require_admin_user", "get_current_user_optional", "_dep",
+    "get_current_user", "get_current_app_user", "require_admin_user", "require_global_admin",
+    "get_current_user_optional", "_dep",
 }
 # These let anyone ask and answer the same to everyone: the user is optional
 # there, and an account without Checks is treated as no user at all.
@@ -206,7 +212,7 @@ def test_every_route_that_names_a_user_belongs_to_a_workspace_or_to_the_account(
     assert ws.required_workspace_for_path("/api/authx") == "checks"
     assert ws.required_workspace_for_path("/api/admin-tools") == "checks"
     for path in ("/api/auth/me", "/api/2fa/status", "/api/admin/users", "/api/security/app/launch-status",
-                 "/api/security/sessions", "/api/security/system-status"):
+                 "/api/security/sessions", "/api/security/system-status", "/api/system-settings"):
         assert ws.required_workspace_for_path(path) is None, path
     # Data-facing security routes stay with Checks.
     for path in ("/api/security/scopes", "/api/security/unlock", "/api/security/audit", "/api/security/status"):
@@ -244,7 +250,7 @@ def test_revoking_a_workspace_stops_the_session_that_is_already_open(client, db_
     assert client.get(TIME_READ, headers=headers).status_code == 200
 
     # Time goes; the same token keeps Checks and learns the new list.
-    patch = client.patch(f"/api/admin/users/{user.id}", headers=admin_headers, json={"time_role": ""})
+    patch = client.patch(f"/api/admin/users/{user.id}", headers=admin_headers, json={"workspaces": {"time": None}})
     assert patch.status_code == 200, patch.text
     assert patch.json()["workspaces"] == ["checks"]
     assert _workspace_refusal(client.get(TIME_READ, headers=headers), "time")
@@ -252,7 +258,7 @@ def test_revoking_a_workspace_stops_the_session_that_is_already_open(client, db_
     assert client.get("/api/auth/me", headers=headers).json()["workspaces"] == ["checks"]
 
     # Checks goes too: the session is still a session, it just opens nothing.
-    patch = client.patch(f"/api/admin/users/{user.id}", headers=admin_headers, json={"checks_access": False})
+    patch = client.patch(f"/api/admin/users/{user.id}", headers=admin_headers, json={"workspaces": {"checks": None}})
     assert patch.status_code == 200, patch.text
     assert _workspace_refusal(client.get(CHECKS_READS[0], headers=headers), "checks")
     me = client.get("/api/auth/me", headers=headers)
@@ -260,7 +266,7 @@ def test_revoking_a_workspace_stops_the_session_that_is_already_open(client, db_
 
     # Granted back, it works again without signing in: the version never moved.
     patch = client.patch(f"/api/admin/users/{user.id}", headers=admin_headers,
-                         json={"checks_access": True, "time_role": "viewer"})
+                         json={"workspaces": {"checks": "operator", "time": "viewer"}})
     assert patch.json()["permissions_version"] == 1
     assert client.get(CHECKS_READS[0], headers=headers).status_code == 200
     assert client.get(TIME_READ, headers=headers).status_code == 200
@@ -339,11 +345,21 @@ def test_an_account_created_without_a_word_about_workspaces_is_a_checks_account(
     db_session.commit()
     db_session.refresh(legacy)
     assert legacy.checks_access is True and legacy.time_role is None
+    # And not a CRM administrator, whatever inserted it.
+    assert legacy.global_admin is False
 
     created = create_user(db_session, username="fromservice", password=PASSWORD)
     snapshot = build_permissions_snapshot(created)
     assert snapshot["workspaces"] == ["checks"]
-    assert snapshot["checks_access"] is True and snapshot["time_role"] is None
+    assert snapshot["workspace_roles"] == {"checks": "operator"}
+    assert snapshot["global_admin"] is False
+
+    # The same for an administrator made the old way, by the role alone: the
+    # Checks role is what was asked for, and nothing more came with it.
+    old_way = create_user(db_session, username="oldadmin", password=PASSWORD, role="admin")
+    snapshot = build_permissions_snapshot(old_way)
+    assert snapshot["workspace_roles"] == {"checks": "admin"}
+    assert snapshot["global_admin"] is False
 
 
 def test_a_snapshot_from_before_workspaces_reads_as_checks_only():
@@ -359,10 +375,15 @@ def test_time_roles_are_ordered_and_unknown_ones_grant_nothing():
     assert not ws.time_role_allows("viewer", "manager")
     assert not ws.time_role_allows("employee", "viewer")
     assert not ws.time_role_allows(None, "viewer") and not ws.time_role_allows("owner", "viewer")
-    assert ws.normalize_time_role("") is None and ws.normalize_time_role("None") is None
-    assert ws.normalize_time_role(" Manager ") == "manager"
-    with pytest.raises(ws.WorkspaceError):
-        ws.normalize_time_role("owner")
+    assert ws.normalize_workspace_role("time", "") is None and ws.normalize_workspace_role("time", "None") is None
+    assert ws.normalize_workspace_role("time", " Manager ") == "manager"
+    with pytest.raises(ws.WorkspaceError, match="invalid_workspace_role"):
+        ws.normalize_workspace_role("time", "owner")
+    # A role of one workspace is not a role of another.
+    with pytest.raises(ws.WorkspaceError, match="invalid_workspace_role"):
+        ws.normalize_workspace_role("checks", "manager")
+    with pytest.raises(ws.WorkspaceError, match="unknown_workspace"):
+        ws.normalize_workspace_role("payroll", "manager")
     # A value the code does not know, should one ever be in the column, is no access.
     assert ws.time_role_of(SimpleNamespace(time_role="owner")) is None
     assert ws.workspaces_of(SimpleNamespace(checks_access=False, time_role="owner")) == []

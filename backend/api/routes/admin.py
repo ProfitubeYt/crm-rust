@@ -1,4 +1,10 @@
-"""Admin API for RBAC user management."""
+"""CRM administration API: the one account directory and who may open what.
+
+Everything here belongs to the CRM as a whole and to no workspace. It is
+reached by a CRM administrator (``users.global_admin``) whether or not that
+person may open any workspace, and by nobody else: a workspace role, the
+Checks administrator's included, does not open it.
+"""
 from __future__ import annotations
 
 import json
@@ -9,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from api.dependencies import require_admin_user
+from api.dependencies import ACCOUNT_ADMINISTRATION_AUDIT, require_global_admin
 from database.connection import get_db_session
 from database.models import AccessAuditLog, AccessScope, User
 from services.access_control_service import (
@@ -36,13 +42,18 @@ from services.auth_bot_service import (
     revoke_user_sessions,
 )
 from services.auth_service import verify_jwt_token
-from services.user_service import ALL_TABS, PASSWORD_MIN_LENGTH
+from services.user_service import (
+    ALL_TABS,
+    PASSWORD_MIN_LENGTH,
+    SESSION_TTL_DAYS_DEFAULT,
+    SESSION_TTL_DAYS_MAX,
+    SESSION_TTL_DAYS_MIN,
+)
 from services.workspace_access import (
-    TIME_ROLES,
-    TIME_ROLE_TITLES,
-    checks_access_of,
-    describe_access,
-    time_role_of,
+    effective_access,
+    is_global_admin,
+    workspace_catalog,
+    workspace_roles_of,
     workspaces_of,
 )
 
@@ -74,10 +85,13 @@ class AdminUserResponse(BaseModel):
     locked_until: Optional[str] = None
     last_login_at: Optional[str] = None
     created_at: Optional[str] = None
-    # Workspace access, and the same in words for the administrator's list.
-    checks_access: bool = True
-    time_role: Optional[str] = None
+    # CRM administration, kept apart from every workspace role.
+    global_admin: bool = False
+    # What was granted: workspace -> role. `workspaces` is what the Hub lists.
+    workspace_roles: Dict[str, str] = Field(default_factory=dict)
     workspaces: List[str] = Field(default_factory=list)
+    # What that comes to right now, given the state of the account.
+    effective_access: Dict[str, Any] = Field(default_factory=dict)
     access_summary: List[str] = Field(default_factory=list)
 
 
@@ -96,13 +110,15 @@ class CreateUserRequest(BaseModel):
     session_ttl_days: int = Field(default=7, ge=1, le=90)
     telegram_id: Optional[int] = None
     telegram_username: Optional[str] = Field(default=None, max_length=255)
-    # A client that predates workspaces sends neither and gets what it always
-    # got: a Checks account. Time is granted only when asked for by name.
-    checks_access: bool = True
-    time_role: Optional[str] = Field(default=None, pattern="^(employee|viewer|manager)?$")
+    # Never implied: an administrator is appointed by name.
+    global_admin: bool = False
+    # {workspace: role}, stating every grant. A client that predates workspaces
+    # sends none and gets what it always got: a Checks account with `role`.
+    workspaces: Optional[Dict[str, Optional[str]]] = None
 
 
 class UpdateUserRequest(BaseModel):
+    # The Checks role, as clients from before workspaces send it.
     role: Optional[str] = Field(default=None, pattern="^(admin|operator)$")
     display_name: Optional[str] = Field(default=None, max_length=100)
     is_active: Optional[bool] = None
@@ -116,9 +132,10 @@ class UpdateUserRequest(BaseModel):
     # ISO date or datetime; an empty string clears it back to unlimited.
     access_until: Optional[str] = None
     access_note: Optional[str] = Field(default=None, max_length=200)
-    checks_access: Optional[bool] = None
-    # A role grants the Time workspace; an empty string or "none" takes it away.
-    time_role: Optional[str] = Field(default=None, pattern="^(employee|viewer|manager|none)?$")
+    global_admin: Optional[bool] = None
+    # {workspace: role or null}: a role grants or changes it, null takes the
+    # workspace away, a workspace that is not named stays as it is.
+    workspaces: Optional[Dict[str, Optional[str]]] = None
 
 
 class ResetPasswordRequest(BaseModel):
@@ -137,6 +154,7 @@ def _request_ip(request: Request) -> str:
 
 def _to_response(user: User) -> AdminUserResponse:
     snapshot = build_permissions_snapshot(user)
+    effective = effective_access(user)
     return AdminUserResponse(
         id=int(user.id),
         username=user.username,
@@ -161,10 +179,11 @@ def _to_response(user: User) -> AdminUserResponse:
         locked_until=user.locked_until.isoformat() if user.locked_until else None,
         last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
         created_at=user.created_at.isoformat() if getattr(user, "created_at", None) else None,
-        checks_access=checks_access_of(user),
-        time_role=time_role_of(user),
+        global_admin=is_global_admin(user),
+        workspace_roles=workspace_roles_of(user),
         workspaces=workspaces_of(user),
-        access_summary=describe_access(user),
+        effective_access=effective,
+        access_summary=list(effective["summary"]),
     )
 
 
@@ -172,9 +191,8 @@ def _access_state(user: User) -> Dict[str, Any]:
     """What an access change is compared and audited by. No secret is in it."""
     return {
         "is_active": bool(user.is_active),
-        "role": str(user.role or "operator"),
-        "checks_access": checks_access_of(user),
-        "time_role": time_role_of(user),
+        "global_admin": is_global_admin(user),
+        "workspace_roles": workspace_roles_of(user),
     }
 
 
@@ -236,7 +254,7 @@ def _audit(
 async def get_users(
     include_inactive: bool = Query(True),
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
 ):
     rows = list_users(db, include_inactive=include_inactive)
     return [_to_response(row) for row in rows]
@@ -247,7 +265,7 @@ async def create_user_endpoint(
     payload: CreateUserRequest,
     request: Request,
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
 ):
     try:
         row = create_user(
@@ -266,8 +284,8 @@ async def create_user_endpoint(
             session_ttl_days=payload.session_ttl_days,
             telegram_id=payload.telegram_id,
             telegram_username=payload.telegram_username,
-            checks_access=payload.checks_access,
-            time_role=payload.time_role,
+            global_admin=payload.global_admin,
+            workspaces=payload.workspaces,
         )
     except UserServiceError as exc:
         raise _refuse(exc)
@@ -289,18 +307,33 @@ async def update_user_endpoint(
     payload: UpdateUserRequest,
     request: Request,
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
 ):
     row = get_user_by_id(db, user_id)
     if not row:
         raise HTTPException(status_code=404, detail="user_not_found")
+
+    global_admin = payload.global_admin
+    # Before CRM administration had a column of its own it was the Checks role
+    # "admin", and a client from that time takes an administrator's rights
+    # away by changing the role. It still does, and only by that change: a
+    # role sent again unchanged, or a role named under `workspaces`, is about
+    # Checks alone.
+    if (
+        global_admin is None
+        and payload.role is not None
+        and payload.role != "admin"
+        and str(row.role or "").lower() == "admin"
+        and is_global_admin(row)
+    ):
+        global_admin = False
 
     # An administrator does not take their own rights away by a slip of the
     # hand: another administrator does that.
     if int(row.id) == _actor_id(current_user):
         if payload.is_active is False:
             raise HTTPException(status_code=409, detail="cannot_disable_self")
-        if payload.role is not None and payload.role != "admin":
+        if global_admin is False:
             raise HTTPException(status_code=409, detail="cannot_demote_self")
 
     before = _access_state(row)
@@ -320,8 +353,8 @@ async def update_user_endpoint(
             session_ttl_days=payload.session_ttl_days,
             access_until=payload.access_until,
             access_note=payload.access_note,
-            checks_access=payload.checks_access,
-            time_role=payload.time_role,
+            global_admin=global_admin,
+            workspaces=payload.workspaces,
         )
     except UserServiceError as exc:
         raise _refuse(exc)
@@ -364,7 +397,7 @@ async def reset_user_password_endpoint(
     payload: ResetPasswordRequest,
     request: Request,
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
 ):
     row = get_user_by_id(db, user_id)
     if not row:
@@ -394,7 +427,7 @@ async def reset_user_2fa_endpoint(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
 ):
     row = get_user_by_id(db, user_id)
     if not row:
@@ -425,7 +458,7 @@ async def force_user_2fa_endpoint(
     payload: ForceTwoFactorRequest,
     request: Request,
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
 ):
     row = get_user_by_id(db, user_id)
     if not row:
@@ -460,7 +493,7 @@ async def unlock_user_endpoint(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
 ):
     row = get_user_by_id(db, user_id)
     if not row:
@@ -483,7 +516,7 @@ async def deactivate_user_endpoint(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
 ):
     row = get_user_by_id(db, user_id)
     if not row:
@@ -519,7 +552,7 @@ async def link_telegram_endpoint(
     payload: LinkTelegramRequest,
     request: Request,
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
 ):
     row = get_user_by_id(db, user_id)
     if not row:
@@ -559,7 +592,7 @@ async def unlink_telegram_endpoint(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
 ):
     row = get_user_by_id(db, user_id)
     if not row:
@@ -590,7 +623,7 @@ async def list_user_sessions_endpoint(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
 ) -> Dict[str, Any]:
     row = get_user_by_id(db, user_id)
     if not row:
@@ -611,7 +644,7 @@ async def revoke_user_sessions_endpoint(
     user_id: int,
     request: Request,
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
 ) -> Dict[str, Any]:
     """Signs the account out everywhere. Permissions and Excel connections stay as they are."""
     row = get_user_by_id(db, user_id)
@@ -640,7 +673,7 @@ async def revoke_user_sessions_endpoint(
 
 # What the account administration writes, and the sign-ins it is read next to.
 _AUDIT_EXACT = ("login_success", "login_failed")
-_AUDIT_PREFIXES = ("admin\\_%", "authbot\\_user\\_%")
+_AUDIT_PREFIXES = ACCOUNT_ADMINISTRATION_AUDIT
 
 
 @router.get("/audit")
@@ -648,7 +681,7 @@ async def account_audit(
     limit: int = Query(100, ge=1, le=500),
     user_id: Optional[int] = Query(None, ge=1),
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
 ) -> Dict[str, Any]:
     """Who changed which account and when. Passwords and tokens are never written to it."""
     from sqlalchemy import or_
@@ -708,15 +741,20 @@ _TAB_TITLES = {
     "logs": "Логи",
     "admin": "Аудит",
 }
-_TIME_ROLE_NAMES = {"employee": "Сотрудник", "viewer": "Просмотр", "manager": "Руководитель"}
 
 
 @router.get("/meta")
 async def admin_meta(
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
 ) -> Dict[str, Any]:
-    """What the administration panel needs to draw its forms. No account data."""
+    """What the administration panel needs to draw its forms. No account data.
+
+    The workspaces come from the registry, so one that is added there appears
+    in the panel with its roles and nothing here changes. `checks` is the
+    reference data for the Checks data restrictions, the only workspace that
+    has any beyond a role.
+    """
     folders: Dict[int, Dict[str, Any]] = {}
     for scope in db.query(AccessScope).order_by(AccessScope.id.asc()).all():
         payload = scope_to_public_dict(scope)
@@ -725,26 +763,24 @@ async def admin_meta(
         payload = config_scope_to_public_dict(scope)
         folders.setdefault(int(payload.get("id") or 0), payload)
 
-    from api.routes import time_gateway
-
     return {
         "me": {
             "id": _actor_id(current_user),
             "username": current_user.get("username"),
             "display_name": current_user.get("display_name"),
         },
-        "roles": [
-            {"id": "operator", "title": "Оператор"},
-            {"id": "admin", "title": "Администратор"},
-        ],
-        "tabs": [{"id": tab, "title": _TAB_TITLES.get(tab, tab)} for tab in ALL_TABS if tab != "admin"],
-        "folders": [
-            {"id": key, "name": str(item.get("name") or key), "is_active": bool(item.get("is_active", True))}
-            for key, item in sorted(folders.items())
-        ],
-        "time_roles": [
-            {"id": role, "title": _TIME_ROLE_NAMES[role], "hint": TIME_ROLE_TITLES[role]} for role in TIME_ROLES
-        ],
+        "workspaces": workspace_catalog(),
+        "checks": {
+            "tabs": [{"id": tab, "title": _TAB_TITLES.get(tab, tab)} for tab in ALL_TABS if tab != "admin"],
+            "folders": [
+                {"id": key, "name": str(item.get("name") or key), "is_active": bool(item.get("is_active", True))}
+                for key, item in sorted(folders.items())
+            ],
+        },
         "password": {"min_length": int(PASSWORD_MIN_LENGTH)},
-        "time": {"configured": time_gateway.is_configured()},
+        "session_ttl_days": {
+            "min": int(SESSION_TTL_DAYS_MIN),
+            "max": int(SESSION_TTL_DAYS_MAX),
+            "default": int(SESSION_TTL_DAYS_DEFAULT),
+        },
     }

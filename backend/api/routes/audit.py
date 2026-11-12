@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from api.dependencies import get_system_access_context, require_admin_user
+from api.dependencies import get_system_access_context, hide_account_administration, require_admin_user
 from database.connection import get_db_session
 from database.models import AccessAuditLog
 
@@ -61,7 +61,7 @@ async def get_audit_logs(
     _system: Optional[Dict[str, Any]] = Depends(get_system_access_context),
 ) -> List[AuditRecordResponse]:
     _ = current_user, _system
-    query = db.query(AccessAuditLog)
+    query = hide_account_administration(db.query(AccessAuditLog), current_user)
     if action:
         query = query.filter(AccessAuditLog.action == action.strip())
     if user_id is not None:

@@ -1362,6 +1362,11 @@ class User(Base):
     checks_access = Column(Boolean, nullable=False, default=True, server_default="true")
     time_role = Column(String(20), nullable=True)
 
+    # CRM administration: accounts and who may open which workspace. Not a
+    # workspace role and not implied by one, so nobody has it unless it was
+    # given by name; an account created by code that predates it does not.
+    global_admin = Column(Boolean, nullable=False, default=False, server_default="false")
+
     failed_attempts = Column(Integer, nullable=False, default=0, server_default="0")
     locked_until = Column(DateTime(timezone=True), nullable=True)
     last_login_at = Column(DateTime(timezone=True), nullable=True)

@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Учётные записи — TBS inform CRM</title>
+  <link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+  <!-- Вход -->
+  <main class="center" id="view-login" hidden>
+    <form class="card login" id="login-form" autocomplete="on" novalidate>
+      <h1>TBS inform CRM</h1>
+      <p class="muted">Администрирование учётных записей</p>
+
+      <div id="login-step-password">
+        <label class="field">Логин
+          <input id="login-username" name="username" autocomplete="username" maxlength="50" required>
+        </label>
+        <label class="field">Пароль
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+        </label>
+      </div>
+
+      <div id="login-step-code" hidden>
+        <label class="field">Код двухфакторной аутентификации
+          <input id="login-code" inputmode="numeric" autocomplete="one-time-code" maxlength="16">
+        </label>
+        <p class="hint">Шесть цифр из приложения-аутентификатора или резервный код.</p>
+      </div>
+
+      <div id="login-step-launch" hidden>
+        <label class="field">Пароль запуска
+          <input id="login-launch" type="password" autocomplete="off">
+        </label>
+        <p class="hint">Сервер защищён паролем запуска. Он общий для всех клиентов.</p>
+      </div>
+
+      <p class="error" id="login-error" role="alert" hidden></p>
+      <div class="row">
+        <button class="btn primary" id="login-submit" type="submit">Войти</button>
+        <button class="btn ghost" id="login-back" type="button" hidden>Назад</button>
+      </div>
+    </form>
+  </main>
+
+  <!-- Панель -->
+  <div id="view-app" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <strong>Учётные записи</strong>
+        <span class="muted">TBS inform CRM</span>
+      </div>
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-view="users" role="tab">Пользователи</button>
+        <button class="tab" data-view="audit" role="tab">Журнал действий</button>
+      </nav>
+      <div class="who">
+        <span id="who-name"></span>
+        <button class="btn ghost small" id="logout" type="button">Выйти</button>
+      </div>
+    </header>
+
+    <section id="page-users" class="page">
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Поиск: логин, имя, Telegram" aria-label="Поиск">
+        <select id="filter-state" aria-label="Состояние">
+          <option value="">Все</option>
+          <option value="active">Активные</option>
+          <option value="disabled">Отключённые</option>
+        </select>
+        <select id="filter-access" aria-label="Доступ">
+          <option value="">Любой доступ</option>
+          <option value="checks">Чеки</option>
+          <option value="time">Учёт времени</option>
+          <option value="none">Без доступа</option>
+          <option value="admin">Администраторы</option>
+        </select>
+        <span class="grow"></span>
+        <span class="muted" id="count"></span>
+        <button class="btn primary" id="create" type="button">Создать учётную запись</button>
+      </div>
+      <div class="table-wrap">
+        <table class="grid" id="users">
+          <thead>
+            <tr>
+              <th>Логин</th>
+              <th>Имя</th>
+              <th>Доступ</th>
+              <th>Telegram</th>
+              <th>Последний вход</th>
+              <th>Состояние</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <p class="empty" id="users-empty" hidden>Никого не найдено.</p>
+      </div>
+    </section>
+
+    <section id="page-audit" class="page" hidden>
+      <div class="toolbar">
+        <span class="muted">Последние действия с учётными записями и входы. Пароли и токены в журнал не попадают.</span>
+        <span class="grow"></span>
+        <button class="btn" id="audit-refresh" type="button">Обновить</button>
+      </div>
+      <div class="table-wrap">
+        <table class="grid" id="audit">
+          <thead>
+            <tr><th>Когда</th><th>Кто</th><th>Действие</th><th>Подробности</th><th>Адрес</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- Карточка учётной записи -->
+  <aside class="sheet" id="sheet" hidden aria-modal="true" role="dialog">
+    <div class="sheet-head">
+      <div>
+        <h2 id="sheet-title"></h2>
+        <div class="chips" id="sheet-access"></div>
+      </div>
+      <button class="icon" id="sheet-close" type="button" aria-label="Закрыть">×</button>
+    </div>
+    <div class="sheet-body" id="sheet-body"></div>
+  </aside>
+  <div class="backdrop" id="backdrop" hidden></div>
+
+  <!-- Подтверждение -->
+  <div class="modal" id="confirm" hidden role="alertdialog" aria-modal="true">
+    <div class="card">
+      <h3 id="confirm-title"></h3>
+      <p id="confirm-text"></p>
+      <div class="row end">
+        <button class="btn" id="confirm-no" type="button">Отмена</button>
+        <button class="btn danger" id="confirm-yes" type="button">Подтвердить</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <script src="/admin/admin.js"></script>
+</body>
+</html>

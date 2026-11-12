@@ -30,6 +30,8 @@ def _seed_admin(db_session, username: str = "admin") -> User:
         can_toggle_sources=True,
         permissions_version=1,
         is_active=True,
+        # The security switches of the whole system are the CRM administrator's.
+        global_admin=True,
     )
     db_session.add(user)
     db_session.commit()
