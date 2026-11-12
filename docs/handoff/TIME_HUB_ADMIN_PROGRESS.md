@@ -15,6 +15,12 @@ The plan put to the owner for approval is `docs/handoff/TIME_HUB_ADMIN_DEPLOYMEN
 Sandbox: 2 CPUs, 8 GB, Docker 29.1.3. Rebuilt here: `tbs-linux-dev:pinned`, `timelist:local`
 (about six minutes), the volume `hub-backend-venv`.
 
+| Commit | What it holds |
+|---|---|
+| `f4f6e43` | the e2e scripts, first run of the stack and the rehearsal, the lockout fix and its test |
+| `5284b5d` | the window run and the Linux web view fixes, sessions carried through the rehearsal, the recorded run |
+| the commit with this text | the deployment document, the 2.0.3 client check, the continuation prompt |
+
 ### What was run, and what came out (UTC)
 
 | Step | Result |
@@ -24,7 +30,7 @@ Sandbox: 2 CPUs, 8 GB, Docker 29.1.3. Rebuilt here: `tbs-linux-dev:pinned`, `tim
 | Production pre-checks, `deploy/time-hub/prechecks.sql`, read-only, one connection, 13:30 | unchanged: PostgreSQL 15.16, schema `20261112_0033`, none of the three columns, two active `admin` accounts and one active `operator`, no other role values |
 | Whole backend suite, `scripts/hub/backend-tests.sh`, 14:02–14:05, on the tree with the lockout fix; no backend file changed after it | **1349 passed, 1 skipped**, 193 s |
 | Local stack, everything in one command, `scripts/hub/e2e/run.sh`, 14:26–14:30, PostgreSQL 15.19 | migration rehearsal: every step passed (9 + 3 + 13 + 9 checks); end-to-end: **173 checks, 0 failed**; exit 0. Output: `docs/handoff/evidence/time-hub-e2e-run-20261112.txt` (Docker's progress lines removed) |
-| A real window, Linux WebKitGTK under Xvfb, against that stack, 14:08–14:25 | Time and the admin panel opened from the Hub; revocation and deactivation while open; sign-out; three accounts in one run. Two faults of the Linux build found and fixed. See below |
+| A real window, Linux WebKitGTK under Xvfb, against that stack, 14:08–14:25, and the 2.0.3 client at 14:40 | Time and the admin panel opened from the Hub; revocation and deactivation while open; sign-out; three accounts in one run; the 2.0.3 client on the new backend. Two faults of the Linux build found and fixed. See below |
 
 Limits of the Windows result: it is a type check of the `cfg(windows)` code against the
 `x86_64-pc-windows-gnu` target on Linux. Nothing was linked, no `.exe` or installer was made,
@@ -164,6 +170,11 @@ What was seen, in one run of the program with three accounts
   disabled while the page was open: page closed, sign-in form.
 - `e2e_both` again: Checks, start window, Time, start window, Time. No page of an earlier
   account was shown to a later one.
+- **The release 2.0.3 client against the new backend**, which is what every installed client
+  will be on the day of the deployment: built from `f5eede4`, signed in as an administrator
+  from before the migration on a stack migrated and not otherwise touched. Receipts, the
+  settings and Settings → Пользователи (the four accounts, through `/api/admin/users`) work
+  as before (`06-release-2.0.3-client-on-the-new-backend.png`).
 
 Found and fixed, both in the Linux build only (`cfg(target_os = "linux")`; Windows code is
 the same as before, and the suite and the Windows check were run again after it):
@@ -194,7 +205,19 @@ Seen and left as they are:
 - Xvfb's default 100 dots an inch made wry size a page's first frame 4% too large until the
   window was resized; `window-check.py` now starts Xvfb with `-dpi 96`.
 - Not tried in the window: the Time workbook's save dialog (no desktop portal in the image),
-  the launch password, the settings' accounts and sessions, the Telegram section.
+  the launch password, the new client's own settings (accounts, sessions), the Telegram section.
+
+### The deployment document
+
+`docs/handoff/TIME_HUB_ADMIN_DEPLOYMENT.md`: what changes, what the owner supplies, the
+steps with the answer each must give, health checks, rollback by layer. Its commands were
+tried where a local stand-in exists: the health checks and SQL statements against the stack,
+`create_admin.py --promote` on PostgreSQL, the image `save`/`load` (39 MB), `pg_dump` and
+`pg_restore --list`, the release archive and the overlay build on a stand-in image holding
+the 2.0.3 code, and the Caddy step on a bind-mounted file. Two corrections came out of
+that: the panel answers `GET` and not `HEAD` (405), and a Caddyfile replaced by rename is not
+seen by the running container, so the file is written in place. What could not be tried is
+named in its section 3: the server's own layout, the server's real image, TLS.
 
 ### Still open
 
