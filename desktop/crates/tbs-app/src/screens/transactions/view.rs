@@ -640,13 +640,13 @@ mod tests {
     fn a_tick_shows_and_hides_a_column_at_once() {
         let mut bench = Bench::new(true);
         act(&mut bench, Msg::Open(Tab::Columns));
-        assert!(!bench.screen.columns.contains(&Column::Description));
+        assert!(!bench.screen.columns.contains(&Column::Day));
         // Found by the search and ticked by its label, as a person would.
-        act(&mut bench, Msg::Search("опис".into()));
-        bench.press("Описание");
-        assert!(bench.screen.columns.contains(&Column::Description));
+        act(&mut bench, Msg::Search("день".into()));
+        bench.press("День");
+        assert!(bench.screen.columns.contains(&Column::Day));
         assert!(bench.sees(&shown_of_all(21)) && bench.sees("Столбцы · 21"));
-        assert!(!bench.on_disk().hidden.contains(&Column::Description));
+        assert!(!bench.on_disk().hidden.contains(&Column::Day));
         act(&mut bench, Msg::Search(String::new()));
         bench.press("Сумма");
         assert!(!bench.screen.columns.contains(&Column::Amount));
@@ -836,7 +836,7 @@ mod tests {
         bench.screen.table.filters = Filters { currency: Some("USD".into()), ..Default::default() };
         bench.screen.refresh_rows();
         act(&mut bench, Msg::Open(Tab::Saved));
-        act(&mut bench, Msg::Toggle(Column::Description, true));
+        act(&mut bench, Msg::Toggle(Column::Day, true));
         act(&mut bench, Msg::Density(Density::Compact));
 
         // Without a name there is nothing to save: the buttons are off, and Enter says why.
@@ -859,14 +859,14 @@ mod tests {
 
         // The table moves on; the saved view does not, and brings everything back when applied.
         act(&mut bench, Msg::Density(Density::Standard));
-        act(&mut bench, Msg::Toggle(Column::Description, false));
+        act(&mut bench, Msg::Toggle(Column::Day, false));
         tell(&mut bench, Screen::Filters(Narrow::RemoveAll));
         assert_eq!(bench.rows_shown(), 60);
         assert!(!bench.sees("применён"));
         bench.press("Применить");
         assert_eq!(bench.screen.table, saved);
         assert_eq!(bench.rows_shown(), 6);
-        assert!(bench.screen.columns.contains(&Column::Description));
+        assert!(bench.screen.columns.contains(&Column::Day));
         assert!(bench.sees("применён") && !bench.try_press("Применить"));
         assert_eq!(bench.on_disk(), saved);
 
@@ -971,13 +971,14 @@ mod tests {
             Filters { date_from: day(1), date_to: day(30), transaction_types: vec!["DEBIT".into()], source_channel: Some("TELEGRAM".into()), source_chat_ids: vec![-1001234567890], ..Default::default() }
         );
 
-        // One arranged by hand («Описание» shown) keeps its columns; the new ones wait unticked at the end.
+        // «Описание» shown, and wide, was all that set this one's columns apart from the ledger view of
+        // its build. The column is retired: the view opens without it and follows the ledger like the
+        // untouched one it now is. Everything else it set is as it was saved.
         let unmarked = &presets[1].view;
-        assert_eq!(unmarked.hidden, [Column::TransactionDate, Column::Time, Column::Day, Column::Operation, Column::DateTimeDedup]);
-        assert_eq!(unmarked.order[columns::COUNT - 2..], [Column::Operation, Column::DateTimeDedup]);
-        assert_eq!(unmarked.visible().len(), columns::COUNT - 5);
-        assert!(unmarked.visible().contains(&Column::Description));
-        assert_eq!((unmarked.width(Column::Description), unmarked.density, unmarked.pinned, unmarked.page_size), (320.0, Density::Compact, 1, PageSize::All));
+        assert_eq!((&unmarked.order, &unmarked.hidden), (&default_order(), &QUIET.to_vec()));
+        assert!(unmarked.order.iter().all(|column| column.title() != "Описание") && unmarked.visible().contains(&Column::AnnotationDetails));
+        assert!(unmarked.widths.is_empty());
+        assert_eq!((unmarked.density, unmarked.pinned, unmarked.page_size), (Density::Compact, 1, PageSize::All));
         assert_eq!(unmarked.sort, Sort { column: Column::Amount, descending: true });
         assert_eq!(
             unmarked.filters,
@@ -1100,7 +1101,7 @@ mod tests {
         act(&mut bench, Msg::Search(String::new()));
 
         // Arranged by hand: a column shown, one hidden, «Сумма» moved up beside the date, one pinned less.
-        act(&mut bench, Msg::Toggle(Column::Description, true));
+        act(&mut bench, Msg::Toggle(Column::Day, true));
         act(&mut bench, Msg::Toggle(Column::IsP2p, false));
         for _ in 0..5 {
             act(&mut bench, Msg::Move(Column::Amount, Step::Up));

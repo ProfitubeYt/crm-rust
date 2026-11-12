@@ -189,8 +189,6 @@ pub fn to_field(column: Column, input: &str, current: Option<NaiveDateTime>) -> 
             limited(input, 255)?
         }
         Column::ApplicationMapped => optional(input, 100)?,
-        // An empty description clears the one bound to the operator.
-        Column::Description => limited(input, 1000)?,
         Column::ReceiverName => optional(input, 255)?,
         Column::ReceiverCard => {
             if input.is_empty() {
@@ -841,7 +839,6 @@ mod tests {
         assert!(to_field(Column::OperatorRaw, &"я".repeat(256), None).is_err());
         assert!(to_field(Column::OperatorRaw, &"я".repeat(255), None).is_ok());
         assert!(to_field(Column::OperatorRaw, "", None).is_err());
-        assert_eq!(to_field(Column::Description, "", None).unwrap().1, json!(""));
     }
 
     #[test]

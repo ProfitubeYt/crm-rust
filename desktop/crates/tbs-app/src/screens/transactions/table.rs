@@ -10,10 +10,9 @@ use tbs_core::query::{Dataset, Filters, Sort};
 
 use crate::grid::{Align, CellStyle, GridColumn, GridData, RowTone};
 
-/// Columns a fresh table starts without. The date and time already sit in
-/// «Дата и время»; «Описание» is the per-operator note, which the ledger does
-/// not carry (its notes are «Подробности»). The view panel brings them back.
-pub const QUIET: [Column; 4] = [Column::TransactionDate, Column::Time, Column::Day, Column::Description];
+/// Columns a fresh table starts without: the date and time already sit in
+/// «Дата и время». The view panel brings them back.
+pub const QUIET: [Column; 3] = [Column::TransactionDate, Column::Time, Column::Day];
 
 /// A fresh table reads like the customer's ledger, column for column: the
 /// operation's time, the same time made unique, service, operation, operator,
@@ -61,7 +60,8 @@ const LATER: [Column; 2] = [Column::Operation, Column::DateTimeDedup];
 /// that are nearly always empty came first and pushed the notes off the screen.
 ///
 /// Like every earlier layout, this is the view as `repair` hands it over: the
-/// columns that came later stand at the end, where `columns::ALL` has them.
+/// columns that came later stand at the end, where `columns::ALL` has them, and
+/// «Описание», which those builds had, is not in it (see `saved`).
 fn first_layout() -> (Vec<Column>, [Column; 5]) {
     let lead = [Column::RowNumber, Column::OperationNumber, Column::DateTime, Column::OperatorRaw, Column::Amount, Column::TransactionType];
     let mut order = lead.to_vec();
@@ -70,7 +70,7 @@ fn first_layout() -> (Vec<Column>, [Column; 5]) {
 }
 
 /// The ledger layout of the builds that had no «Операция»: «Тип» stood in its place.
-fn second_layout() -> (Vec<Column>, [Column; 4]) {
+fn second_layout() -> (Vec<Column>, [Column; 3]) {
     let ledger = [
         Column::RowNumber,
         Column::OperationNumber,
@@ -93,12 +93,12 @@ fn second_layout() -> (Vec<Column>, [Column; 4]) {
     ];
     let mut order = ledger.to_vec();
     order.extend(columns::ALL.iter().copied().filter(|c| !ledger.contains(c)));
-    (order, [Column::TransactionDate, Column::Time, Column::Day, Column::Description])
+    (order, [Column::TransactionDate, Column::Time, Column::Day])
 }
 
 /// The ledger layout of the builds that had «Операция» with «Тип» beside it and
 /// no «(Без дубля)».
-fn third_layout() -> (Vec<Column>, [Column; 4]) {
+fn third_layout() -> (Vec<Column>, [Column; 3]) {
     let ledger = [
         Column::RowNumber,
         Column::OperationNumber,
@@ -122,7 +122,7 @@ fn third_layout() -> (Vec<Column>, [Column; 4]) {
     ];
     let mut order = ledger.to_vec();
     order.extend(columns::ALL.iter().copied().filter(|c| !ledger.contains(c)));
-    (order, [Column::TransactionDate, Column::Time, Column::Day, Column::Description])
+    (order, [Column::TransactionDate, Column::Time, Column::Day])
 }
 
 pub const LOW_CONFIDENCE: f64 = 0.6;
@@ -294,8 +294,51 @@ mod cell_paint {
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(input: D) -> Result<Map, D::Error> {
-        let items = Vec::<(i64, Column, Paint)>::deserialize(input)?;
-        Ok(items.into_iter().map(|(id, column, paint)| ((id, column), paint)).collect())
+        let items = Vec::<(i64, String, Paint)>::deserialize(input)?;
+        let mut map = Map::with_capacity(items.len());
+        for (id, name, paint) in items {
+            // A cell of a column the table no longer has was painted for nothing.
+            if let Some(column) = Column::saved(&name)? {
+                map.insert((id, column), paint);
+            }
+        }
+        Ok(map)
+    }
+}
+
+/// How a saved view names its columns. One saved by a build that still had
+/// «Описание» must open with everything else it holds, so a retired name is
+/// dropped where it stands: from the order, the hidden columns, the widths,
+/// the paint and the sorting. A name the table never had is an error, as before.
+mod saved {
+    use super::*;
+    use serde::Deserializer;
+
+    pub fn list<'de, D: Deserializer<'de>>(input: D) -> Result<Vec<Column>, D::Error> {
+        let names = Vec::<String>::deserialize(input)?;
+        names.iter().filter_map(|name| Column::saved::<D::Error>(name).transpose()).collect()
+    }
+
+    pub fn map<'de, D: Deserializer<'de>, V: Deserialize<'de>>(input: D) -> Result<HashMap<Column, V>, D::Error> {
+        let named = HashMap::<String, V>::deserialize(input)?;
+        let mut map = HashMap::with_capacity(named.len());
+        for (name, value) in named {
+            if let Some(column) = Column::saved(&name)? {
+                map.insert(column, value);
+            }
+        }
+        Ok(map)
+    }
+
+    pub fn sort<'de, D: Deserializer<'de>>(input: D) -> Result<Sort, D::Error> {
+        #[derive(Deserialize)]
+        struct Saved {
+            column: String,
+            descending: bool,
+        }
+        let saved = Saved::deserialize(input)?;
+        // Sorted by a column that is gone: the table's own order, not a broken view.
+        Ok(Column::saved(&saved.column)?.map(|column| Sort { column, descending: saved.descending }).unwrap_or_default())
     }
 }
 
@@ -306,14 +349,19 @@ pub struct TableView {
     /// Absent in views saved before the ledger layout, which reads as zero.
     #[serde(default)]
     pub layout: u32,
+    #[serde(deserialize_with = "saved::list")]
     pub order: Vec<Column>,
+    #[serde(deserialize_with = "saved::list")]
     pub hidden: Vec<Column>,
+    #[serde(deserialize_with = "saved::map")]
     pub widths: HashMap<Column, f32>,
     pub density: Density,
     pub pinned: usize,
+    #[serde(deserialize_with = "saved::map")]
     pub column_paint: HashMap<Column, Paint>,
     #[serde(with = "cell_paint")]
     pub cell_paint: HashMap<(i64, Column), Paint>,
+    #[serde(deserialize_with = "saved::sort")]
     pub sort: Sort,
     pub filters: Filters,
     pub page_size: PageSize,
@@ -593,8 +641,8 @@ mod tests {
         let through_the_note = ["Дата и время", "(Без дубля)", "Источник", "Операция", "Оператор/Продавец", "Приложение", "Сумма", "Остаток", "ПК", "П2П", "Подробности"];
         assert_eq!(visible[2..13].iter().map(|c| c.title()).collect::<Vec<_>>(), through_the_note);
         assert_eq!(view.order.len(), columns::ALL.len());
-        // Not in the ledger: the split date and the per-operator note.
-        for quiet in [Column::TransactionDate, Column::Time, Column::Day, Column::Description] {
+        // Not in the ledger: the split date.
+        for quiet in [Column::TransactionDate, Column::Time, Column::Day] {
             assert!(view.hidden.contains(&quiet) && view.order.contains(&quiet), "{quiet:?}");
         }
     }
@@ -679,12 +727,18 @@ mod tests {
     #[test]
     fn the_views_on_disk_are_the_layouts_they_were_saved_under() {
         let without = |order: Vec<Column>, later: &[Column]| serde_json::json!(order.into_iter().filter(|c| !later.contains(c)).collect::<Vec<_>>());
-        assert_eq!(first_view_on_disk()["order"], without(first_layout().0, &LATER));
-        assert_eq!(first_view_on_disk()["hidden"], serde_json::json!(first_layout().1));
-        assert_eq!(ledger_view_on_disk()["order"], without(second_layout().0, &LATER));
-        assert_eq!(ledger_view_on_disk()["hidden"], serde_json::json!(second_layout().1));
-        assert_eq!(previous_view_on_disk()["order"], without(third_layout().0, &[Column::DateTimeDedup]));
-        assert_eq!(previous_view_on_disk()["hidden"], serde_json::json!(third_layout().1));
+        // Every one of them names «Описание», which those builds had; it is read as no column.
+        let kept = |names: &serde_json::Value| {
+            let names = names.as_array().unwrap();
+            assert!(names.iter().any(|name| name == "description") || names.len() == 5, "{names:?}");
+            serde_json::json!(names.iter().filter(|name| !columns::RETIRED.contains(&name.as_str().unwrap())).collect::<Vec<_>>())
+        };
+        assert_eq!(kept(&first_view_on_disk()["order"]), without(first_layout().0, &LATER));
+        assert_eq!(kept(&first_view_on_disk()["hidden"]), serde_json::json!(first_layout().1));
+        assert_eq!(kept(&ledger_view_on_disk()["order"]), without(second_layout().0, &LATER));
+        assert_eq!(kept(&ledger_view_on_disk()["hidden"]), serde_json::json!(second_layout().1));
+        assert_eq!(kept(&previous_view_on_disk()["order"]), without(third_layout().0, &[Column::DateTimeDedup]));
+        assert_eq!(kept(&previous_view_on_disk()["hidden"]), serde_json::json!(third_layout().1));
         // Each of them ends, once repaired, with the columns it was saved without.
         assert_eq!(first_layout().0[columns::COUNT - 2..], LATER);
         assert_eq!(second_layout().0[columns::COUNT - 2..], LATER);
@@ -726,7 +780,7 @@ mod tests {
         let mut moved = previous_view_on_disk();
         moved["order"].as_array_mut().unwrap().swap(6, 7);
         let mut shown = previous_view_on_disk();
-        shown["hidden"] = serde_json::json!(["transaction_date", "time", "day"]);
+        shown["hidden"] = serde_json::json!(["transaction_date", "time", "description"]);
         let mut put_away = previous_view_on_disk();
         put_away["hidden"].as_array_mut().unwrap().push("operation".into());
 
@@ -787,7 +841,7 @@ mod tests {
         let mut moved = ledger_view_on_disk();
         moved["order"].as_array_mut().unwrap().swap(4, 5);
         let mut shown = ledger_view_on_disk();
-        shown["hidden"] = serde_json::json!(["transaction_date", "time", "day"]);
+        shown["hidden"] = serde_json::json!(["transaction_date", "time", "description"]);
         let mut put_away = ledger_view_on_disk();
         put_away["hidden"].as_array_mut().unwrap().push("currency".into());
         let mut all_shown = ledger_view_on_disk();
@@ -838,6 +892,107 @@ mod tests {
         assert_eq!(view.order[before.order.len()..], LATER);
         assert_eq!(view.hidden, [Column::Time, Column::Operation, Column::DateTimeDedup]);
         assert_eq!(view.layout, LAYOUT);
+    }
+
+    /// The default view of the last build that had «Описание», as it wrote it.
+    fn described_view_on_disk() -> serde_json::Value {
+        serde_json::json!({
+            "layout": 4,
+            "order": [
+                "row_number", "operation_number", "date_time", "date_time_dedup", "source_type", "operation", "operator_raw", "application_mapped",
+                "amount", "balance_after", "card_last4", "is_p2p", "annotation_details", "annotation_person_code", "annotation_period",
+                "annotation_article_code", "transaction_type", "currency", "receiver_name", "receiver_card", "transaction_date", "time", "day", "description",
+            ],
+            "hidden": ["transaction_date", "time", "day", "description"],
+        })
+    }
+
+    #[test]
+    fn a_view_that_names_the_retired_column_opens_without_it_and_keeps_the_rest() {
+        // Arranged by hand in the last build that had «Описание»: the column shown, wide, painted,
+        // sorted by, one of its cells marked; «Сумма» moved, another column hidden, and the look changed.
+        let mut saved = described_view_on_disk();
+        saved["order"].as_array_mut().unwrap().swap(8, 9);
+        saved["hidden"] = serde_json::json!(["transaction_date", "time", "day", "currency"]);
+        saved["widths"] = serde_json::json!({ "description": 320.0, "amount": 140.0 });
+        saved["column_paint"] = serde_json::json!({ "description": { "fill": 1, "align": null }, "amount": { "fill": 2, "align": "right" } });
+        saved["cell_paint"] = serde_json::json!([[17, "description", { "fill": 0, "align": null }], [17, "annotation_details", { "fill": 3, "align": null }]]);
+        saved["sort"] = serde_json::json!({ "column": "description", "descending": true });
+        saved["density"] = "compact".into();
+        saved["pinned"] = 1.into();
+        saved["page_size"] = "all".into();
+        saved["filters"] = serde_json::json!({ "search": "такси", "currency": "UZS" });
+
+        let mut view = read(&saved);
+        view.repair();
+        // Every column there is today, once, and none that is gone.
+        let mut order = view.order.clone();
+        order.sort_by_key(|c| c.index());
+        assert_eq!(order, columns::ALL);
+        assert!(view.order.iter().all(|column| column.title() != "Описание"));
+        // The places and the ticks of the others are as they were left.
+        let expected: Vec<Column> = saved["order"].as_array().unwrap().iter().filter(|name| *name != "description").map(|name| serde_json::from_value(name.clone()).unwrap()).collect();
+        assert_eq!(view.order, expected);
+        assert_eq!((view.order[8], view.order[9]), (Column::BalanceAfter, Column::Amount));
+        assert_eq!(view.hidden, [Column::TransactionDate, Column::Time, Column::Day, Column::Currency]);
+        assert!(view.visible().contains(&Column::AnnotationDetails));
+        // What was set for the other columns stays; what was set for the retired one goes with it.
+        assert_eq!(view.widths, HashMap::from([(Column::Amount, 140.0)]));
+        assert_eq!(view.column_paint, HashMap::from([(Column::Amount, Paint { fill: Some(2), align: Some(Justify::Right) })]));
+        assert_eq!(view.cell_paint, HashMap::from([((17, Column::AnnotationDetails), Paint { fill: Some(3), align: None })]));
+        assert_eq!(view.sort, Sort::default());
+        assert_eq!((view.density, view.pinned, view.page_size, view.layout), (Density::Compact, 1, PageSize::All, LAYOUT));
+        assert_eq!(view.filters, Filters { search: "такси".into(), currency: Some("UZS".into()), ..Default::default() });
+
+        // Saved by this build it no longer names the column, and opens again as it is.
+        let written = serde_json::to_value(&view).unwrap();
+        assert!(!written.to_string().contains("description"));
+        let mut reopened = read(&written);
+        reopened.repair();
+        assert_eq!(reopened, view);
+    }
+
+    #[test]
+    fn the_untouched_view_of_the_last_build_with_the_retired_column_is_todays_fresh_table() {
+        let mut view = read(&described_view_on_disk());
+        view.repair();
+        assert_eq!(view, TableView::default());
+        assert!(view.has_fresh_layout());
+        // Shown there and nothing else: without the column that is the fresh table too.
+        let mut shown = described_view_on_disk();
+        shown["hidden"] = serde_json::json!(["transaction_date", "time", "day"]);
+        let mut view = read(&shown);
+        view.repair();
+        assert_eq!(view, TableView::default());
+    }
+
+    #[test]
+    fn an_older_view_that_only_showed_the_retired_column_follows_the_ledger() {
+        // Without «Описание» it is the untouched default of its build, whichever build that was.
+        for mut saved in [ledger_view_on_disk(), previous_view_on_disk()] {
+            saved["hidden"] = serde_json::json!(["transaction_date", "time", "day"]);
+            saved["widths"] = serde_json::json!({ "description": 320.0 });
+            saved["pinned"] = 1.into();
+            let mut view = read(&saved);
+            view.repair();
+            assert_eq!((&view.order, &view.hidden, view.layout), (&default_order(), &QUIET.to_vec(), LAYOUT), "{saved}");
+            assert!(view.widths.is_empty());
+            assert_eq!(view.pinned, 1);
+        }
+    }
+
+    #[test]
+    fn a_name_the_table_never_had_is_still_refused() {
+        for saved in [
+            serde_json::json!({ "order": ["row_number", "no_such_column"] }),
+            serde_json::json!({ "hidden": ["no_such_column"] }),
+            serde_json::json!({ "widths": { "no_such_column": 100.0 } }),
+            serde_json::json!({ "column_paint": { "no_such_column": { "fill": 1 } } }),
+            serde_json::json!({ "cell_paint": [[1, "no_such_column", { "fill": 1 }]] }),
+            serde_json::json!({ "sort": { "column": "no_such_column", "descending": false } }),
+        ] {
+            assert!(serde_json::from_value::<TableView>(saved.clone()).is_err(), "{saved}");
+        }
     }
 
     #[test]

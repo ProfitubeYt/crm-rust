@@ -51,7 +51,6 @@ pub enum Column {
     Day,
     OperatorRaw,
     ApplicationMapped,
-    Description,
     ReceiverName,
     ReceiverCard,
     Amount,
@@ -74,7 +73,7 @@ pub enum Column {
     DateTimeDedup,
 }
 
-pub const ALL: [Column; 24] = [
+pub const ALL: [Column; 23] = [
     Column::RowNumber,
     Column::OperationNumber,
     Column::DateTime,
@@ -83,7 +82,6 @@ pub const ALL: [Column; 24] = [
     Column::Day,
     Column::OperatorRaw,
     Column::ApplicationMapped,
-    Column::Description,
     Column::ReceiverName,
     Column::ReceiverCard,
     Column::Amount,
@@ -103,6 +101,11 @@ pub const ALL: [Column; 24] = [
 
 pub const COUNT: usize = ALL.len();
 
+/// Columns the table once had, by the name saved views know them under.
+/// «Описание» was the per-operator note; the ledger's own notes are
+/// «Подробности», which stays. The server still sends the field.
+pub const RETIRED: [&str; 1] = ["description"];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Align {
     Left,
@@ -111,6 +114,18 @@ pub enum Align {
 }
 
 impl Column {
+    /// A column as a saved view names it: `None` for one the table no longer
+    /// has, an error for a name it never had.
+    pub fn saved<E: serde::de::Error>(name: &str) -> Result<Option<Column>, E> {
+        use serde::Deserialize;
+        use serde::de::IntoDeserializer;
+
+        if RETIRED.contains(&name) {
+            return Ok(None);
+        }
+        Column::deserialize(name.into_deserializer()).map(Some)
+    }
+
     pub fn index(self) -> usize {
         ALL.iter().position(|c| *c == self).unwrap()
     }
@@ -125,7 +140,6 @@ impl Column {
             Column::Day => "День",
             Column::OperatorRaw => "Оператор/Продавец",
             Column::ApplicationMapped => "Приложение",
-            Column::Description => "Описание",
             Column::ReceiverName => "Получатель",
             Column::ReceiverCard => "Карта получателя",
             Column::Amount => "Сумма",
@@ -154,7 +168,6 @@ impl Column {
             Column::Day => 50.0,
             Column::OperatorRaw => 240.0,
             Column::ApplicationMapped => 130.0,
-            Column::Description => 200.0,
             Column::ReceiverName => 160.0,
             Column::ReceiverCard => 140.0,
             Column::Amount => 110.0,
@@ -204,7 +217,6 @@ impl Column {
             Column::Day => "day",
             Column::OperatorRaw => "operator_raw",
             Column::ApplicationMapped => "application_mapped",
-            Column::Description => "description",
             Column::ReceiverName => "receiver_name",
             Column::ReceiverCard => "receiver_card",
             Column::Amount => "amount",
@@ -227,7 +239,6 @@ impl Column {
         Some(match self {
             Column::OperatorRaw => "operator_raw",
             Column::ApplicationMapped => "application_mapped",
-            Column::Description => "description",
             Column::ReceiverName => "receiver_name",
             Column::ReceiverCard => "receiver_card",
             Column::Amount => "amount",
@@ -246,7 +257,6 @@ impl Column {
         let v = match self {
             Column::OperatorRaw => &tx.operator_raw,
             Column::ApplicationMapped => &tx.application_mapped,
-            Column::Description => &tx.description,
             Column::ReceiverName => &tx.receiver_name,
             Column::ReceiverCard => &tx.receiver_card,
             Column::Amount => &tx.amount,
@@ -275,7 +285,6 @@ impl Column {
             Column::Day => format::weekday(when).to_string(),
             Column::OperatorRaw => text(&tx.operator_raw),
             Column::ApplicationMapped => text(&tx.application_mapped),
-            Column::Description => blank(&tx.description),
             Column::ReceiverName => text(&tx.receiver_name),
             Column::ReceiverCard => text(&tx.receiver_card),
             Column::Amount => format::amount(tx.amount.as_deref()),
@@ -405,11 +414,11 @@ mod tests {
 
     #[test]
     fn saved_names_and_places_do_not_move() {
-        // Saved views name columns this way; `ALL` had the first 22 in this order before «Операция»,
-        // and the first 23 before «(Без дубля)».
+        // Saved views name columns this way; `ALL` had the first 21 in this order before «Операция»,
+        // and the first 22 before «(Без дубля)». «Описание» stood after «Приложение» until it was retired.
         let saved = [
             "row_number", "operation_number", "date_time", "transaction_date", "time", "day", "operator_raw", "application_mapped",
-            "description", "receiver_name", "receiver_card", "amount", "balance_after", "card_last4", "is_p2p", "transaction_type",
+            "receiver_name", "receiver_card", "amount", "balance_after", "card_last4", "is_p2p", "transaction_type",
             "currency", "source_type", "annotation_details", "annotation_person_code", "annotation_period", "annotation_article_code",
             "operation", "date_time_dedup",
         ];
@@ -418,6 +427,25 @@ mod tests {
         let wire: Vec<&str> = saved.iter().map(|name| if *name == "card_last4" { "card_last_4" } else { *name }).collect();
         assert_eq!(ALL.map(Column::id).to_vec(), wire);
         assert_eq!((Column::Operation.index(), Column::DateTimeDedup.index()), (COUNT - 2, COUNT - 1));
+    }
+
+    #[test]
+    fn a_retired_column_is_known_by_name_and_is_no_longer_a_column() {
+        type Error = serde::de::value::Error;
+        // «Описание» is gone from the table, the view panel and the edits; «Подробности» is not.
+        assert!(ALL.iter().all(|column| column.title() != "Описание" && column.id() != "description" && column.edit_field() != Some("description")));
+        assert_eq!(Column::AnnotationDetails.title(), "Подробности");
+        assert!(serde_json::from_str::<Column>(r#""description""#).is_err());
+        // A saved view may still name it: that reads as "no column", not as a broken file.
+        assert_eq!(Column::saved::<Error>("description"), Ok(None));
+        assert_eq!(Column::saved::<Error>("annotation_details"), Ok(Some(Column::AnnotationDetails)));
+        assert_eq!(Column::saved::<Error>("card_last4"), Ok(Some(Column::CardLast4)));
+        // A name the table never had is still an error, as before.
+        assert!(Column::saved::<Error>("no_such_column").is_err());
+        // The server's field is untouched: the row still carries it.
+        let tx: Transaction = serde_json::from_value(serde_json::json!({ "id": 1, "description": "Склад" })).unwrap();
+        assert_eq!(tx.description.as_deref(), Some("Склад"));
+        assert!(serde_json::to_value(&tx).unwrap().get("description").is_some());
     }
 
     #[test]

@@ -467,7 +467,6 @@ impl Sort {
             Column::Operation => Key::Text(r.cell(Column::Operation).to_lowercase()),
             Column::OperatorRaw => Key::Text(r.operator_lc.clone()),
             Column::ApplicationMapped => Key::Text(r.app_lc.clone()),
-            Column::Description => text(&r.tx.description),
             Column::ReceiverName => text(&r.tx.receiver_name),
             Column::ReceiverCard => text(&r.tx.receiver_card),
             Column::CardLast4 => text(&r.tx.card_last_4),
