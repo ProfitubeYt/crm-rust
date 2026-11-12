@@ -5,6 +5,167 @@
 Branch `work/time-hub-admin` from `main` `45d7e5d`. Plan: `docs/handoff/TIME_HUB_ADMIN_PLAN.md`.
 Nothing here is deployed; production was not read or changed.
 
+## UI and release session — 2026-11-12, second run on `work/time-hub-admin-finish`, cut short by credits
+
+Where the next session picks up: `docs/tasks/CONTINUE_TIME_HUB_ADMIN_PROMPT.md`.
+**Nothing is deployed. Production was neither read nor changed in this run.** It starts from
+`0664f66`; its code is commit `fa69c1b` (labelled WIP) and the commit with this text.
+
+### The owner's decisions in this run (2026-11-12, about 15:00 UTC)
+
+- **Production deployment of the reviewed plan is approved**, after the Time UI adaptation,
+  the preflight checks, the tests and fresh verified backups. Not executed: see below.
+- Both existing accounts `admin` and `stlee` keep global CRM administration. No credential is
+  reset, nobody is signed out, Time is not granted to everyone, Checks access and data
+  restrictions stay as they are.
+- Second factor: find out whether both administrators have it set up, without revealing
+  secrets or switching requirements off; keep a working desktop enrollment and recovery path.
+- Time UI before the release: no hamburger on the Time screen, the desktop program's outer
+  navigation kept; compact labelled tabs; no duplicate name or menu; no wasted margins; the
+  timesheet first; period and actions fit narrow windows, resizing, DPI and both themes;
+  attendance logic untouched; a viewer is offered no usable edit control (the server still
+  authorises); the page by itself in a browser keeps working; verify in a running hosted
+  window and say honestly whether evidence is Linux, Wine or Windows.
+- Asked and answered ("Time layout"): **slim top bar, no left column.** For Time and CRM
+  administration the program's 208 px left rail gives way to one slim bar of the program:
+  ← Главный экран, the workspace's name, online state, account, Выйти. Checks keeps its rail.
+- The bot is `@tbstimebot`; its token was valid at the owner's check. The token is supplied
+  separately as a protected secret (the owner's file
+  `C:/Users/heper/.config/parcer-secrets/time-bot.env`, name `TIME_BOT_TOKEN`); it is never
+  committed or printed, and never written over the Checks bot's token.
+- Privacy mode was **still enabled** at the last check (`can_read_all_group_messages=false`).
+  The owner has to send BotFather `/setprivacy` → `@tbstimebot` → Disable, then add the bot to
+  the group again.
+- The owner's Telegram ID is `1957390574`: for the intended identity link only; by itself it
+  grants nothing.
+- **The group ID is not verified.** The supplied `1276772106` gave `getChat` 400 "chat not
+  found" and `getUpdates` showed no group. No prefix is guessed, no arbitrary group accepted.
+  The bot's attendance stays off until there is a verified negative chat ID from a group
+  update. Time and the panel may be deployed without the bot.
+- Windows: the complete native release and installer on an authorised Windows machine, with
+  a version bump; a Linux type check or Wine is not a native build.
+- The shared `hoplite-ro` key stays read-only. Deployment needs a separately provisioned
+  mechanism or the owner's administrator.
+
+One of these facts changed during the run: **the owner's message of 14:59 UTC also carried
+the bot token in clear text at its end.** The agent did not use, store, print or commit it,
+and it is in no file of the sandbox. It is in the chat history, so it should be treated as
+exposed: reissue it in BotFather (`/revoke`) and keep the new one only in the protected file
+and the server's `.env`.
+
+### Done
+
+Time page, `time/crates/server/assets/` (`index.html`, `app.css`, `app.js`):
+
+- In the program's window (`window.TIMELIST_HUB`, class `hub` on `body`) the page has no name
+  or logo of its own, no account button and no sign-out: those belong to the program. By
+  itself in a browser it keeps all of them.
+- One header line of 44 px: the six sections as labelled tabs, then the period (‹ month ›,
+  «Сегодня», the closed-month mark), then the read-only mark and the bot's state. Tabs never
+  turn into a menu: where a line cannot hold them they move to a line of their own (under
+  940 px in the program, under 1240 px in a browser) and scroll if even that is too narrow.
+  Under 1100 px the same line is tighter and the two marks use short wording.
+- One toolbar line: view switch, «На проверку», «+ Отсутствие» (was «+ Отпуск, больничный,
+  командировка»; the long wording is its hint), the legend, «Excel», «Закрыть месяц», the day
+  panel's switch. Under 1000 px the legend moves below the buttons.
+- Less padding around pages and toolbars; the day panel's width follows the window
+  (280–348 px); number fields in tables keep a readable width.
+- **A viewer** (`meta.hub.can_edit` false): the mark «Только просмотр»; in every section and
+  dialog only what carries `data-ro` stays (moving about, filters, «Проверить фразу», the
+  workbook), every other button is hidden and every field disabled, including whatever is
+  added later without the mark (`applyReadonly`, a `MutationObserver`); the grid opens no
+  editor on typing, Enter, F2, Delete or a double click; the day panel is drawn as for a
+  closed month; `api()` refuses to send anything but reads and `/parse`. A change of role
+  while the page is open redraws it. The server's authorisation is unchanged.
+
+Tooling, all under `scripts/hub/e2e/`:
+
+- `page_host.py`: the page for an ordinary browser, served as the program serves it to its web
+  view (the files from the working tree, the greeting, the program's content policy,
+  `/api/time` forwarded on a made-up account's session: a manager on 8101, a viewer on 8102).
+- `page_shots.py` with `page-shots.Dockerfile` (image `hub-page-shots:pinned`): headless
+  Chromium; measures the header and toolbar from 640 to 1920 px, what a viewer is offered and
+  what a viewer's page sends, that a manager still edits; takes pictures in both themes.
+- `run.sh page`: Time's made-up month (`timelist demo`), the backend again with the request
+  limit raised, the page host. `compose.yml` has the `pagehost` service and
+  `RATE_LIMIT_PER_MINUTE: ${E2E_RATE_LIMIT:-200}`.
+
+### Verified, and only this
+
+Headless **Chromium 131 on Linux, through the stand-in for the program** (`page_host.py`). It
+is not the desktop client's window, not WebKitGTK, not Windows and not WebView2.
+
+- Last complete run before the final CSS tightening: **73 checks passed, 1 failed** (a viewer
+  at 1024 px on a closed month: «Справочники» a few pixels short). The header was tightened
+  for that case afterwards; the rerun had not finished when this was written, so **that one
+  case is unconfirmed**.
+- Passed in that run: at 1024, 1100, 1240, 1360, 1600 and 1920 px, manager and viewer, the
+  header is one line with all six sections in sight, nothing cut, the toolbar one line; at
+  640, 800 and 940 px (narrower than the program allows) two lines and nothing cut; no name
+  and no account button in the page; a viewer is offered nothing that edits in any of the six
+  sections, in the day panel or in «На проверку», opens no editor, and the page sent nothing
+  but reads and `/parse`; a manager's typed mark is saved and «+ Отсутствие» opens its form.
+- Pictures looked at: manager at 1024 (light) and 1360 (dark), 800, the Tabel, Telegram and
+  Refs sections at 1024, viewer at 1024 on a closed month. They are in `output/hub-e2e/page/`
+  in the sandbox only, not in git.
+- `node --check time/crates/server/assets/app.js` passes.
+
+### Not done, not verified
+
+- **The program's slim top bar is not written.** The desktop shell is unchanged, so the left
+  rail and its hamburger are still there in Time and CRM administration. This is the main
+  unfinished part of the owner's request. The design is below.
+- The new page was **not** opened in the desktop client's window (Linux WebKitGTK), and the
+  client was not rebuilt with it. Nothing on Windows.
+- **No test suite was rerun after these changes**: not the desktop suite (its
+  `hosted/assets.rs` tests read the page's files), not the Windows type check, not Time's own
+  `cargo test`, not the backend suite, not `scripts/hub/e2e/run.sh`. The numbers of the Finish
+  session below are for the tree before this run.
+- The Time image was not rebuilt; `timelist:local` in the sandbox still has the old page.
+- The page by itself in a browser (standalone) was prepared (`tl-standalone` container,
+  `--standalone`) but its checks had not completed.
+- No version bump, no Windows build, no installer.
+- No production preflight in this run, no deployment, no migration. The deployment document
+  is the plan of the Finish session with the approval noted; the bot, the 2FA query and the
+  hand-over to the administrator are not worked into it.
+
+### The design for the program's top bar (nothing of it is in the code)
+
+In `desktop/crates/tbs-app/src/`:
+
+- `ctx.rs`: add `pub bar: f32` beside `rail` (0.0 in both constructors).
+- `app.rs`: `const BAR_HEIGHT: f32 = 41.0` (40 and a 1 px rule). A helper `frame()`:
+  for a workspace that is a page (`self.workspace != Subsystem::Receipts`) `ctx.rail = 0.0`,
+  `ctx.bar = BAR_HEIGHT`; for Checks `ctx.rail = rail_width(prefs.rail_collapsed)`,
+  `ctx.bar = 0.0`. Call it at the start of `enter_main()` and in `Message::ToggleRail`
+  (instead of the direct assignment).
+- `app.rs`, new `fn bar(&self)`: a row in a `container` styled `theme::rail`, height 40,
+  padding `[0, space::MD]`, with a `ui::divider()` under it:
+  `ui::hint_on(ui::btn_icon(Icon::Home20, HUB, ui::Kind::Ghost, Some(Message::Hub)), HUB_HINT)`,
+  `ui::divider_v()`, `ui::heading(self.workspace.name())`, `ui::fill()`, the online dot and
+  word (as in `rail()`), the avatar and name, `ui::btn_icon(Icon::Logout, "Выйти", ui::Kind::Ghost, Some(Message::Logout))`.
+- `app.rs`, `view()`: `Phase::Main` draws `column![self.bar(), self.page()]` for a page
+  workspace and `row![self.rail(), self.page()]` for Checks.
+- `screens/hosted/mod.rs`, `page_area`: `Area { x: ctx.rail, y: ctx.bar, width: ctx.window.width - ctx.rail, height: ctx.window.height - ctx.bar }`.
+- Tests to change in `app.rs`: `time_opens_as_a_page_…` (expects «табель и отметки» on the
+  rail), `administration_opens_for_an_administrator_…` (expects «администрирование»); add
+  that `ctx.rail == 0.0`, `ctx.bar == BAR_HEIGHT` and the way back and sign-out are still
+  there. The rail tests of Checks stay.
+- The work window is at least 1024 × 640, so with the bar the page is at least 1024 × 599:
+  the sizes `page_shots.py` checks.
+
+### Found on the way
+
+- The backend limits requests to 200 a minute from one address (`RATE_LIMIT_PER_MINUTE`,
+  `api/main.py`). In the program's window the Time page asks `/api/time/meta` every 5 seconds,
+  12 requests a minute for each open page, on top of the client's own. A few open pages
+  behind one office address are far from the limit; many would not be. Not changed.
+- In `refs`, the sort number's field was too narrow to read at 1024 px (fixed in CSS).
+- Sandbox rules met: a script written with a heredoc and run in the same command is refused
+  ("dynamically generated command"): write the file with the file tool, run it in the next
+  command. Tool output over about 2,000 tokens is replaced by a summary: read the kept result
+  in pieces of 5,000 characters.
+
 ## Finish session — 2026-11-12, branch `work/time-hub-admin-finish`
 
 Baseline: `main` at `4e644ebc29ac505b937b30966130e58920a51d07` (everything through `10f7ea8`

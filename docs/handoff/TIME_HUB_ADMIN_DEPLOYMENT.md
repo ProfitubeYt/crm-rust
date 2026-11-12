@@ -1,6 +1,6 @@
 # Time workspace, Hub and CRM administration: deployment and rollback
 
-**A plan for the owner's approval. Nothing in it has been run on the server.** Production is
+**Approved by the owner on 2026-11-12 on conditions (section 10). Nothing in it has been run on the server.** Production is
 release 2.0.3 at schema `20261112_0033` (`DEPLOYMENT_2_0_3_20261112.md`); it was last read,
 read-only, on 2026-11-12 at 13:30 UTC. What was tested and how is in
 `TIME_HUB_ADMIN_PROGRESS.md`, section "Finish session".
@@ -324,5 +324,14 @@ annotations and the attendance recorded since.
 
 ## 10. Approval
 
-Not approved. To approve, the owner states: the window; who carries it out; the answers to
-points 2 to 5 of section 2. No step of section 5 from C on is to be taken before that.
+**Approved by the owner on 2026-11-12, on conditions; not executed.** The owner approved this
+plan for production once the Time UI adaptation is finished and after the preflight checks,
+the tests and fresh verified backups. Decided with it: both accounts `admin` and `stlee`
+keep CRM administration; no credential is reset, nobody is signed out, Time is granted to
+nobody by the deployment; the Time bot stays off (`TIME_BOT_TOKEN` and `TIME_BOT_CHAT_ID`
+empty in `.env`) until the group's ID is verified and privacy mode is disabled.
+
+Still open before step C may be taken: the UI adaptation (not finished, see the progress
+record), who carries the plan out (the shared key is read-only), the window, and the answer
+to the second-factor question of section 2. The sections above are as written before the
+approval and do not yet carry these answers line by line.
