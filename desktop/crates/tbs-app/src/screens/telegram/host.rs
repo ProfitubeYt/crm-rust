@@ -84,7 +84,7 @@ pub struct Area {
 }
 
 impl Area {
-    fn rect(self) -> Rect {
+    pub(crate) fn rect(self) -> Rect {
         Rect {
             position: LogicalPosition::new(f64::from(self.x), f64::from(self.y)).into(),
             size: LogicalSize::new(f64::from(self.width.max(1.0)), f64::from(self.height.max(1.0))).into(),
@@ -110,7 +110,7 @@ pub struct PageSpec {
     pub area: Area,
 }
 
-fn background(dark: bool) -> (u8, u8, u8, u8) {
+pub(crate) fn background(dark: bool) -> (u8, u8, u8, u8) {
     if dark { (16, 16, 16, 255) } else { (255, 255, 255, 255) }
 }
 
@@ -123,13 +123,13 @@ fn respond_with(status: u16, content_type: &str, body: Vec<u8>) -> Response<Cow<
     response
 }
 
-fn failure(status: u16, detail: &str) -> Response<Cow<'static, [u8]>> {
+pub(crate) fn failure(status: u16, detail: &str) -> Response<Cow<'static, [u8]>> {
     respond_with(status, "application/json", serde_json::json!({ "detail": detail }).to_string().into_bytes())
 }
 
 /// Hands the server's answer to the page; a failure keeps the shape the page's
 /// error handling reads.
-fn reply_to_page(outcome: Result<Reply, ApiError>) -> Response<Cow<'static, [u8]>> {
+pub(crate) fn reply_to_page(outcome: Result<Reply, ApiError>) -> Response<Cow<'static, [u8]>> {
     match outcome {
         Ok(reply) => {
             let content_type = reply.header("content-type").unwrap_or("application/octet-stream").to_owned();
@@ -198,13 +198,13 @@ fn debug_port(offset: u16) -> Option<String> {
 /// switches. The other platforms have none, and the program is only built
 /// there to run its tests.
 #[cfg(windows)]
-fn without_browser_chrome(builder: WebViewBuilder<'_>) -> WebViewBuilder<'_> {
+pub(crate) fn without_browser_chrome(builder: WebViewBuilder<'_>) -> WebViewBuilder<'_> {
     use wry::WebViewBuilderExtWindows;
     builder.with_browser_accelerator_keys(false).with_default_context_menus(false)
 }
 
 #[cfg(not(windows))]
-fn without_browser_chrome(builder: WebViewBuilder<'_>) -> WebViewBuilder<'_> {
+pub(crate) fn without_browser_chrome(builder: WebViewBuilder<'_>) -> WebViewBuilder<'_> {
     builder
 }
 

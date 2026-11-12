@@ -93,6 +93,9 @@ const fluent = {
   shield_20_filled: "shield_checkmark_20_filled",
   check_circle_20_filled: "checkmark_circle_20_filled",
   receipt_24_filled: "receipt_24_filled",
+  // The other entries of the start window: Time and CRM administration.
+  clock_24_filled: "clock_24_filled",
+  people_settings_24_filled: "people_settings_24_filled",
 };
 
 const sources = {

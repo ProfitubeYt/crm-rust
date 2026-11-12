@@ -154,6 +154,35 @@ impl Store {
         tx.execute("DELETE FROM kv WHERE key = 'tx_digest'", [])?;
         tx.commit()
     }
+
+    /// Empties the cache for an account that lost the right to its rows. The
+    /// pages they were written on are overwritten and given back, so the file
+    /// holds nothing of them even while something still keeps it open.
+    pub fn wipe(&self) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch(
+            "PRAGMA secure_delete = ON;
+             DELETE FROM kv;
+             DELETE FROM transactions;
+             PRAGMA wal_checkpoint(TRUNCATE);
+             VACUUM;",
+        )
+    }
+}
+
+/// Deletes a cache file and what SQLite keeps beside it. `false` when one of
+/// them is still there, as a file held open is on Windows.
+pub fn remove_cache(path: &Path) -> bool {
+    let mut gone = true;
+    for suffix in ["", "-wal", "-shm"] {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        let file = std::path::PathBuf::from(name);
+        if file.exists() && std::fs::remove_file(&file).is_err() {
+            gone = false;
+        }
+    }
+    gone
 }
 
 #[cfg(test)]
@@ -250,5 +279,37 @@ mod tests {
         s.replace_transactions(&[tx(1)], None, None).unwrap();
         s.conn.lock().unwrap().execute("INSERT INTO transactions VALUES (2, 1, 'not json')", []).unwrap();
         assert_eq!(s.load_transactions().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_wiped_cache_keeps_nothing_of_its_rows_in_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache-7-host.db");
+        let store = Store::open(&path).unwrap();
+        let mut row = tx(1);
+        row.raw_message = Some("PAYMENT-MARKER-4417 for the one who lost access".repeat(40));
+        store.replace_transactions(&[row], Some("sha"), Some("digest")).unwrap();
+        let holds = |needle: &[u8]| {
+            ["", "-wal"].iter().any(|suffix| {
+                let file = dir.path().join(format!("cache-7-host.db{suffix}"));
+                std::fs::read(file).is_ok_and(|bytes| bytes.windows(needle.len()).any(|window| window == needle))
+            })
+        };
+        assert!(holds(b"PAYMENT-MARKER-4417"), "the test needs the row on disk first");
+
+        // Still open, as it is while a screen holds it: the rows go all the same.
+        store.wipe().unwrap();
+        assert!(store.load_transactions().unwrap().is_empty());
+        assert_eq!(store.checksum().unwrap(), None);
+        assert!(!holds(b"PAYMENT-MARKER-4417"), "the row is still readable in the file");
+
+        // Closed, the files go too; another account's cache is not touched.
+        let other = dir.path().join("cache-8-host.db");
+        drop(Store::open(&other).unwrap());
+        drop(store);
+        assert!(remove_cache(&path));
+        assert!(!path.exists() && !dir.path().join("cache-7-host.db-wal").exists());
+        assert!(other.exists());
+        assert!(remove_cache(&path), "nothing left to remove is not a failure");
     }
 }

@@ -11,7 +11,7 @@ use iced::keyboard::{self, Key, key::Named};
 use iced::widget::{Column, Id, Space, button, column, container, mouse_area, opaque, operation, qr_code, row, stack, svg, text, text_input};
 use iced::{Alignment, Color, Event, Fill, Padding, Size, Subscription, Task, Theme, event, window};
 use tbs_core::api::{Api, ApiError, LoginResponse, QrSession, QrStatus, TwoFactorConfirm, TwoFactorSetup};
-use tbs_core::model::UserInfo;
+use tbs_core::model::{UserInfo, WORKSPACE_CHECKS, WORKSPACE_TIME};
 
 use crate::ctx::{Ctx, Request, text_error};
 use crate::screens::settings::{ThemeChoice, avatar};
@@ -42,30 +42,70 @@ const CODE_ID: &str = "login-code";
 
 /// What this client can open. The accounts are shared: one sign-in on one
 /// server, whichever subsystem it leads to. A subsystem is listed once it
-/// works, never as a placeholder.
+/// works, never as a placeholder, and only to an account that may open it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Subsystem {
     Receipts,
+    Time,
+    /// Administration of the whole CRM: not a workspace, and no workspace's.
+    Admin,
 }
 
 impl Subsystem {
-    const ALL: [Subsystem; 1] = [Subsystem::Receipts];
+    /// In the order the start window lists them.
+    pub const ALL: [Subsystem; 3] = [Subsystem::Receipts, Subsystem::Time, Subsystem::Admin];
 
     pub fn name(self) -> &'static str {
         match self {
             Subsystem::Receipts => "Чеки",
+            Subsystem::Time => "Учёт времени",
+            Subsystem::Admin => "Администрирование CRM",
+        }
+    }
+
+    /// The head of its rail: a name short enough for it, and what it is.
+    pub fn rail_title(self) -> (&'static str, &'static str) {
+        match self {
+            Subsystem::Receipts => ("Чеки", "учёт чеков"),
+            Subsystem::Time => ("Учёт времени", "табель и отметки"),
+            Subsystem::Admin => ("CRM", "администрирование"),
         }
     }
 
     fn hint(self) -> &'static str {
         match self {
             Subsystem::Receipts => "Транзакции и учёт чеков",
+            Subsystem::Time => "Табель и отметки сотрудников",
+            Subsystem::Admin => "Учётные записи и доступ",
         }
     }
 
     fn glyph(self) -> Icon {
         match self {
             Subsystem::Receipts => Icon::Receipt24Filled,
+            Subsystem::Time => Icon::Clock24Filled,
+            Subsystem::Admin => Icon::PeopleSettings24Filled,
+        }
+    }
+
+    /// Whether the account may open it, by what the server said of the
+    /// account. Neither workspace gives the other, administration gives
+    /// neither, and neither gives administration.
+    pub fn open_to(self, user: &UserInfo) -> bool {
+        match self {
+            Subsystem::Receipts => user.has_workspace(WORKSPACE_CHECKS),
+            Subsystem::Time => user.has_workspace(WORKSPACE_TIME),
+            Subsystem::Admin => user.is_global_admin(),
+        }
+    }
+
+    /// What the start window lists. Signed in, exactly what the account may
+    /// open. Before that nobody is known, and the window stands as it always
+    /// has: Checks, with the sign-in beside it.
+    pub fn listed(user: Option<&UserInfo>) -> Vec<Subsystem> {
+        match user {
+            Some(user) => Self::ALL.into_iter().filter(|system| system.open_to(user)).collect(),
+            None => vec![Subsystem::Receipts],
         }
     }
 }
@@ -219,7 +259,7 @@ impl Login {
     /// The window as it stands for the session there is: signed in, or the sign-in.
     pub fn new(ctx: &Ctx) -> Self {
         let users = ctx.prefs.users();
-        Self {
+        let mut screen = Self {
             system: Subsystem::Receipts,
             session: if ctx.user.is_some() { Session::SignedIn } else { Session::SignedOut },
             settings: false,
@@ -242,7 +282,9 @@ impl Login {
             setup_error: None,
             setup_busy: false,
             qr: Qr::Idle,
-        }
+        };
+        screen.account_changed(ctx);
+        screen
     }
 
     /// The window a launch opens with. A saved session is still with the
@@ -259,6 +301,38 @@ impl Login {
     /// The server answered about the saved session; `ctx.user` holds who it is.
     pub fn resumed(&mut self, ctx: &Ctx) {
         self.session = if ctx.user.is_some() { Session::SignedIn } else { Session::SignedOut };
+        self.account_changed(ctx);
+    }
+
+    /// What the left half lists for whoever the window stands on.
+    fn listed(&self, ctx: &Ctx) -> Vec<Subsystem> {
+        Subsystem::listed(if self.session == Session::SignedIn { ctx.user.as_ref() } else { None })
+    }
+
+    /// The account, or what it may open, is not what it was: the choice keeps
+    /// to what is listed. With nothing listed there is nothing to open.
+    pub fn account_changed(&mut self, ctx: &Ctx) {
+        let listed = self.listed(ctx);
+        if !listed.contains(&self.system) {
+            self.system = listed.first().copied().unwrap_or(Subsystem::Receipts);
+        }
+    }
+
+    /// Comes back to the start window on the workspace that was just left.
+    pub fn choose(&mut self, system: Subsystem, ctx: &Ctx) {
+        if self.listed(ctx).contains(&system) {
+            self.system = system;
+        }
+    }
+
+    /// The one the sign-in beside the list leads to.
+    pub fn chosen(&self) -> Subsystem {
+        self.system
+    }
+
+    /// Whether the choice can be opened: it is listed for the account.
+    fn can_open(&self, ctx: &Ctx) -> bool {
+        self.session == Session::SignedIn && self.listed(ctx).contains(&self.system)
     }
 
     /// Where typing starts: a known user only has the password left to enter.
@@ -299,8 +373,12 @@ impl Login {
         }
         match message {
             Msg::System(system) => {
-                self.system = system;
                 self.settings = false;
+                // Only what is listed can be chosen, whatever sent the message.
+                if !self.listed(ctx).contains(&system) {
+                    return Task::none();
+                }
+                self.system = system;
                 // Choosing a workspace opens it on the session there is; without
                 // one the sign-in beside it is the way in.
                 if self.session == Session::SignedIn {
@@ -310,7 +388,7 @@ impl Login {
                 }
             }
             Msg::Open => {
-                if self.session == Session::SignedIn {
+                if self.can_open(ctx) {
                     ctx.request(Request::Open(self.system));
                 }
             }
@@ -599,18 +677,24 @@ impl Login {
     }
 
     pub fn view<'a>(&'a self, ctx: &'a Ctx) -> El<'a, Msg> {
-        let panes = container(row![self.systems(), self.account(ctx)]).width(Fill).height(Fill).style(theme::surface);
+        let panes = container(row![self.systems(ctx), self.account(ctx)]).width(Fill).height(Fill).style(theme::surface);
         let area = mouse_area(panes);
         if self.users_open { area.on_press(Msg::CloseUsers).into() } else { area.into() }
     }
 
     // ---- the brand half --------------------------------------------------
 
-    fn systems(&self) -> El<'_, Msg> {
+    fn systems(&self, ctx: &Ctx) -> El<'_, Msg> {
         let logo = svg(LOGO.clone()).width(LOGO_WIDTH).height(LOGO_HEIGHT).style(|theme: &Theme, _| svg::Style { color: Some(theme::p(theme).on_pane) });
         let line = container(Space::new()).width(1).height(LOGO_HEIGHT - 12.0).style(theme::pane_line);
         let brand = row![logo, line, text("CRM").size(size::XXL).font(theme::FONT_BOLD)].spacing(space::LG).align_y(Alignment::Center);
-        let list = Subsystem::ALL.into_iter().fold(Column::new().spacing(space::SM), |list, system| list.push(self.system_row(system)));
+        let listed = self.listed(ctx);
+        let list: El<'_, Msg> = if listed.is_empty() {
+            // Signed in, and the account has nothing to open: said here, and in words beside.
+            container(quiet("Нет доступных пространств", size::BASE)).padding(Padding { left: space::XXS, ..Padding::ZERO }).into()
+        } else {
+            listed.into_iter().fold(Column::new().spacing(space::SM), |list, system| list.push(self.system_row(system))).into()
+        };
 
         let (tone, state) = match self.server {
             None => (Tone::Neutral, "Проверяем сервер…"),
@@ -660,7 +744,7 @@ impl Login {
         } else {
             match (self.session, &ctx.user) {
                 (Session::Resuming, _) => self.resuming(),
-                (Session::SignedIn, Some(user)) => self.signed_in(user),
+                (Session::SignedIn, Some(user)) => self.signed_in(user, self.can_open(ctx)),
                 _ if self.qr.takes_the_pane() => self.qr_pane(),
                 _ => match &self.step {
                     Step::Credentials => self.credentials(),
@@ -684,15 +768,21 @@ impl Login {
     }
 
     /// Somebody is signed in: nothing to type, the workspace opens on the
-    /// session, and signing out is said in words because it ends it.
-    fn signed_in<'a>(&'a self, user: &'a UserInfo) -> El<'a, Msg> {
+    /// session, and signing out is said in words because it ends it. An
+    /// account with nothing to open is told so, and who can change it.
+    fn signed_in<'a>(&'a self, user: &'a UserInfo, can_open: bool) -> El<'a, Msg> {
         let name = user.title();
         let who = column![ui::strong(name), ui::faint(format!("@{}", user.username))].spacing(1).width(Fill);
         let account = container(row![avatar(name, 40.0), who].spacing(space::MD).align_y(Alignment::Center)).width(Fill).padding([space::SM + 2.0, space::MD]).style(theme::inset);
+        let way_in: El<'a, Msg> = if can_open {
+            primary(format!("Открыть {}", self.system.name()), Some(Msg::Open))
+        } else {
+            ui::notice(Tone::Warning, "Этой учётной записи не открыто ни одно рабочее пространство. Доступ выдаёт администратор CRM.")
+        };
         column![
             heading("Вход выполнен".to_owned(), "Учётная запись одна для всех рабочих пространств"),
             labeled("Учётная запись", account),
-            primary(format!("Открыть {}", self.system.name()), Some(Msg::Open)),
+            way_in,
             quiet_link(Icon::Logout, "Выйти из учётной записи", Msg::SignOut),
         ]
         .spacing(space::LG + space::XS)
@@ -880,6 +970,8 @@ impl Login {
             "l-users" => Msg::ToggleUsers,
             "l-next" => Msg::ListKey(ListKey::Next),
             "l-receipts" => Msg::System(Subsystem::Receipts),
+            "l-time" => Msg::System(Subsystem::Time),
+            "l-admin" => Msg::System(Subsystem::Admin),
             "l-open" => Msg::Open,
             "l-signout" => Msg::SignOut,
             "l-settings" => Msg::OpenSettings,
@@ -1419,5 +1511,144 @@ mod tests {
         assert!(open_key(enter(), event::Status::Captured, window).is_none());
         let tab = iced_test::simulator::press_key(Key::Named(Named::Tab), None);
         assert!(open_key(tab, event::Status::Ignored, window).is_none());
+    }
+
+    /// An account as a server that knows workspaces describes it. `None` for
+    /// the workspaces is a server from before them.
+    fn account(workspaces: Option<&[&str]>, global_admin: Option<bool>) -> UserInfo {
+        UserInfo {
+            id: 9,
+            username: "olga".into(),
+            display_name: Some("Ольга".into()),
+            role: "operator".into(),
+            workspaces: workspaces.map(|list| list.iter().map(|name| (*name).to_owned()).collect()),
+            global_admin,
+            ..Default::default()
+        }
+    }
+
+    /// The start window as it stands for somebody signed in.
+    fn hub_for(dir: &tempfile::TempDir, user: UserInfo) -> (Login, Ctx) {
+        let mut ctx = with_users(dir, &[]);
+        ctx.user = Some(user);
+        let screen = Login::new(&ctx);
+        (screen, ctx)
+    }
+
+    /// The line under each entry's name, which nothing else on the window says.
+    const TILES: [&str; 3] = ["Транзакции и учёт чеков", "Табель и отметки сотрудников", "Учётные записи и доступ"];
+    const WAYS_IN: [&str; 3] = ["Открыть Чеки", "Открыть Учёт времени", "Открыть Администрирование CRM"];
+
+    fn tiles(screen: &Login, ctx: &Ctx) -> Vec<&'static str> {
+        TILES.into_iter().filter(|tile| sees(screen, ctx, tile)).collect()
+    }
+
+    #[test]
+    fn the_start_window_lists_exactly_what_the_account_may_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases: [(Option<&[&str]>, Option<bool>, &[&str], Option<&str>); 8] = [
+            // A server from before workspaces: Checks, as it always was, and nothing guessed beyond it.
+            (None, None, &[TILES[0]], Some(WAYS_IN[0])),
+            (Some(&["checks"]), Some(false), &[TILES[0]], Some(WAYS_IN[0])),
+            (Some(&["time"]), Some(false), &[TILES[1]], Some(WAYS_IN[1])),
+            (Some(&["checks", "time"]), Some(false), &[TILES[0], TILES[1]], Some(WAYS_IN[0])),
+            (Some(&["checks", "time"]), Some(true), &TILES, Some(WAYS_IN[0])),
+            // Administration needs no workspace, and gives none.
+            (Some(&[]), Some(true), &[TILES[2]], Some(WAYS_IN[2])),
+            (Some(&["time"]), Some(true), &[TILES[1], TILES[2]], Some(WAYS_IN[1])),
+            (Some(&[]), Some(false), &[], None),
+        ];
+        for (workspaces, global_admin, listed, way_in) in cases {
+            let (screen, ctx) = hub_for(&dir, account(workspaces, global_admin));
+            assert_eq!(tiles(&screen, &ctx), listed, "{workspaces:?} {global_admin:?}");
+            for button in WAYS_IN {
+                assert_eq!(sees(&screen, &ctx, button), way_in == Some(button), "«{button}» for {workspaces:?} {global_admin:?}");
+            }
+            assert!(sees(&screen, &ctx, "Вход выполнен") && sees(&screen, &ctx, "Выйти из учётной записи"));
+        }
+    }
+
+    #[test]
+    fn a_checks_administrator_of_an_older_server_is_offered_no_panel_that_server_lacks() {
+        let dir = tempfile::tempdir().unwrap();
+        // `anna` is the Checks administrator; the server said nothing of CRM administration.
+        let (screen, ctx) = hub_for(&dir, anna());
+        assert_eq!(tiles(&screen, &ctx), [TILES[0]]);
+        // Nor does being the Checks administrator of a newer server give it.
+        let mut checks_admin = account(Some(&["checks", "time"]), Some(false));
+        checks_admin.role = "admin".into();
+        let (screen, ctx) = hub_for(&dir, checks_admin);
+        assert_eq!(tiles(&screen, &ctx), [TILES[0], TILES[1]]);
+    }
+
+    #[test]
+    fn an_account_with_nothing_to_open_is_told_so_and_can_still_sign_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut screen, mut ctx) = hub_for(&dir, account(Some(&[]), Some(false)));
+        assert!(sees(&screen, &ctx, "Нет доступных пространств"));
+        assert!(sees(&screen, &ctx, "Этой учётной записи не открыто ни одно рабочее пространство. Доступ выдаёт администратор CRM."));
+        // Nothing opens: not by Enter, not by a message that names a workspace.
+        for message in [Msg::Open, Msg::System(Subsystem::Receipts), Msg::System(Subsystem::Time), Msg::System(Subsystem::Admin)] {
+            let _ = screen.update(message, &mut ctx);
+        }
+        assert!(ctx.requests.is_empty(), "{:?}", ctx.requests);
+        let messages = click(&screen, &ctx, "Выйти из учётной записи");
+        assert!(matches!(messages.as_slice(), [Msg::SignOut]), "{messages:?}");
+    }
+
+    #[test]
+    fn what_is_not_listed_cannot_be_chosen() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut screen, mut ctx) = hub_for(&dir, account(Some(&["time"]), Some(false)));
+        assert_eq!(screen.chosen(), Subsystem::Time, "the choice starts on what the account has");
+        for other in [Subsystem::Receipts, Subsystem::Admin] {
+            let _ = screen.update(Msg::System(other), &mut ctx);
+            assert!(ctx.requests.is_empty(), "{other:?}: {:?}", ctx.requests);
+            assert_eq!(screen.chosen(), Subsystem::Time);
+        }
+        let messages = click(&screen, &ctx, TILES[1]);
+        assert!(matches!(messages.as_slice(), [Msg::System(Subsystem::Time)]), "{messages:?}");
+        let _ = screen.update(Msg::System(Subsystem::Time), &mut ctx);
+        assert!(matches!(ctx.requests.as_slice(), [Request::Open(Subsystem::Time)]), "{:?}", ctx.requests);
+    }
+
+    #[test]
+    fn a_grant_or_a_revocation_changes_the_list_without_signing_in_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut screen, mut ctx) = hub_for(&dir, account(Some(&["checks", "time"]), Some(true)));
+        screen.choose(Subsystem::Time, &ctx);
+        assert!(sees(&screen, &ctx, WAYS_IN[1]));
+
+        // Time is taken away: its entry goes, and the choice moves to what is left.
+        ctx.user = Some(account(Some(&["checks"]), Some(true)));
+        screen.account_changed(&ctx);
+        assert_eq!(tiles(&screen, &ctx), [TILES[0], TILES[2]]);
+        assert!(sees(&screen, &ctx, WAYS_IN[0]) && !sees(&screen, &ctx, WAYS_IN[1]));
+
+        // Administration is taken away, Time is given back.
+        ctx.user = Some(account(Some(&["checks", "time"]), Some(false)));
+        screen.account_changed(&ctx);
+        assert_eq!(tiles(&screen, &ctx), [TILES[0], TILES[1]]);
+
+        // Everything is taken away.
+        ctx.user = Some(account(Some(&[]), Some(false)));
+        screen.account_changed(&ctx);
+        assert!(tiles(&screen, &ctx).is_empty() && sees(&screen, &ctx, "Нет доступных пространств"));
+    }
+
+    #[test]
+    fn before_anybody_signs_in_the_window_stands_as_it_always_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = with_users(&dir, &[]);
+        let mut screen = Login::new(&ctx);
+        // Nobody is known, so nothing is said of Time or of administration.
+        assert_eq!(tiles(&screen, &ctx), [TILES[0]]);
+        assert!(sees(&screen, &ctx, "Вход в Чеки"));
+        for later in ["Учёт времени", "Администрирование CRM"] {
+            assert!(!sees(&screen, &ctx, later), "«{later}» is shown to nobody in particular");
+        }
+        // And nothing of them can be chosen to sign in to.
+        let _ = screen.update(Msg::System(Subsystem::Admin), &mut ctx);
+        assert_eq!(screen.chosen(), Subsystem::Receipts);
     }
 }

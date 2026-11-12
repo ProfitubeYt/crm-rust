@@ -14,14 +14,15 @@ use iced::{Alignment, Event, Fill, Length, Size, Subscription, Task, Theme, even
 use tbs_core::api::{Api, ApiEvent};
 use tbs_core::config::{self, Preferences};
 use tbs_core::entitlement::{CachedEntitlement, Verdict};
-use tbs_core::model::UserInfo;
+use tbs_core::model::{UserInfo, WORKSPACE_CHECKS};
 use tbs_core::secret::{KeyringStore, SecretStore};
-use tbs_core::store::Store;
+use tbs_core::store::{self, Store};
 
 use crate::ctx::{Ctx, Request, SyncState, text_error};
 use crate::focus;
 use crate::screens::gate::{self, LaunchGate};
 use crate::screens::audit::{self, Audit};
+use crate::screens::hosted::{self, Hosted};
 use crate::screens::login::{self, Login, Subsystem};
 use crate::screens::logs::{self, Logs};
 use crate::screens::reference::{self, Reference};
@@ -34,8 +35,6 @@ use crate::ui::{self, El, Icon};
 /// What the program calls itself: the window title and its dialogs. A
 /// workspace opened from the start window goes by its own name in its rail.
 pub const PRODUCT: &str = "TBS inform CRM";
-/// The workspace this window opens, as the start window lists it.
-const WORKSPACE: Subsystem = Subsystem::Receipts;
 /// The way from a workspace back to the start window, session kept.
 const HUB: &str = "Главный экран";
 const HUB_HINT: &str = "К выбору рабочего пространства, без выхода из учётной записи";
@@ -157,6 +156,10 @@ pub enum Message {
     Audit(audit::Msg),
     Settings(settings::Msg),
     Telegram(telegram::Msg),
+    /// The page of a workspace that is one: Time, CRM administration.
+    Hosted(hosted::Msg),
+    /// What the server says of the account now: what it may open.
+    Account(Result<UserInfo, String>),
     Resized(iced::Size),
     /// The other window is up: `true` for the small one of the start window.
     WindowSwapped(bool),
@@ -178,6 +181,8 @@ pub struct App {
     /// The window on screen is the small one of the start window.
     compact: bool,
     swapping: bool,
+    /// What the work window holds: the choice made on the start window.
+    workspace: Subsystem,
     route: Route,
     tx: Option<Transactions>,
     reference: Option<Reference>,
@@ -185,6 +190,7 @@ pub struct App {
     audit: Option<Audit>,
     settings: Option<Settings>,
     telegram: Option<Telegram>,
+    hosted: Option<Hosted>,
     toasts: Vec<Toast>,
     next_toast: u64,
     system_dark: bool,
@@ -242,8 +248,7 @@ async fn check_entitlement(api: Api, dir: std::path::PathBuf) -> Entitled {
 }
 
 fn store_path(ctx: &Ctx, user: &UserInfo) -> std::path::PathBuf {
-    let host: String = ctx.api.base().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
-    ctx.data_dir.join(format!("cache-{}-{host}.db", user.id))
+    ctx.data_dir.join(format!("cache-{}-{}.db", user.id, ctx.host_key()))
 }
 
 fn rail_width(folded: bool) -> f32 {
@@ -292,6 +297,7 @@ impl App {
             phase: Phase::Login(start),
             compact: true,
             swapping: false,
+            workspace: Subsystem::Receipts,
             route: Route::Transactions,
             tx: None,
             reference: None,
@@ -299,6 +305,7 @@ impl App {
             audit: None,
             settings: None,
             telegram: None,
+            hosted: None,
             toasts: Vec::new(),
             next_toast: 0,
             system_dark: false,
@@ -339,6 +346,10 @@ impl App {
                 }
                 all.extend(self.settings.as_ref().map(|screen| screen.background().map(Message::Settings)));
                 all.extend(self.telegram.as_ref().map(|screen| screen.background().map(Message::Telegram)));
+                if let Some(screen) = &self.hosted {
+                    all.push(screen.background().map(Message::Hosted));
+                    all.push(screen.subscription().map(Message::Hosted));
+                }
                 match self.route {
                     Route::Settings => all.extend(self.settings.as_ref().map(|screen| screen.subscription().map(Message::Settings))),
                     Route::Reference => all.extend(self.reference.as_ref().map(|screen| screen.subscription().map(Message::Reference))),
@@ -364,8 +375,20 @@ impl App {
     fn enter_main(&mut self) -> Task<Message> {
         self.phase = Phase::Main;
         let Some(user) = self.ctx.user.clone() else { return Task::none() };
-        self.route = Route::ALL.into_iter().find(|r| r.open_to(&user)).unwrap_or(Route::Settings);
-        match Store::open(&store_path(&self.ctx, &user)) {
+        let page = match self.workspace {
+            Subsystem::Receipts => return self.enter_receipts(&user),
+            Subsystem::Time => hosted::Kind::Time,
+            Subsystem::Admin => hosted::Kind::Admin,
+        };
+        // Nothing of Checks is opened for a workspace that is a page: not its
+        // cache, not its screens. The account may not have Checks at all.
+        self.hosted = Some(Hosted::new(page, self.workspace.name()));
+        Task::batch([self.enter_hosted(), Task::done(Message::PingTick)])
+    }
+
+    fn enter_receipts(&mut self, user: &UserInfo) -> Task<Message> {
+        self.route = Route::ALL.into_iter().find(|r| r.open_to(user)).unwrap_or(Route::Settings);
+        match Store::open(&store_path(&self.ctx, user)) {
             Ok(store) => self.ctx.store = Some(Arc::new(store)),
             Err(error) => {
                 tracing::error!("local cache unavailable: {error}");
@@ -392,8 +415,23 @@ impl App {
         screen.enter(&mut self.ctx).map(Message::Telegram)
     }
 
+    /// Starts the workspace's page once the work window is the one on screen.
+    /// A web view is a child of the window it was made in, and the small
+    /// start window is closed as soon as the work window is up.
+    fn enter_hosted(&mut self) -> Task<Message> {
+        if self.compact || self.swapping || !matches!(self.phase, Phase::Main) {
+            return Task::none();
+        }
+        let Some(screen) = &mut self.hosted else { return Task::none() };
+        screen.enter(&mut self.ctx).map(Message::Hosted)
+    }
+
     fn sign_out(&mut self) -> Task<Message> {
         self.ctx.user = None;
+        // Whoever signs in next finds nothing the page kept for this account.
+        if let Some(screen) = &mut self.hosted {
+            screen.forget_on_close();
+        }
         self.close_workspace();
         self.enter_login()
     }
@@ -417,15 +455,82 @@ impl App {
         self.audit = None;
         self.settings = None;
         self.telegram = None;
+        self.hosted = None;
         self.ctx.sync = SyncState::Idle;
     }
 
     /// The start window for the session there is: the sign-in without one.
+    /// It comes back on the workspace that was just left, if the account
+    /// still has it.
     fn enter_login(&mut self) -> Task<Message> {
-        let screen = Login::new(&self.ctx);
+        let mut screen = Login::new(&self.ctx);
+        screen.choose(self.workspace, &self.ctx);
         let focus = screen.focus_first().map(Message::Login);
         self.phase = Phase::Login(screen);
         Task::batch([focus, Task::done(Message::PingTick)])
+    }
+
+    /// Asks the server what the account may open now. Grants and revocations
+    /// are made while clients run; the start window and an open workspace
+    /// follow them without anybody signing in again.
+    fn refresh_account(&self) -> Task<Message> {
+        if self.ctx.user.is_none() || matches!(self.phase, Phase::Blocked { .. }) {
+            return Task::none();
+        }
+        let api = self.ctx.api.clone();
+        Task::perform(async move { api.me().await.map_err(text_error) }, Message::Account)
+    }
+
+    /// Somebody signed in at the start window. The workspace chosen there
+    /// opens if the account has it; otherwise the window shows what it has.
+    fn signed_in(&mut self) -> Task<Message> {
+        let chosen = match &self.phase {
+            Phase::Login(screen) => screen.chosen(),
+            _ => self.workspace,
+        };
+        let settled = self.access_changed();
+        let Some(user) = &self.ctx.user else { return settled };
+        if chosen.open_to(user) {
+            self.workspace = chosen;
+            return Task::batch([settled, self.check()]);
+        }
+        if let Phase::Login(screen) = &mut self.phase {
+            screen.resumed(&self.ctx);
+        }
+        settled
+    }
+
+    /// What the account may open is not what it was, or may not be. A
+    /// workspace on screen that it no longer has is closed, the start window
+    /// lists what is left, and the local copy of Checks goes with Checks:
+    /// rows of a workspace are not kept for an account that lost it.
+    fn access_changed(&mut self) -> Task<Message> {
+        let Some(user) = self.ctx.user.clone() else { return Task::none() };
+        let lost_checks = user.workspaces_known() && !user.has_workspace(WORKSPACE_CHECKS);
+        if lost_checks
+            && let Some(cache) = &self.ctx.store
+            && let Err(error) = cache.wipe()
+        {
+            tracing::warn!("the cache of a revoked workspace was not emptied: {error}");
+        }
+        let at_work = matches!(self.phase, Phase::Main | Phase::Checking | Phase::Launch(_));
+        let task = if at_work && !self.workspace.open_to(&user) {
+            self.ctx.toast(Tone::Warning, format!("Доступ к разделу «{}» закрыт администратором", self.workspace.name()));
+            if let Some(screen) = &mut self.hosted {
+                screen.forget_on_close();
+            }
+            self.to_hub()
+        } else {
+            if let Phase::Login(screen) = &mut self.phase {
+                screen.account_changed(&self.ctx);
+            }
+            Task::none()
+        };
+        // After the workspace is closed: a file its screens hold open stays.
+        if lost_checks && !store::remove_cache(&store_path(&self.ctx, &user)) {
+            tracing::warn!("the cache of a revoked workspace is still on disk, emptied");
+        }
+        task
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -433,9 +538,12 @@ impl App {
         let follow = self.settle();
         // Web views float above the app, so they follow every change of screen,
         // the launch gate included.
-        let shown = matches!(self.phase, Phase::Main) && self.route == Route::Telegram;
+        let main = matches!(self.phase, Phase::Main);
         if let Some(screen) = &mut self.telegram {
-            screen.set_shown(shown);
+            screen.set_shown(main && self.route == Route::Telegram);
+        }
+        if let Some(screen) = &mut self.hosted {
+            screen.set_shown(main);
         }
         Task::batch([task, follow, self.fit_window()])
     }
@@ -455,7 +563,8 @@ impl App {
     fn settle(&mut self) -> Task<Message> {
         let mut tasks = Vec::new();
         for (tone, text) in std::mem::take(&mut self.ctx.toasts) {
-            if self.telegram.as_ref().is_some_and(|screen| screen.toast(tone, &text)) {
+            // A page that covers the app's toasts shows them itself.
+            if self.telegram.as_ref().is_some_and(|screen| screen.toast(tone, &text)) || self.hosted.as_ref().is_some_and(|screen| screen.toast(tone, &text)) {
                 continue;
             }
             self.next_toast += 1;
@@ -467,10 +576,13 @@ impl App {
             match request {
                 Request::SignedIn(user) => {
                     self.ctx.user = Some(user);
-                    tasks.push(self.check());
+                    tasks.push(self.signed_in());
                 }
-                Request::Open(WORKSPACE) => {
-                    if self.ctx.user.is_some() && matches!(self.phase, Phase::Login(_)) {
+                Request::Open(system) => {
+                    // Only what the account has, whoever asks: the list on the
+                    // start window may be a moment older than the server's word.
+                    if matches!(self.phase, Phase::Login(_)) && self.ctx.user.as_ref().is_some_and(|user| system.open_to(user)) {
+                        self.workspace = system;
                         tasks.push(self.check());
                     }
                 }
@@ -481,6 +593,9 @@ impl App {
                     if let Some(screen) = &self.telegram {
                         screen.theme_changed(&self.ctx);
                     }
+                    if let Some(screen) = &self.hosted {
+                        screen.theme_changed(&self.ctx);
+                    }
                 }
                 Request::TransactionsChanged => {
                     if self.tx.is_some() {
@@ -489,6 +604,7 @@ impl App {
                         tasks.push(Task::done(Message::Tx(transactions::Msg::Sync(true))));
                     }
                 }
+                Request::AccessChanged => tasks.push(self.refresh_account()),
             }
         }
         Task::batch(tasks)
@@ -505,8 +621,13 @@ impl App {
                 }
                 if let Phase::Login(screen) = &mut self.phase {
                     screen.resumed(&self.ctx);
-                    return screen.focus_first().map(Message::Login);
                 }
+                // The account may have lost Checks since the last run.
+                let settled = self.access_changed();
+                if let Phase::Login(screen) = &self.phase {
+                    return Task::batch([settled, screen.focus_first().map(Message::Login)]);
+                }
+                return settled;
             }
             // Asked for by a start window that has since been signed out of, or
             // come back to: nothing waits for the answer any more.
@@ -530,7 +651,13 @@ impl App {
                     let task = screen.update(inner, &mut self.ctx).map(Message::Launch);
                     if screen.unlocked {
                         self.phase = Phase::Main;
-                        if self.tx.is_none() {
+                        // The workspace the password stood before: opened if it
+                        // was not yet; a page the server refused starts over.
+                        if let Some(page) = &mut self.hosted {
+                            page.reload();
+                            return task;
+                        }
+                        if self.workspace != Subsystem::Receipts || self.tx.is_none() {
                             return self.enter_main();
                         }
                     }
@@ -547,8 +674,11 @@ impl App {
                 self.ctx.prefs.rail_collapsed = !self.ctx.prefs.rail_collapsed;
                 self.ctx.rail = rail_width(self.ctx.prefs.rail_collapsed);
                 self.ctx.save_prefs();
-                // The Telegram page floats above the app, from the rail's edge.
+                // A page floats above the app, from the rail's edge.
                 if let Some(screen) = &self.telegram {
+                    screen.resized(&self.ctx);
+                }
+                if let Some(screen) = &self.hosted {
                     screen.resized(&self.ctx);
                 }
             }
@@ -564,6 +694,9 @@ impl App {
                 if let Some(screen) = &self.telegram {
                     screen.resized(&self.ctx);
                 }
+                if let Some(screen) = &self.hosted {
+                    screen.resized(&self.ctx);
+                }
             }
             Message::WindowSwapped(compact) => {
                 self.compact = compact;
@@ -572,6 +705,8 @@ impl App {
                 if let Phase::Login(screen) = &self.phase {
                     return screen.focus_first().map(Message::Login);
                 }
+                // The work window is up: a workspace's page can be put in it.
+                return self.enter_hosted();
             }
             Message::Tx(inner) => {
                 if let Some(tx) = &mut self.tx {
@@ -603,9 +738,15 @@ impl App {
                     return screen.update(inner, &mut self.ctx).map(Message::Telegram);
                 }
             }
+            Message::Hosted(inner) => {
+                if let Some(screen) = &mut self.hosted {
+                    return screen.update(inner, &mut self.ctx).map(Message::Hosted);
+                }
+            }
             Message::PingTick => {
                 let api = self.ctx.api.clone();
-                return Task::perform(async move { api.ping().await }, Message::Ping);
+                let ping = Task::perform(async move { api.ping().await }, Message::Ping);
+                return Task::batch([ping, self.refresh_account()]);
             }
             Message::Ping(online) => {
                 self.ctx.online = online;
@@ -613,6 +754,14 @@ impl App {
                     screen.server_answered(online);
                 }
             }
+            Message::Account(Ok(fresh)) => {
+                // Asked for by an account that has since signed out, or been replaced.
+                let Some(current) = self.ctx.user.as_mut().filter(|current| current.id == fresh.id) else { return Task::none() };
+                current.adopt_access(&fresh);
+                return self.access_changed();
+            }
+            // Out of reach, or a refusal the session's own events have told of.
+            Message::Account(Err(reason)) => tracing::debug!("account not refreshed: {reason}"),
             Message::Api(ApiEvent::SessionRevoked) => {
                 // Every request the session failed says so: it is told once.
                 let news = "Сессия завершена, войдите снова";
@@ -620,6 +769,38 @@ impl App {
                     self.ctx.toast(Tone::Warning, news);
                 }
                 return self.sign_out();
+            }
+            Message::Api(ApiEvent::AccountDisabled) => {
+                let news = "Учётная запись отключена администратором";
+                if !self.toasts.iter().any(|toast| toast.message == news) {
+                    self.ctx.toast(Tone::Warning, news);
+                }
+                return self.sign_out();
+            }
+            Message::Api(ApiEvent::WorkspaceRevoked(workspace)) => {
+                // The server's word on one workspace, taken at once; the rest
+                // of what the account may open is asked for after it.
+                if let Some(user) = &mut self.ctx.user {
+                    user.drop_workspace(&workspace);
+                }
+                return Task::batch([self.access_changed(), self.refresh_account()]);
+            }
+            Message::Api(ApiEvent::AdminRevoked) => {
+                if let Some(user) = &mut self.ctx.user {
+                    user.global_admin = Some(false);
+                }
+                return Task::batch([self.access_changed(), self.refresh_account()]);
+            }
+            Message::Api(ApiEvent::AccessExpired) => {
+                // The term ran out at work: the same door the next opening would
+                // meet, with the workspace closed behind it.
+                if matches!(self.phase, Phase::Main) {
+                    if let Some(tx) = &mut self.tx {
+                        tx.leave(&self.ctx);
+                    }
+                    self.close_workspace();
+                    return self.check();
+                }
             }
             Message::Api(ApiEvent::LaunchRequired) => {
                 // The launch password stands before the work, not before the
@@ -640,6 +821,9 @@ impl App {
                 self.system_dark = mode == Mode::Dark;
                 self.apply_theme();
                 if let Some(screen) = &self.telegram {
+                    screen.theme_changed(&self.ctx);
+                }
+                if let Some(screen) = &self.hosted {
                     screen.theme_changed(&self.ctx);
                 }
             }
@@ -669,7 +853,7 @@ impl App {
 
     #[cfg(feature = "devtools")]
     pub fn is_ready(&self) -> bool {
-        self.tx.as_ref().is_some_and(Transactions::is_ready)
+        self.tx.as_ref().is_some_and(Transactions::is_ready) || self.hosted.as_ref().is_some_and(Hosted::is_ready)
     }
 
     #[cfg(feature = "devtools")]
@@ -738,6 +922,8 @@ impl App {
     fn rail(&self) -> El<'_, Message> {
         let folded = self.ctx.prefs.rail_collapsed;
         let user = self.ctx.user.as_ref();
+        // Checks has sections of its own; a workspace that is a page brings its own inside it.
+        let sections = self.workspace == Subsystem::Receipts;
 
         let burger = ui::hint_beside(
             button(container(ui::icon(Icon::Menu, 20.0)).center(RAIL_ITEM)).padding(0).style(theme::btn_ghost).on_press(Message::ToggleRail),
@@ -747,8 +933,10 @@ impl App {
             (burger, ui::divider())
         } else {
             // The workspace's own name: the product's stands on the start window.
-            let brand = column![ui::heading(WORKSPACE.name()), ui::faint("учёт чеков")].spacing(0.0);
-            (row![burger, brand].spacing(space::SM).align_y(Alignment::Center).into(), container(ui::faint("РАЗДЕЛЫ")).padding([0.0, space::SM]).into())
+            let (title, about) = self.workspace.rail_title();
+            let brand = column![ui::heading(title), ui::faint(about)].spacing(0.0);
+            let caption: El<'_, Message> = if sections { container(ui::faint("РАЗДЕЛЫ")).padding([0.0, space::SM]).into() } else { ui::divider() };
+            (row![burger, brand].spacing(space::SM).align_y(Alignment::Center).into(), caption)
         };
 
         // A line of the rail: a glyph and a name, or the glyph alone once folded.
@@ -777,7 +965,7 @@ impl App {
 
         let mut nav = column![].spacing(space::XXS);
         for route in Route::ALL {
-            if !user.is_some_and(|u| route.open_to(u)) {
+            if !sections || !user.is_some_and(|u| route.open_to(u)) {
                 continue;
             }
             let open = self.route == route;
@@ -794,7 +982,8 @@ impl App {
             .center_y(28.0)
             .style(theme::pill(Tone::Accent));
         let logout = ui::icon_btn(Icon::Logout, "Выйти", Some(Message::Logout));
-        let failed = matches!(self.ctx.sync, SyncState::Error(_));
+        // The table's own state; a page keeps none here.
+        let failed = sections && matches!(self.ctx.sync, SyncState::Error(_));
         let foot: El<'_, Message> = if folded {
             // One dot for both lines of the open rail: the worse of the two.
             let (dot, hint) = match (self.ctx.online, failed) {
@@ -814,6 +1003,7 @@ impl App {
             let (dot, state, hint) = if self.ctx.online { (Tone::Success, "онлайн", "Backend доступен") } else { (Tone::Danger, "офлайн", "Backend недоступен") };
             let network = ui::hint_on(row![ui::status_dot(dot), ui::muted(state)].spacing(space::SM).align_y(Alignment::Center), hint);
             let sync = match &self.ctx.sync {
+                _ if !sections => ui::faint(""),
                 SyncState::Idle => ui::faint("синхронизировано"),
                 SyncState::Syncing => ui::faint("обновление…"),
                 SyncState::Error(_) => ui::toned("ошибка обновления", Tone::Danger),
@@ -827,6 +1017,12 @@ impl App {
     }
 
     fn page(&self) -> El<'_, Message> {
+        if let Some(screen) = &self.hosted {
+            return screen.view(&self.ctx).map(Message::Hosted);
+        }
+        if self.workspace != Subsystem::Receipts {
+            return ui::page(ui::loading("Загрузка…"));
+        }
         match (self.route, &self.tx) {
             (Route::Transactions, Some(tx)) => tx.view(&self.ctx).map(Message::Tx),
             (Route::Reference, _) if self.reference.is_some() => self.reference.as_ref().map(|screen| screen.view(&self.ctx).map(Message::Reference)).unwrap_or_else(|| ui::loading("Загрузка…")),
@@ -859,6 +1055,9 @@ impl App {
     }
 
     fn overlay(&self) -> Option<El<'_, Message>> {
+        if self.workspace != Subsystem::Receipts {
+            return None;
+        }
         match self.route {
             Route::Transactions => self.tx.as_ref()?.overlay(&self.ctx).map(|layer| layer.map(Message::Tx)),
             Route::Reference => self.reference.as_ref()?.overlay(&self.ctx).map(|layer| layer.map(Message::Reference)),
@@ -1020,12 +1219,12 @@ mod rail_tests {
     fn the_folded_rail_keeps_its_icons_and_drops_the_words() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = signed_in(&dir);
-        for words in [WORKSPACE.name(), HUB, "РАЗДЕЛЫ", "Справочник", "онлайн", "anna"] {
+        for words in [Subsystem::Receipts.name(), HUB, "РАЗДЕЛЫ", "Справочник", "онлайн", "anna"] {
             assert!(sees(&app, words), "{words} is missing from the open rail");
         }
 
         let _ = app.update(Message::ToggleRail);
-        for words in [WORKSPACE.name(), HUB, "РАЗДЕЛЫ", "Справочник", "онлайн", "anna"] {
+        for words in [Subsystem::Receipts.name(), HUB, "РАЗДЕЛЫ", "Справочник", "онлайн", "anna"] {
             assert!(!sees(&app, words), "{words} is still on the folded rail");
         }
         // The avatar stays, and with it who is signed in.
@@ -1036,7 +1235,7 @@ mod rail_tests {
     fn the_rail_is_headed_by_the_workspace_and_not_by_the_product() {
         let dir = tempfile::tempdir().unwrap();
         let app = signed_in(&dir);
-        assert_eq!(WORKSPACE.name(), "Чеки");
+        assert_eq!(Subsystem::Receipts.rail_title().0, "Чеки");
         assert!(sees(&app, "Чеки"));
         assert!(!sees(&app, PRODUCT), "the product's name belongs to the start window");
         // The window, the installer and the update keep the product's name.
@@ -1339,5 +1538,429 @@ mod hub_tests {
         press(&mut app, "Открыть Чеки");
         let _ = app.update(Message::Api(ApiEvent::LaunchRequired));
         assert!(matches!(app.phase, Phase::Launch(_)));
+    }
+}
+
+/// More than one thing to open: Checks, Time, CRM administration. Each account
+/// gets what the server says it has, and loses it when the server says so.
+#[cfg(test)]
+mod workspace_tests {
+    use iced_test::Simulator;
+    use iced_test::core::Settings;
+    use tbs_core::api::{LaunchVerify, LoginResponse};
+    use tbs_core::model::Transaction;
+    use tbs_core::secret::MemoryStore;
+
+    use super::*;
+
+    /// An account as a server that knows workspaces describes it.
+    fn account(workspaces: &[&str], global_admin: bool) -> UserInfo {
+        UserInfo {
+            id: 7,
+            username: "anna".into(),
+            display_name: Some("Анна К.".into()),
+            role: "operator".into(),
+            workspaces: Some(workspaces.iter().map(|name| (*name).to_owned()).collect()),
+            global_admin: Some(global_admin),
+            ..Default::default()
+        }
+    }
+
+    /// The same account on a server from before workspaces.
+    fn older() -> UserInfo {
+        UserInfo { id: 7, username: "anna".into(), display_name: Some("Анна К.".into()), role: "admin".into(), ..Default::default() }
+    }
+
+    fn launched(dir: &tempfile::TempDir, saved_session: bool) -> App {
+        let mut ctx = Ctx::for_tests(dir.path());
+        let vault = Arc::new(MemoryStore::default());
+        if saved_session {
+            vault.set(&format!("refresh:{}", ctx.api.base()), "saved-by-the-last-run");
+        }
+        ctx.api = Api::new(ctx.api.base(), None, vault);
+        App::with(ctx)
+    }
+
+    /// A launch on the saved session of this account.
+    fn resumed(dir: &tempfile::TempDir, user: UserInfo) -> App {
+        let mut app = launched(dir, true);
+        let _ = app.update(Message::Boot(Ok(Some(user))));
+        app
+    }
+
+    fn on_the_start_window(app: &App) -> bool {
+        matches!(app.phase, Phase::Login(_))
+    }
+
+    fn window(app: &App) -> Size {
+        if wants_compact(&app.phase) { login::WINDOW } else { WORK_WINDOW }
+    }
+
+    fn sees(app: &App, wanted: &str) -> bool {
+        let mut sim = Simulator::with_size(Settings::default(), window(app), app.view());
+        sim.find(wanted).is_ok()
+    }
+
+    fn press(app: &mut App, wanted: &str) {
+        let messages: Vec<Message> = {
+            let mut sim = Simulator::with_size(Settings::default(), window(app), app.view());
+            sim.click(wanted).unwrap_or_else(|_| panic!("no «{wanted}» on the screen"));
+            sim.into_messages().collect()
+        };
+        assert!(!messages.is_empty(), "«{wanted}» does nothing");
+        for message in messages {
+            let _ = app.update(message);
+        }
+    }
+
+    /// Chosen on the start window, let in by the server, the work window up.
+    fn opened(dir: &tempfile::TempDir, user: UserInfo, way_in: &str) -> App {
+        let mut app = resumed(dir, user);
+        press(&mut app, way_in);
+        assert!(matches!(app.phase, Phase::Checking), "«{way_in}» did not ask for anything");
+        let _ = app.update(Message::Entitled(Entitled::Allowed));
+        assert!(matches!(app.phase, Phase::Main));
+        let _ = app.update(Message::WindowSwapped(false));
+        app
+    }
+
+    /// Asks the shell for a workspace the way a screen would.
+    fn ask(app: &mut App, system: Subsystem) {
+        app.ctx.request(Request::Open(system));
+        let _ = app.update(Message::Ping(true));
+    }
+
+    const CHECKS_ONLY: [&str; 8] = ["РАЗДЕЛЫ", "Транзакции", "Справочник", "Telegram", "Логи", "Настройки", "Аудит", "синхронизировано"];
+
+    #[test]
+    fn time_opens_as_a_page_on_the_session_there_is_and_nothing_of_checks_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = opened(&dir, account(&["time"], false), "Открыть Учёт времени");
+        assert_eq!(app.workspace, Subsystem::Time);
+        assert!(app.hosted.as_ref().is_some_and(Hosted::started));
+        assert!(app.tx.is_none() && app.settings.is_none() && app.telegram.is_none() && app.ctx.store.is_none(), "something of Checks was opened for a Time account");
+        assert!(!store_path(&app.ctx, app.ctx.user.as_ref().unwrap()).exists(), "a Checks cache was made for an account without Checks");
+        // Nobody was asked to sign in again.
+        assert_eq!(app.ctx.user.as_ref().map(|user| user.id), Some(7));
+        assert!(app.ctx.api.has_refresh_token());
+        // The rail is Time's: its name, the way back, the account; none of Checks' sections.
+        for words in ["Учёт времени", "табель и отметки", HUB, "онлайн", "Анна К."] {
+            assert!(sees(&app, words), "«{words}» is missing from the rail");
+        }
+        for words in CHECKS_ONLY {
+            assert!(!sees(&app, words), "«{words}» of Checks is on Time's rail");
+        }
+    }
+
+    #[test]
+    fn administration_opens_for_an_administrator_who_has_no_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = opened(&dir, account(&[], true), "Открыть Администрирование CRM");
+        assert_eq!(app.workspace, Subsystem::Admin);
+        assert!(app.hosted.as_ref().is_some_and(Hosted::started));
+        assert!(app.tx.is_none() && app.ctx.store.is_none());
+        assert!(sees(&app, "администрирование") && sees(&app, HUB));
+        for words in CHECKS_ONLY {
+            assert!(!sees(&app, words), "«{words}» of Checks is on the administration rail");
+        }
+    }
+
+    #[test]
+    fn a_page_is_started_only_once_the_work_window_is_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = resumed(&dir, account(&["time"], false));
+        press(&mut app, "Открыть Учёт времени");
+        let _ = app.update(Message::Entitled(Entitled::Allowed));
+        // The small start window is still the one on screen, and about to be
+        // closed: a web view made in it would go with it.
+        assert!(app.hosted.as_ref().is_some_and(|page| !page.started()));
+        assert!(sees(&app, "Загрузка…"));
+        let _ = app.update(Message::WindowSwapped(false));
+        assert!(app.hosted.as_ref().is_some_and(Hosted::started));
+    }
+
+    #[test]
+    fn checks_opens_as_it_did_for_an_account_that_has_it() {
+        let dir = tempfile::tempdir().unwrap();
+        for user in [older(), account(&["checks"], false), account(&["checks", "time"], true)] {
+            let app = opened(&dir, user, "Открыть Чеки");
+            assert_eq!(app.workspace, Subsystem::Receipts);
+            assert!(app.tx.is_some() && app.ctx.store.is_some() && app.hosted.is_none());
+            assert!(sees(&app, "Чеки") && sees(&app, "РАЗДЕЛЫ") && sees(&app, HUB));
+        }
+    }
+
+    #[test]
+    fn nothing_the_account_does_not_have_opens_by_asking() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases: [(UserInfo, &[Subsystem]); 5] = [
+            (older(), &[Subsystem::Time, Subsystem::Admin]),
+            (account(&["checks"], false), &[Subsystem::Time, Subsystem::Admin]),
+            (account(&["time"], false), &[Subsystem::Receipts, Subsystem::Admin]),
+            (account(&[], true), &[Subsystem::Receipts, Subsystem::Time]),
+            (account(&[], false), &[Subsystem::Receipts, Subsystem::Time, Subsystem::Admin]),
+        ];
+        for (user, closed) in cases {
+            let mut app = resumed(&dir, user);
+            for system in closed {
+                ask(&mut app, *system);
+                assert!(on_the_start_window(&app), "{system:?} opened for {:?}", app.ctx.user);
+                assert!(app.hosted.is_none() && app.tx.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn signing_in_opens_the_chosen_workspace_only_for_an_account_that_has_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let sign_in = |user: UserInfo| {
+            let mut app = launched(&dir, false);
+            let _ = app.update(Message::Boot(Ok(None)));
+            let answer = LoginResponse { ok: true, user: Some(user), ..Default::default() };
+            let _ = app.update(Message::Login(login::Msg::Answered(Ok(answer))));
+            app
+        };
+        // Checks is what the window offers before anybody is known, and this account has it.
+        assert!(matches!(sign_in(account(&["checks", "time"], false)).phase, Phase::Checking));
+        assert!(matches!(sign_in(older()).phase, Phase::Checking));
+
+        // This one has Time only: Checks does not open, and the window shows what the account has.
+        let app = sign_in(account(&["time"], false));
+        assert!(on_the_start_window(&app), "Checks was opened for an account without it");
+        assert!(sees(&app, "Вход выполнен") && sees(&app, "Открыть Учёт времени") && !sees(&app, "Открыть Чеки"));
+        assert!(!sees(&app, "Войти"));
+
+        // And this one nothing at all.
+        let app = sign_in(account(&[], false));
+        assert!(on_the_start_window(&app));
+        assert!(sees(&app, "Нет доступных пространств") && sees(&app, "Выйти из учётной записи"));
+    }
+
+    #[test]
+    fn the_way_back_from_a_page_keeps_the_session_and_the_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = opened(&dir, account(&["checks", "time"], false), "Табель и отметки сотрудников");
+        press(&mut app, HUB);
+        assert!(on_the_start_window(&app) && app.hosted.is_none());
+        assert_eq!(app.ctx.user.as_ref().map(|user| user.id), Some(7), "going back is not signing out");
+        assert!(app.ctx.api.has_refresh_token());
+        // It comes back on the workspace that was left, and in again without a word.
+        assert!(sees(&app, "Открыть Учёт времени") && !sees(&app, "Войти"));
+        press(&mut app, "Открыть Учёт времени");
+        assert!(matches!(app.phase, Phase::Checking));
+        // The other workspace is a choice away, on the same session.
+        let _ = app.update(Message::Entitled(Entitled::Allowed));
+        let _ = app.update(Message::WindowSwapped(false));
+        press(&mut app, HUB);
+        press(&mut app, "Транзакции и учёт чеков");
+        let _ = app.update(Message::Entitled(Entitled::Allowed));
+        assert!(app.tx.is_some() && app.hosted.is_none());
+        assert_eq!(app.workspace, Subsystem::Receipts);
+    }
+
+    /// Says so in a toast, and a toast is timed: that takes a runtime.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_workspace_taken_away_closes_and_the_start_window_lists_what_is_left() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = opened(&dir, account(&["checks", "time"], false), "Табель и отметки сотрудников");
+        let _ = app.update(Message::Api(ApiEvent::WorkspaceRevoked("time".into())));
+        assert!(on_the_start_window(&app));
+        assert!(app.hosted.is_none(), "the page of a workspace the account lost is still open");
+        assert_eq!(app.ctx.user.as_ref().map(|user| user.id), Some(7), "losing a workspace is not losing the session");
+        assert!(app.ctx.api.has_refresh_token());
+        assert!(sees(&app, "Доступ к разделу «Учёт времени» закрыт администратором"));
+        assert!(sees(&app, "Открыть Чеки") && !sees(&app, "Табель и отметки сотрудников"));
+        // Every request the page had on its way says the same: it is told once.
+        let _ = app.update(Message::Api(ApiEvent::WorkspaceRevoked("time".into())));
+        assert_eq!(app.toasts.len(), 1);
+        // And it does not open again by asking.
+        ask(&mut app, Subsystem::Time);
+        assert!(on_the_start_window(&app) && app.hosted.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn what_the_server_says_of_the_account_is_followed_while_the_client_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        // At work: the workspace on screen is taken away, and the periodic question finds out.
+        let mut app = opened(&dir, account(&["time"], true), "Открыть Учёт времени");
+        let _ = app.update(Message::Account(Ok(account(&[], true))));
+        assert!(on_the_start_window(&app) && app.hosted.is_none());
+        assert!(sees(&app, "Открыть Администрирование CRM") && !sees(&app, "Открыть Учёт времени"));
+
+        // On the start window: a grant appears, a revocation disappears.
+        let _ = app.update(Message::Account(Ok(account(&["checks", "time"], false))));
+        assert!(sees(&app, "Транзакции и учёт чеков") && sees(&app, "Табель и отметки сотрудников") && !sees(&app, "Учётные записи и доступ"));
+
+        // Somebody else's answer, come late: nothing of it is taken.
+        let mut other = account(&[], true);
+        other.id = 99;
+        let _ = app.update(Message::Account(Ok(other)));
+        assert!(sees(&app, "Транзакции и учёт чеков") && !sees(&app, "Учётные записи и доступ"));
+        // A server that could not be asked changes nothing.
+        let _ = app.update(Message::Account(Err("Нет связи с сервером".into())));
+        assert!(sees(&app, "Табель и отметки сотрудников"));
+
+        // An open workspace the account still has is left alone.
+        let mut app = opened(&dir, account(&["checks", "time"], true), "Табель и отметки сотрудников");
+        let _ = app.update(Message::Account(Ok(account(&["time"], false))));
+        assert!(matches!(app.phase, Phase::Main) && app.hosted.is_some());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn losing_administration_closes_the_panel_and_keeps_the_workspaces() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = opened(&dir, account(&["checks"], true), "Учётные записи и доступ");
+        assert_eq!(app.workspace, Subsystem::Admin);
+        let _ = app.update(Message::Api(ApiEvent::AdminRevoked));
+        assert!(on_the_start_window(&app) && app.hosted.is_none());
+        assert!(sees(&app, "Доступ к разделу «Администрирование CRM» закрыт администратором"));
+        assert!(sees(&app, "Открыть Чеки") && !sees(&app, "Учётные записи и доступ"));
+
+        // In Checks the same refusal closes nothing: it answered a call the
+        // settings made, and the sections that made it go.
+        let mut app = opened(&dir, account(&["checks"], true), "Открыть Чеки");
+        assert!(app.ctx.manages_accounts());
+        let _ = app.update(Message::Api(ApiEvent::AdminRevoked));
+        assert!(matches!(app.phase, Phase::Main) && app.tx.is_some());
+        assert!(!app.ctx.manages_accounts());
+        assert!(app.toasts.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn checks_taken_away_takes_its_local_copy_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = opened(&dir, account(&["checks", "time"], false), "Открыть Чеки");
+        let user = app.ctx.user.clone().unwrap();
+        let cache = store_path(&app.ctx, &user);
+        let row = Transaction { id: 1, raw_message: Some("ROW-OF-AN-ACCOUNT-THAT-LOST-CHECKS".into()), ..Default::default() };
+        app.ctx.store.as_ref().unwrap().replace_transactions(&[row], Some("sha"), Some("digest")).unwrap();
+        assert!(cache.exists());
+        // Another account's cache on the same computer.
+        let other = dir.path().join(format!("cache-8-{}.db", app.ctx.host_key()));
+        drop(Store::open(&other).unwrap());
+
+        let _ = app.update(Message::Api(ApiEvent::WorkspaceRevoked("checks".into())));
+        assert!(on_the_start_window(&app) && app.tx.is_none() && app.ctx.store.is_none());
+        assert!(!cache.exists(), "the rows of a workspace the account lost are still on disk");
+        assert!(other.exists(), "another account's cache was touched");
+        assert!(sees(&app, "Открыть Учёт времени") && !sees(&app, "Открыть Чеки"));
+        assert!(sees(&app, "Доступ к разделу «Чеки» закрыт администратором"));
+    }
+
+    #[test]
+    fn a_cache_left_by_an_earlier_run_goes_once_the_server_says_checks_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join(format!("cache-7-{}.db", Ctx::for_tests(dir.path()).host_key()));
+        drop(Store::open(&cache).unwrap());
+        // A server from before workspaces says nothing of the kind, and its silence removes nothing.
+        let _ = resumed(&dir, older());
+        assert!(cache.exists());
+        let _ = resumed(&dir, account(&["checks", "time"], false));
+        assert!(cache.exists());
+        // The account lost Checks while the client was closed.
+        let app = resumed(&dir, account(&["time"], false));
+        assert!(!cache.exists());
+        assert!(sees(&app, "Открыть Учёт времени"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_disabled_account_is_signed_out_and_told_why() {
+        let dir = tempfile::tempdir().unwrap();
+        for way_in in ["Транзакции и учёт чеков", "Табель и отметки сотрудников"] {
+            let mut app = opened(&dir, account(&["checks", "time"], false), way_in);
+            let _ = app.update(Message::Api(ApiEvent::AccountDisabled));
+            assert!(on_the_start_window(&app), "{way_in}");
+            assert!(app.ctx.user.is_none() && app.tx.is_none() && app.hosted.is_none() && app.ctx.store.is_none());
+            assert!(sees(&app, "Учётная запись отключена администратором") && sees(&app, "Войти"));
+            // Every request it had on its way says the same: it is told once.
+            let _ = app.update(Message::Api(ApiEvent::AccountDisabled));
+            assert_eq!(app.toasts.len(), 1);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_session_that_ends_closes_a_page_like_any_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        for (user, way_in) in [(account(&["time"], false), "Открыть Учёт времени"), (account(&[], true), "Открыть Администрирование CRM")] {
+            let mut app = opened(&dir, user, way_in);
+            let _ = app.update(Message::Api(ApiEvent::SessionRevoked));
+            assert!(on_the_start_window(&app));
+            assert!(app.ctx.user.is_none() && app.hosted.is_none());
+            assert!(sees(&app, "Сессия завершена, войдите снова") && sees(&app, "Войти"));
+            // Signed out, the window says nothing of what the last account could open.
+            assert!(!sees(&app, "Учёт времени") && !sees(&app, "Администрирование CRM"));
+        }
+    }
+
+    #[test]
+    fn the_next_account_on_the_computer_gets_nothing_of_the_last_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = opened(&dir, account(&["time"], true), "Открыть Учёт времени");
+        let _ = app.update(Message::LoggedOut);
+        assert!(on_the_start_window(&app) && app.ctx.user.is_none() && app.hosted.is_none());
+
+        // The next one has Checks only.
+        let mut next = account(&["checks"], false);
+        (next.id, next.username) = (8, "boris".into());
+        let answer = LoginResponse { ok: true, user: Some(next), ..Default::default() };
+        let _ = app.update(Message::Login(login::Msg::Answered(Ok(answer))));
+        assert_eq!(app.workspace, Subsystem::Receipts, "the last account's workspace was chosen for the next");
+        let _ = app.update(Message::Entitled(Entitled::Allowed));
+        assert!(app.tx.is_some() && app.hosted.is_none());
+        // Its cache is its own file.
+        let anna = Ctx::for_tests(dir.path()).data_dir.join(format!("cache-7-{}.db", app.ctx.host_key()));
+        assert!(!anna.exists());
+        assert!(dir.path().join(format!("cache-8-{}.db", app.ctx.host_key())).exists());
+        ask(&mut app, Subsystem::Time);
+        assert!(app.hosted.is_none());
+    }
+
+    #[test]
+    fn a_term_that_runs_out_at_work_closes_the_workspace_behind_the_same_door() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = opened(&dir, account(&["time"], false), "Открыть Учёт времени");
+        let _ = app.update(Message::Api(ApiEvent::AccessExpired));
+        assert!(matches!(app.phase, Phase::Checking) && app.hosted.is_none());
+        let _ = app.update(Message::Entitled(Entitled::Blocked(Some("2026-11-01".into()))));
+        assert!(sees(&app, "Срок доступа истёк"));
+        // Extended by an administrator: the same workspace opens again.
+        let _ = app.update(Message::Entitled(Entitled::Allowed));
+        assert!(matches!(app.phase, Phase::Main) && app.hosted.is_some());
+        assert_eq!(app.workspace, Subsystem::Time);
+    }
+
+    #[test]
+    fn the_launch_password_stands_before_a_page_and_leads_back_to_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = opened(&dir, account(&["time"], false), "Открыть Учёт времени");
+        let _ = app.update(Message::Api(ApiEvent::LaunchRequired));
+        assert!(matches!(app.phase, Phase::Launch(_)));
+        assert!(app.hosted.is_some(), "the page waits behind the password");
+        let unlocked = LaunchVerify { verified: true, session_token: Some("launch".into()), ..Default::default() };
+        let _ = app.update(Message::Launch(gate::Msg::Answer(Ok(unlocked))));
+        assert!(matches!(app.phase, Phase::Main));
+        assert_eq!(app.workspace, Subsystem::Time);
+        assert!(app.hosted.is_some() && app.tx.is_none(), "Checks was opened behind Time's password");
+
+        // Asked for before the page existed: the workspace chosen opens, not Checks.
+        let mut app = resumed(&dir, account(&["checks", "time"], true));
+        press(&mut app, "Учётные записи и доступ");
+        let _ = app.update(Message::Api(ApiEvent::LaunchRequired));
+        let unlocked = LaunchVerify { verified: true, session_token: Some("launch".into()), ..Default::default() };
+        let _ = app.update(Message::Launch(gate::Msg::Answer(Ok(unlocked))));
+        assert!(matches!(app.phase, Phase::Main));
+        assert_eq!(app.workspace, Subsystem::Admin);
+        assert!(app.hosted.is_some() && app.tx.is_none());
+    }
+
+    #[test]
+    fn a_refused_page_has_the_account_asked_about_and_decides_nothing_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = opened(&dir, account(&["time"], false), "Открыть Учёт времени");
+        let lost = hosted::Msg::Signal(hosted::Signal::Said(hosted::Kind::Time, r#"{"type":"access-lost"}"#.into()));
+        let _ = app.update(Message::Hosted(lost));
+        // The page's word closes nothing: the server's does, when it is asked.
+        assert!(matches!(app.phase, Phase::Main) && app.hosted.is_some());
+        assert!(app.ctx.requests.is_empty(), "the question was not taken up: {:?}", app.ctx.requests);
     }
 }

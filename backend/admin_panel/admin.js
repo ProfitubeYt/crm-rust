@@ -7,6 +7,20 @@
 (() => {
   'use strict';
 
+  // Внутри программы TBS страница работает на её сессии. Объект задаёт
+  // программа до загрузки страницы: { native, theme }. Тогда здесь нет ни
+  // входа, ни токена, ни выхода: запросы подписывает программа, и она же
+  // закрывает раздел, когда сервер отказывает учётной записи. Без объекта
+  // страница работает в браузере как раньше.
+  const SHELL = window.CRM_ADMIN_SHELL || null;
+
+  /** Сообщение программе, если страница открыта в ней. */
+  function shellPost(message) {
+    try {
+      if (window.ipc && window.ipc.postMessage) window.ipc.postMessage(JSON.stringify(message));
+    } catch (_) { /* программы нет — страница открыта в браузере */ }
+  }
+
   // ------------------------------------------------------------------ DOM
 
   const $ = (id) => document.getElementById(id);
@@ -174,15 +188,16 @@
   async function request(method, path, body, anonymous) {
     const headers = { Accept: 'application/json' };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
-    if (session.token && !anonymous) headers.Authorization = `Bearer ${session.token}`;
-    if (session.launch) headers['X-Launch-Session'] = session.launch;
+    // В программе учётных данных у страницы нет: их добавляет программа.
+    if (!SHELL && session.token && !anonymous) headers.Authorization = `Bearer ${session.token}`;
+    if (!SHELL && session.launch) headers['X-Launch-Session'] = session.launch;
     let response;
     try {
       response = await fetch(path, {
         method,
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
-        credentials: 'same-origin',
+        credentials: SHELL ? 'omit' : 'same-origin',
         cache: 'no-store',
       });
     } catch (_) {
@@ -198,6 +213,34 @@
   }
 
   const isLaunch = (error) => error.code === 'launch_required' || error.code === 'launch_expired';
+
+  /** Отказы, после которых в программе работать нечем: нет сессии или права. */
+  const SHELL_LOST = ['global_admin_required', 'inactive_user', 'access_expired'];
+
+  /** В программе: закрывает страницу словами. Сессию и вход ведёт программа. */
+  function shellBlock(text) {
+    state.users = [];
+    closeSheet(true);
+    $('view-app').hidden = true;
+    $('view-login').hidden = true;
+    $('block-text').textContent = text || 'Раздел сейчас недоступен.';
+    $('view-block').hidden = false;
+  }
+
+  /** В программе: разбирает отказ сервера. Возвращает true, если страница закрыта. */
+  function shellRefused(error) {
+    if (isLaunch(error)) {
+      // Пароль запуска программа спрашивает сама и после него открывает страницу заново.
+      shellBlock('Сервер ждёт пароль запуска. Программа спросит его сама.');
+      return true;
+    }
+    if (error.status === 401 || SHELL_LOST.includes(error.code)) {
+      shellBlock(error.status === 401 ? 'Сессия завершена. Войдите в программу снова.' : messageOf(error));
+      shellPost({ type: 'access-lost' });
+      return true;
+    }
+    return false;
+  }
 
   let renewing = null;
   // Новый токен доступа по cookie продления. Один запрос на всех, кто ждёт.
@@ -218,6 +261,11 @@
     try {
       return await request(method, path, body);
     } catch (error) {
+      if (SHELL) {
+        // Продлевать сессию здесь нечем и входить некуда: это дело программы.
+        if (shellRefused(error)) error.handled = true;
+        throw error;
+      }
       if (error.status === 401) {
         const renewed = await renew();
         if (renewed.ok) return request(method, path, body);
@@ -273,6 +321,11 @@
   }
 
   function showLogin(message) {
+    // В программе формы входа нет: вход один, и он в программе.
+    if (SHELL) {
+      shellBlock(message);
+      return;
+    }
     $('view-app').hidden = true;
     $('view-login').hidden = false;
     $('login-password').value = '';
@@ -431,6 +484,11 @@
     try {
       meta = await request('GET', '/api/admin/meta');
     } catch (error) {
+      if (SHELL) {
+        // Отказ уже показан; остальное — сервер не ответил, можно повторить.
+        if (!shellRefused(error)) shellBlock(messageOf(error));
+        return;
+      }
       if (isLaunch(error)) {
         forgetLaunch();
         askLaunch(enter);
@@ -450,6 +508,7 @@
     $('who-name').textContent = meta.me.display_name || meta.me.username || '';
     fillAccessFilter();
     $('view-login').hidden = true;
+    $('view-block').hidden = true;
     $('view-app').hidden = false;
     showView('users');
     await loadUsers();
@@ -1274,8 +1333,27 @@
       if (!$('confirm').hidden) $('confirm-no').click();
       else closeSheet();
     });
+    $('block-retry').addEventListener('click', () => { enter(); });
+  }
+
+  /** Тема программы, а не системы: в программе её выбирают отдельно. */
+  function setTheme(name) {
+    document.documentElement.dataset.theme = name === 'dark' ? 'dark' : 'light';
   }
 
   wire();
-  resume();
+  if (SHELL) {
+    setTheme(SHELL.theme);
+    // Выход в программе — это выход из программы, а не из одной страницы.
+    $('logout').hidden = true;
+    // Программа меняет тему вместе со своей и показывает здесь свои сообщения:
+    // страница закрывает собой те, что рисует она сама.
+    window.crmAdminShell = Object.freeze({
+      theme: setTheme,
+      toast: (text, failed) => toast(String(text || ''), Boolean(failed)),
+    });
+    enter();
+  } else {
+    resume();
+  }
 })();

@@ -46,6 +46,17 @@
     </form>
   </main>
 
+  <!-- Внутри программы TBS: сервер отказал или не ответил. Входа здесь нет, он в программе. -->
+  <main class="center" id="view-block" hidden>
+    <div class="card login">
+      <h1>Администрирование CRM</h1>
+      <p class="muted" id="block-text" role="alert"></p>
+      <div class="row">
+        <button class="btn primary" id="block-retry" type="button">Повторить</button>
+      </div>
+    </div>
+  </main>
+
   <!-- Панель -->
   <div id="view-app" hidden>
     <header class="topbar">

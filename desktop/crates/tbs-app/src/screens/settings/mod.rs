@@ -44,34 +44,59 @@ pub enum Section {
     Sessions,
 }
 
+/// Who a section of the settings is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum For {
+    Everyone,
+    /// The Checks administrator: the senior role inside this workspace.
+    Checks,
+    /// Whoever manages the accounts of the whole CRM. On a server that keeps
+    /// that right apart it is the CRM administrator, and the Checks role does
+    /// not stand in for it.
+    Accounts,
+    /// Both: the accounts are the CRM's, the folders are Checks'.
+    Both,
+}
+
+impl For {
+    fn open_to(self, ctx: &Ctx) -> bool {
+        match self {
+            For::Everyone => true,
+            For::Checks => ctx.is_admin(),
+            For::Accounts => ctx.manages_accounts(),
+            For::Both => ctx.is_admin() && ctx.manages_accounts(),
+        }
+    }
+}
+
 struct Group {
     name: &'static str,
-    items: &'static [(Section, Icon, &'static str, bool)],
+    items: &'static [(Section, Icon, &'static str, For)],
 }
 
 const NAV: [Group; 3] = [
     Group {
         name: "Личное",
         items: &[
-            (Section::Profile, Icon::User, "Профиль", false),
-            (Section::Security, Icon::Key, "Безопасность", false),
-            (Section::Appearance, Icon::Palette, "Внешний вид", false),
+            (Section::Profile, Icon::User, "Профиль", For::Everyone),
+            (Section::Security, Icon::Key, "Безопасность", For::Everyone),
+            (Section::Appearance, Icon::Palette, "Внешний вид", For::Everyone),
         ],
     },
     Group {
         name: "Команда",
         items: &[
-            (Section::Users, Icon::Users, "Пользователи", true),
-            (Section::Access, Icon::FolderPerson, "Доступы и папки", true),
-            (Section::Periods, Icon::Lock, "Заблокир. периоды", true),
+            (Section::Users, Icon::Users, "Пользователи", For::Accounts),
+            (Section::Access, Icon::FolderPerson, "Доступы и папки", For::Both),
+            (Section::Periods, Icon::Lock, "Заблокир. периоды", For::Checks),
         ],
     },
     Group {
         name: "Система",
         items: &[
-            (Section::System, Icon::Server, "Системные", true),
-            (Section::Updates, Icon::Download, "Обновления", false),
-            (Section::Sessions, Icon::Monitor, "Сессии", true),
+            (Section::System, Icon::Server, "Системные", For::Checks),
+            (Section::Updates, Icon::Download, "Обновления", For::Everyone),
+            (Section::Sessions, Icon::Monitor, "Сессии", For::Accounts),
         ],
     },
 ];
@@ -290,11 +315,10 @@ impl Settings {
     }
 
     fn nav(&self, ctx: &Ctx) -> El<'_, Msg> {
-        let admin = ctx.is_admin();
         let mut groups = Column::new().spacing(space::LG);
         for group in &NAV {
             let items: Vec<El<'_, Msg>> =
-                group.items.iter().filter(|(_, _, _, restricted)| admin || !restricted).map(|(section, glyph, caption, _)| self.nav_item(*section, *glyph, caption)).collect();
+                group.items.iter().filter(|(_, _, _, audience)| audience.open_to(ctx)).map(|(section, glyph, caption, _)| self.nav_item(*section, *glyph, caption)).collect();
             if !items.is_empty() {
                 groups = groups.push(column![container(ui::faint(group.name)).padding([0.0, 10.0]), Column::with_children(items).spacing(space::XXS)].spacing(space::XS));
             }
@@ -346,6 +370,10 @@ fn tall<'a>(content: El<'a, Msg>) -> El<'a, Msg> {
 
 #[cfg(test)]
 mod tests {
+    use iced_test::Simulator;
+    use iced_test::core::Settings as SimSettings;
+    use tbs_core::model::UserInfo;
+
     use super::*;
 
     #[test]
@@ -353,5 +381,32 @@ mod tests {
         assert_eq!(initials("Андрей Бачинин Иванович"), "АБ");
         assert_eq!(initials("anna"), "AN");
         assert_eq!(initials("  "), "?");
+    }
+
+    /// The sections the settings offer to an account the server described so.
+    fn offered(role: &str, global_admin: Option<bool>) -> Vec<&'static str> {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = Ctx::for_tests(dir.path());
+        ctx.user = Some(UserInfo { id: 3, username: "u".into(), role: role.into(), global_admin, ..Default::default() });
+        let screen = Settings::new(&ctx);
+        let mut sim = Simulator::with_size(SimSettings::default(), iced::Size::new(1360.0, 860.0), screen.view(&ctx));
+        ["Пользователи", "Доступы и папки", "Заблокир. периоды", "Системные", "Сессии", "Обновления", "Профиль"].into_iter().filter(|name| sim.find(*name).is_ok()).collect()
+    }
+
+    #[test]
+    fn a_server_from_before_crm_administration_keeps_the_settings_as_they_were() {
+        assert_eq!(offered("admin", None), ["Пользователи", "Доступы и папки", "Заблокир. периоды", "Системные", "Сессии", "Обновления", "Профиль"]);
+        assert_eq!(offered("operator", None), ["Обновления", "Профиль"]);
+    }
+
+    #[test]
+    fn accounts_are_the_crm_administrators_and_checks_stays_the_checks_administrators() {
+        // Both rights, as every administrator has right after the migration.
+        assert_eq!(offered("admin", Some(true)), ["Пользователи", "Доступы и папки", "Заблокир. периоды", "Системные", "Сессии", "Обновления", "Профиль"]);
+        // Runs Checks, does not manage accounts: no users, no sessions of everybody.
+        assert_eq!(offered("admin", Some(false)), ["Заблокир. периоды", "Системные", "Обновления", "Профиль"]);
+        // Manages accounts and is an operator in Checks: the accounts, not Checks' own administration.
+        assert_eq!(offered("operator", Some(true)), ["Пользователи", "Сессии", "Обновления", "Профиль"]);
+        assert_eq!(offered("operator", Some(false)), ["Обновления", "Профиль"]);
     }
 }

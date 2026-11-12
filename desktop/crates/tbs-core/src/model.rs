@@ -1,5 +1,7 @@
 //! Wire types shared by the API, the cache and the query engine.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// The server sends decimals as strings today and as numbers in older paths.
@@ -94,12 +96,14 @@ pub struct UserInfo {
     pub is_active: bool,
     #[serde(deserialize_with = "null_default")]
     pub allowed_tabs: Vec<String>,
+    /// Folder and source ids. The server sends numbers; nothing here reads
+    /// them, so they are kept as they come and no shape of them stops a sign-in.
     #[serde(deserialize_with = "null_default")]
-    pub allowed_folders: Vec<String>,
+    pub allowed_folders: Vec<serde_json::Value>,
     #[serde(deserialize_with = "null_default")]
     pub forbidden_periods: Vec<serde_json::Value>,
     #[serde(deserialize_with = "null_default")]
-    pub allowed_sources: Vec<String>,
+    pub allowed_sources: Vec<serde_json::Value>,
     #[serde(deserialize_with = "null_default")]
     pub can_toggle_sources: bool,
     #[serde(deserialize_with = "null_default")]
@@ -113,11 +117,70 @@ pub struct UserInfo {
     pub access_until: Option<String>,
     pub access_note: Option<String>,
     pub last_login_at: Option<String>,
+    /// The workspaces the start window lists for this account, by the server's
+    /// word. A server from before workspaces does not send it: Checks is all
+    /// that server has, and every account on it is a Checks account.
+    pub workspaces: Option<Vec<String>>,
+    /// Every role held, the workspaces the start window does not list included.
+    pub workspace_roles: Option<BTreeMap<String, String>>,
+    /// May administer the accounts of the whole CRM. A server from before that
+    /// right was taken apart from the Checks role does not send it.
+    pub global_admin: Option<bool>,
 }
+
+/// The workspaces as the server names them.
+pub const WORKSPACE_CHECKS: &str = "checks";
+pub const WORKSPACE_TIME: &str = "time";
 
 impl UserInfo {
     pub fn is_admin(&self) -> bool {
         self.role == "admin"
+    }
+
+    /// The server said which workspaces the account has, so one that is not
+    /// named was not granted. An older server's silence says nothing of the kind.
+    pub fn workspaces_known(&self) -> bool {
+        self.workspaces.is_some()
+    }
+
+    /// Whether the start window may offer a workspace. Nothing is guessed for
+    /// a server from before workspaces: it has Checks and nothing else.
+    pub fn has_workspace(&self, id: &str) -> bool {
+        match &self.workspaces {
+            Some(granted) => granted.iter().any(|name| name == id),
+            None => id == WORKSPACE_CHECKS,
+        }
+    }
+
+    /// CRM administration, which only the server's own word grants. An older
+    /// server has no administration panel to open, so there nobody has it.
+    pub fn is_global_admin(&self) -> bool {
+        self.global_admin == Some(true)
+    }
+
+    /// May manage accounts from the Checks settings. Where the server keeps
+    /// CRM administration apart, that right decides; before the split the
+    /// Checks administrator was the one who managed accounts.
+    pub fn manages_accounts(&self) -> bool {
+        self.global_admin.unwrap_or_else(|| self.is_admin())
+    }
+
+    /// Takes the server's fresh word on what the account may open and leaves
+    /// everything else as the workspace on screen was started with.
+    pub fn adopt_access(&mut self, fresh: &UserInfo) {
+        self.workspaces.clone_from(&fresh.workspaces);
+        self.workspace_roles.clone_from(&fresh.workspace_roles);
+        self.global_admin = fresh.global_admin;
+    }
+
+    /// The account no longer has this workspace, the server just said so.
+    pub fn drop_workspace(&mut self, id: &str) {
+        let mut granted = self.workspaces.take().unwrap_or_else(|| vec![WORKSPACE_CHECKS.to_owned()]);
+        granted.retain(|name| name != id);
+        self.workspaces = Some(granted);
+        if let Some(roles) = &mut self.workspace_roles {
+            roles.remove(id);
+        }
     }
 
     /// Admins see every section; `transactions` is the old name of `dashboard`.
@@ -217,5 +280,94 @@ mod tests {
         assert!(!u.has_tab("reference"));
         u.role = "admin".into();
         assert!(u.has_tab("reference"));
+    }
+
+    /// `/api/auth/me` as release 2.0.3 answers it: the server on production
+    /// while this client is being written. It knows neither workspaces nor CRM
+    /// administration.
+    const ME_BEFORE_WORKSPACES: &str = r#"{"id":2,"username":"anna","display_name":"Анна К.","role":"admin","allowed_tabs":["dashboard","reference","automation","userbot","logs","admin"],
+        "allowed_folders":[],"forbidden_periods":[],"allowed_sources":[],"can_toggle_sources":true,"permissions_version":4,"totp_enabled":true,
+        "totp_confirmed_at":"2026-10-01T08:00:00","force_2fa":false,"session_ttl_days":7,"exp":1794000000}"#;
+
+    fn me(extra: &str) -> UserInfo {
+        let raw = format!(r#"{{"id":5,"username":"olga","display_name":"Ольга","role":"operator","allowed_tabs":["dashboard"],"allowed_folders":[],"forbidden_periods":[],
+            "allowed_sources":[],"can_toggle_sources":false,"permissions_version":1{extra}}}"#);
+        serde_json::from_str(&raw).unwrap()
+    }
+
+    #[test]
+    fn an_older_server_is_a_checks_server_and_nothing_is_guessed_beyond_it() {
+        let admin: UserInfo = serde_json::from_str(ME_BEFORE_WORKSPACES).unwrap();
+        assert_eq!((admin.workspaces.clone(), admin.workspace_roles.clone(), admin.global_admin), (None, None, None));
+        assert!(!admin.workspaces_known());
+        // What it always was: every account opens Checks, and its administrator manages the accounts.
+        assert!(admin.has_workspace(WORKSPACE_CHECKS) && admin.manages_accounts());
+        // What that server does not have is not offered, to its administrator either.
+        assert!(!admin.has_workspace(WORKSPACE_TIME) && !admin.is_global_admin());
+
+        let operator = me("");
+        assert!(operator.has_workspace(WORKSPACE_CHECKS));
+        assert!(!operator.has_workspace(WORKSPACE_TIME) && !operator.is_global_admin() && !operator.manages_accounts());
+    }
+
+    #[test]
+    fn the_servers_word_decides_each_workspace_and_administration_on_its_own() {
+        let access = |user: &UserInfo| (user.has_workspace(WORKSPACE_CHECKS), user.has_workspace(WORKSPACE_TIME), user.is_global_admin());
+
+        let checks = me(r#","workspaces":["checks"],"workspace_roles":{"checks":"operator"},"global_admin":false"#);
+        assert_eq!(access(&checks), (true, false, false));
+        let time = me(r#","workspaces":["time"],"workspace_roles":{"time":"manager"},"global_admin":false"#);
+        assert_eq!(access(&time), (false, true, false));
+        let both = me(r#","workspaces":["checks","time"],"workspace_roles":{"checks":"operator","time":"viewer"},"global_admin":false"#);
+        assert_eq!(access(&both), (true, true, false));
+        // An employee marks attendance through the bot: a role, and no workspace to open.
+        let neither = me(r#","workspaces":[],"workspace_roles":{"time":"employee"},"global_admin":false"#);
+        assert_eq!(access(&neither), (false, false, false));
+        assert!(neither.workspaces_known());
+        assert_eq!(neither.workspace_roles.as_ref().and_then(|roles| roles.get("time")).map(String::as_str), Some("employee"));
+        // Administration opens no workspace, and no workspace role gives it.
+        let administrator = me(r#","workspaces":[],"workspace_roles":{},"global_admin":true"#);
+        assert_eq!(access(&administrator), (false, false, true));
+        let mut checks_admin = me(r#","workspaces":["checks","time"],"workspace_roles":{"checks":"admin","time":"manager"},"global_admin":false"#);
+        checks_admin.role = "admin".into();
+        assert!(checks_admin.is_admin() && !checks_admin.is_global_admin() && !checks_admin.manages_accounts());
+        // A workspace this client has never heard of is not an error.
+        let later = me(r#","workspaces":["checks","payroll"],"workspace_roles":{"payroll":"chief"},"global_admin":null"#);
+        assert!(later.has_workspace(WORKSPACE_CHECKS) && later.has_workspace("payroll") && !later.is_global_admin());
+    }
+
+    #[test]
+    fn an_operator_with_folders_and_sources_still_reads() {
+        // The server sends the ids as numbers; an account that fails to read cannot sign in.
+        let raw = r#"{"id":6,"username":"petr","role":"operator","allowed_folders":[3,8],"allowed_sources":[12],"forbidden_periods":[{"from":"2026-01-01","to":"2026-01-31"}]}"#;
+        let user: UserInfo = serde_json::from_str(raw).unwrap();
+        assert_eq!((user.allowed_folders.len(), user.allowed_sources.len(), user.forbidden_periods.len()), (2, 1, 1));
+    }
+
+    #[test]
+    fn fresh_access_replaces_the_old_and_nothing_else() {
+        let mut at_work = me(r#","workspaces":["checks","time"],"workspace_roles":{"checks":"operator","time":"viewer"},"global_admin":true"#);
+        let mut fresh = me(r#","workspaces":["time"],"workspace_roles":{"time":"viewer"},"global_admin":false"#);
+        fresh.allowed_tabs = vec!["logs".into()];
+        at_work.adopt_access(&fresh);
+        assert!(!at_work.has_workspace(WORKSPACE_CHECKS) && at_work.has_workspace(WORKSPACE_TIME) && !at_work.is_global_admin());
+        assert_eq!(at_work.allowed_tabs, ["dashboard"], "the workspace on screen keeps what it was started with");
+
+        at_work.drop_workspace(WORKSPACE_TIME);
+        assert!(!at_work.has_workspace(WORKSPACE_TIME) && at_work.workspaces_known());
+        assert_eq!(at_work.workspace_roles, Some(BTreeMap::new()));
+
+        // A refusal that names a workspace comes from a server that knows them:
+        // an account read before the upgrade had Checks, and now has what is left.
+        let mut before: UserInfo = serde_json::from_str(ME_BEFORE_WORKSPACES).unwrap();
+        before.drop_workspace(WORKSPACE_CHECKS);
+        assert!(before.workspaces_known() && !before.has_workspace(WORKSPACE_CHECKS));
+    }
+
+    #[test]
+    fn the_account_round_trips_with_and_without_the_new_fields() {
+        for user in [serde_json::from_str::<UserInfo>(ME_BEFORE_WORKSPACES).unwrap(), me(r#","workspaces":["time"],"workspace_roles":{"time":"manager"},"global_admin":true"#)] {
+            assert_eq!(serde_json::from_value::<UserInfo>(serde_json::to_value(&user).unwrap()).unwrap(), user);
+        }
     }
 }

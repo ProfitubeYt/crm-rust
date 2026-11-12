@@ -2,6 +2,7 @@
 
 pub mod audit;
 pub mod gate;
+pub mod hosted;
 pub mod login;
 pub mod logs;
 pub mod reference;

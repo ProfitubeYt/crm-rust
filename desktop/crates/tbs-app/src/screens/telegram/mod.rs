@@ -2,7 +2,7 @@
 //! a web view; this screen owns who may open it and carries the mini apps.
 
 mod assets;
-mod host;
+pub(crate) mod host;
 
 use std::time::{Duration, Instant};
 
@@ -153,7 +153,7 @@ async fn confirm_external(url: String, host: String) -> bool {
     answer == rfd::MessageDialogResult::Ok
 }
 
-fn open_in_system(url: &str) {
+pub(crate) fn open_in_system(url: &str) {
     if let Err(error) = std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn() {
         tracing::warn!("could not open an external link: {error}");
     }

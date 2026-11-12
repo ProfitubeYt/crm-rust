@@ -185,8 +185,10 @@ impl System {
 
     pub fn load(&self, ctx: &Ctx) -> Task<Msg> {
         let (settings, rules, coverage) = (ctx.api.clone(), ctx.api.clone(), ctx.api.clone());
+        // The switches belong to the whole CRM: its administrator's, not the Checks one's.
+        let switches = if ctx.manages_accounts() { Task::perform(async move { settings.system_settings().await.map_err(text_error) }, Msg::Loaded) } else { Task::none() };
         Task::batch([
-            Task::perform(async move { settings.system_settings().await.map_err(text_error) }, Msg::Loaded),
+            switches,
             Task::perform(async move { rules.annotation_rules().await.map(|list| list.len()).map_err(text_error) }, Msg::RuleCount),
             Task::perform(async move { coverage.rule_coverage().await.map_err(text_error) }, Msg::Coverage),
         ])
@@ -435,8 +437,12 @@ impl System {
         panel("Правила разметки", hint, iced::widget::Space::new(), body.push(actions))
     }
 
-    pub fn view<'a>(&'a self, _ctx: &Ctx) -> El<'a, Msg> {
-        column![self.switches(), self.book(), self.rules()].spacing(space::MD).into()
+    pub fn view<'a>(&'a self, ctx: &Ctx) -> El<'a, Msg> {
+        let mut page = column![].spacing(space::MD);
+        if ctx.manages_accounts() {
+            page = page.push(self.switches());
+        }
+        page.push(self.book()).push(self.rules()).into()
     }
 }
 

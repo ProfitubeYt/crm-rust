@@ -13,8 +13,39 @@ fn main() {
     let Ok(out) = env::var("OUT_DIR") else { return };
     let out = PathBuf::from(out);
     embed_telegram_page(&out);
+    embed_hosted_pages(&out);
     copy_webview_loader(&out);
     embed_resources(&out);
+}
+
+/// The pages of the workspaces that are web pages, taken from where each is
+/// kept: Time's interface from its server, the administration panel from the
+/// backend that also serves it. Each file gets the name the page's own links
+/// ask for. A file that is not there leaves its table short, and the
+/// workspace says so instead of failing to compile.
+fn embed_hosted_pages(out: &Path) {
+    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
+    let repository = manifest.join("../../..");
+    let time = repository.join("time/crates/server/assets");
+    let admin = repository.join("backend/admin_panel");
+    let tables = [
+        ("TIME_ASSETS", vec![("index.html", time.join("index.html")), ("assets/app.css", time.join("app.css")), ("assets/app.js", time.join("app.js"))]),
+        ("ADMIN_ASSETS", vec![("admin/index.html", admin.join("index.html")), ("admin/admin.css", admin.join("admin.css")), ("admin/admin.js", admin.join("admin.js"))]),
+    ];
+    let mut code = String::new();
+    for (table, files) in tables {
+        let _ = writeln!(code, "pub static {table}: &[(&str, &[u8])] = &[");
+        for (name, file) in files {
+            println!("cargo:rerun-if-changed={}", file.display());
+            if file.is_file() {
+                let _ = writeln!(code, "    ({name:?}, include_bytes!({:?})),", file.to_string_lossy());
+            } else {
+                println!("cargo:warning={} is missing, its workspace page is not embedded", file.display());
+            }
+        }
+        code.push_str("];\n");
+    }
+    let _ = fs::write(out.join("hosted_assets.rs"), code);
 }
 
 /// Without windres the program still builds and runs, just with a blank icon in

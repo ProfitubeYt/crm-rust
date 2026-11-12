@@ -13,6 +13,19 @@
     color-scheme: dark;
   }
 }
+/* Внутри программы TBS тему задаёт она, а не система: те же два набора. */
+:root[data-theme="light"] {
+  --bg: #f4f5f7; --surface: #ffffff; --line: #dfe2e8; --text: #1b1f27; --muted: #667085;
+  --accent: #2563eb; --accent-ink: #ffffff; --danger: #c62828; --ok: #1b7f4b; --warn: #a15c00;
+  --chip: #eef1f6; --shadow: 0 10px 30px rgba(15, 23, 42, .14);
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  --bg: #14161b; --surface: #1c1f26; --line: #2c313b; --text: #e7eaf0; --muted: #98a2b3;
+  --accent: #5b8def; --accent-ink: #0b1020; --danger: #ef6b6b; --ok: #58c58c; --warn: #e0a84a;
+  --chip: #262b35; --shadow: 0 10px 30px rgba(0, 0, 0, .5);
+  color-scheme: dark;
+}
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body {

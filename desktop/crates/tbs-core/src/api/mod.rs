@@ -9,6 +9,7 @@ mod excel;
 mod logs;
 mod reference;
 mod security;
+mod time;
 mod transactions;
 
 pub use admin::*;
@@ -17,6 +18,7 @@ pub use excel::*;
 pub use logs::*;
 pub use reference::*;
 pub use security::*;
+pub use time::*;
 pub use transactions::*;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -65,6 +67,16 @@ pub enum ApiEvent {
     ScopeExpired,
     /// The server moved to a version this build was not made for.
     VersionMismatch,
+    /// The account no longer has the workspace a request was made in. The
+    /// server names it; the session itself stands.
+    WorkspaceRevoked(String),
+    /// CRM administration was asked for by an account that is not, or is no
+    /// longer, a CRM administrator.
+    AdminRevoked,
+    /// An administrator switched the account off.
+    AccountDisabled,
+    /// The account's term ran out while the client was at work.
+    AccessExpired,
 }
 
 /// The server version this build expects; unset builds do not compare.
@@ -187,6 +199,11 @@ fn spelled_out(code: Option<&str>, detail: &Value) -> Option<String> {
             let (total, limit) = (detail["total"].as_i64()?, detail["limit"].as_i64()?);
             Some(format!("Слишком много строк для экспорта ({total}). Лимит: {limit}. Уточните фильтры."))
         }
+        "workspace_forbidden" => Some("Доступ к этому рабочему пространству закрыт администратором".to_string()),
+        "access_expired" => Some("Срок доступа учётной записи истёк".to_string()),
+        "time_role_forbidden" => Some("Недостаточно прав: в «Учёте времени» открыт только просмотр".to_string()),
+        "time_workspace_unavailable" => Some("Учёт времени на сервере не настроен".to_string()),
+        "time_upstream_unavailable" | "time_upstream_refused" => Some("Сервис учёта времени не отвечает, попробуйте позже".to_string()),
         _ => None,
     }
 }
@@ -438,19 +455,40 @@ impl Api {
         self.emit(ApiEvent::SessionRevoked);
     }
 
-    fn inspect_forbidden(&self, reply: &Reply) {
+    /// A 403 keeps the session and says what was refused: a code in
+    /// `detail.error`, or the whole of a `detail` that is one word.
+    fn inspect_forbidden(&self, path: &str, reply: &Reply) {
         let ApiError::Http { code, message, .. } = error_from_body(reply.status, &reply.bytes) else { return };
         let code = code.unwrap_or_default();
-        if code == "launch_expired" || code == "launch_required" {
-            {
-                let mut t = self.0.tokens.write().unwrap();
-                t.launch = None;
-                t.scope = None;
+        let parsed: Value = serde_json::from_slice(&reply.bytes).unwrap_or(Value::Null);
+        let refusal = if code.is_empty() { parsed["detail"].as_str().unwrap_or_default() } else { code.as_str() };
+        // The sign-in form reads its own refusals: nobody is at work yet.
+        let at_work = !refresh_exempt(path);
+        match refusal {
+            "launch_expired" | "launch_required" => {
+                {
+                    let mut t = self.0.tokens.write().unwrap();
+                    t.launch = None;
+                    t.scope = None;
+                }
+                self.emit(ApiEvent::LaunchRequired);
             }
-            self.emit(ApiEvent::LaunchRequired);
-        } else if code.contains("scope") || message.to_lowercase().contains("scope") {
-            self.0.tokens.write().unwrap().scope = None;
-            self.emit(ApiEvent::ScopeExpired);
+            "workspace_forbidden" if at_work => {
+                let workspace = parsed["detail"]["workspace"].as_str().unwrap_or_default().to_owned();
+                self.emit(ApiEvent::WorkspaceRevoked(workspace));
+            }
+            "global_admin_required" if at_work => self.emit(ApiEvent::AdminRevoked),
+            "inactive_user" if at_work => {
+                // The server ended every session of the account with it.
+                self.clear_session();
+                self.emit(ApiEvent::AccountDisabled);
+            }
+            "access_expired" if at_work => self.emit(ApiEvent::AccessExpired),
+            _ if code.contains("scope") || message.to_lowercase().contains("scope") => {
+                self.0.tokens.write().unwrap().scope = None;
+                self.emit(ApiEvent::ScopeExpired);
+            }
+            _ => {}
         }
     }
 
@@ -468,7 +506,7 @@ impl Api {
             }
         }
         if reply.status == StatusCode::FORBIDDEN.as_u16() {
-            self.inspect_forbidden(&reply);
+            self.inspect_forbidden(&call.path, &reply);
         }
         Ok(reply)
     }
@@ -699,5 +737,75 @@ mod tests {
     fn a_lockout_says_how_long() {
         let error = error_from_body(429, br#"{"detail":{"error":"locked","locked_seconds":61}}"#);
         assert!(error.to_string().contains("через 2 мин"), "{error}");
+    }
+
+    /// What a 403 with this body tells the app, asked of a signed-in client.
+    fn refused(path: &str, body: &str) -> (Vec<ApiEvent>, bool) {
+        let vault = Arc::new(MemoryStore::default());
+        vault.set("refresh:http://127.0.0.1:1", "saved-session");
+        let api = Api::new("http://127.0.0.1:1".into(), None, vault);
+        let mut events = api.subscribe();
+        api.inspect_forbidden(path, &Reply { status: 403, headers: Vec::new(), bytes: body.as_bytes().to_vec() });
+        let mut told = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            told.push(event);
+        }
+        (told, api.has_refresh_token())
+    }
+
+    #[test]
+    fn a_revoked_workspace_is_named_and_the_session_stands() {
+        let (told, session) = refused("/api/time/meta", r#"{"detail":{"error":"workspace_forbidden","workspace":"time"}}"#);
+        assert_eq!(told, [ApiEvent::WorkspaceRevoked("time".into())]);
+        assert!(session, "the account keeps the workspaces it still has");
+        let (told, _) = refused("/api/transactions", r#"{"detail":{"error":"workspace_forbidden","workspace":"checks"}}"#);
+        assert_eq!(told, [ApiEvent::WorkspaceRevoked("checks".into())]);
+        // The wording must never read as an expired period: that is another event.
+        assert!(!told.contains(&ApiEvent::ScopeExpired));
+    }
+
+    #[test]
+    fn administration_refused_is_not_a_lost_session() {
+        let (told, session) = refused("/api/admin/users", r#"{"detail":"global_admin_required"}"#);
+        assert_eq!(told, [ApiEvent::AdminRevoked]);
+        assert!(session);
+        // The Checks administrator's own refusal is the screen's to show.
+        assert_eq!(refused("/api/periods", r#"{"detail":"admin_only"}"#).0, []);
+    }
+
+    #[test]
+    fn a_disabled_account_loses_its_saved_session() {
+        let (told, session) = refused("/api/auth/me", r#"{"detail":"inactive_user"}"#);
+        assert_eq!(told, [ApiEvent::AccountDisabled]);
+        assert!(!session, "a session of a disabled account is not kept for the next launch");
+    }
+
+    #[test]
+    fn an_expired_term_is_told_apart_from_an_expired_period() {
+        let (told, session) = refused("/api/time/meta", r#"{"detail":{"error":"access_expired","expired_at":"2026-11-01T00:00:00"}}"#);
+        assert_eq!(told, [ApiEvent::AccessExpired]);
+        assert!(session);
+        assert_eq!(refused("/api/transactions", r#"{"detail":{"error":"scope_token_expired"}}"#).0, [ApiEvent::ScopeExpired]);
+        assert_eq!(refused("/api/transactions", r#"{"detail":{"error":"launch_required"}}"#).0, [ApiEvent::LaunchRequired]);
+    }
+
+    #[test]
+    fn the_sign_in_form_reads_its_own_refusals() {
+        // A wrong account at the form is the form's to explain; nobody is signed out by it.
+        for body in [r#"{"detail":"inactive_user"}"#, r#"{"ok":false,"error":"inactive_user"}"#, r#"{"detail":{"error":"access_expired"}}"#] {
+            let (told, session) = refused("/api/auth/login", body);
+            assert_eq!(told, [], "{body}");
+            assert!(session);
+        }
+        assert_eq!(refused("/api/auth/login", r#"{"detail":{"error":"launch_required"}}"#).0, [ApiEvent::LaunchRequired]);
+    }
+
+    #[test]
+    fn refusals_are_put_into_words() {
+        let said = |body: &str| error_from_body(403, body.as_bytes()).to_string();
+        assert_eq!(said(r#"{"detail":{"error":"workspace_forbidden","workspace":"time"}}"#), "Доступ к этому рабочему пространству закрыт администратором");
+        assert_eq!(said(r#"{"detail":{"error":"time_role_forbidden","required":"manager"}}"#), "Недостаточно прав: в «Учёте времени» открыт только просмотр");
+        let ApiError::Http { code, .. } = error_from_body(403, br#"{"detail":{"error":"workspace_forbidden","workspace":"time"}}"#) else { panic!() };
+        assert_eq!(code.as_deref(), Some("workspace_forbidden"));
     }
 }

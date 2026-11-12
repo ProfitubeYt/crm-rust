@@ -24,6 +24,9 @@ pub enum Request {
     ThemeChanged,
     /// Local data changed in a way other screens should notice.
     TransactionsChanged,
+    /// The server refused a workspace's page: ask it what the account may
+    /// still open.
+    AccessChanged,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -83,6 +86,11 @@ impl Ctx {
         self.user.as_ref().is_some_and(|u| u.is_admin())
     }
 
+    /// May manage the CRM's accounts, which is not the same as running Checks.
+    pub fn manages_accounts(&self) -> bool {
+        self.user.as_ref().is_some_and(|u| u.manages_accounts())
+    }
+
     pub fn save_prefs(&self) {
         if let Err(error) = save_json(&self.data_dir.join("preferences.json"), &self.prefs) {
             tracing::warn!("preferences not saved: {error}");
@@ -95,6 +103,11 @@ impl Ctx {
             Some(user) => format!("u{}", user.id),
             None => "anonymous".into(),
         }
+    }
+
+    /// The server's address as a file name: ids are one server's own.
+    pub fn host_key(&self) -> String {
+        self.api.base().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
     }
 
     pub fn state_path(&self, name: &str) -> PathBuf {

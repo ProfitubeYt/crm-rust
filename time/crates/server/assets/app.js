@@ -1470,5 +1470,7 @@ async function boot() {
 
 // Оболочка меняет тему вместе со своей.
 window.timelistSetTheme = (theme) => { document.documentElement.dataset.theme = theme === 'dark' ? 'dark' : 'light'; };
+// И показывает здесь свои сообщения: страница закрывает собой те, что рисует она сама.
+window.timelistToast = (text, isError) => toast(String(text || ''), !!isError);
 
 $('#login-form') && boot();
