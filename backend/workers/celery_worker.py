@@ -2065,6 +2065,8 @@ def annotation_autofill_task():
     from services import annotation_rule_service
 
     with SessionLocal() as db:
+        # Off unless ANNOTATION_DETAILS_RULES_REFRESH_HOURS is set: see the service.
+        annotation_rule_service.refresh_details_rules(db)
         return annotation_rule_service.fill_defaults(db)
 
 

@@ -16,6 +16,7 @@ from openpyxl.styles import Font, PatternFill
 from database.connection import get_db_session
 from database.models import AnnotationArticle, AnnotationPerson, OperatorReference, Transaction
 from api.dependencies import require_admin_user, require_tab_access
+from parsers.operator_mapper import invalidate_operator_mapper_cache
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -140,6 +141,8 @@ async def create_operator(
         db.add(new_operator)
         db.commit()
         db.refresh(new_operator)
+        # The next receipt this process parses must see the line, not the cache.
+        invalidate_operator_mapper_cache()
 
         return new_operator
     except HTTPException:
@@ -172,6 +175,7 @@ async def update_operator(
 
         db.commit()
         db.refresh(db_operator)
+        invalidate_operator_mapper_cache()
 
         return db_operator
     except HTTPException:
@@ -198,6 +202,7 @@ async def delete_operator(
 
         db.delete(db_operator)
         db.commit()
+        invalidate_operator_mapper_cache()
 
         return {"message": "Operator deleted successfully"}
     except HTTPException:
@@ -334,6 +339,8 @@ async def import_from_excel(
             imported += 1
 
         db.commit()
+        if imported:
+            invalidate_operator_mapper_cache()
 
         return {
             "imported": imported,
@@ -345,6 +352,30 @@ async def import_from_excel(
         db.rollback()
         logger.exception("Import from excel failed")
         raise HTTPException(status_code=400, detail="Import failed")
+
+
+@router.get("/review")
+async def review_unknown_operators(
+    limit: int = Query(200, ge=1, le=1000, description="Operator lines to return, most frequent first"),
+    db: Session = Depends(get_db_session),
+    current_user: dict = Depends(require_tab_access("reference")),
+):
+    """Operator lines of receipts that still have no application, for a person to decide.
+
+    Counts by review status, and the gateway-shaped lines with how often they
+    occur, the researched candidate and its sources. Nothing is written and no
+    candidate is applied here: a line becomes a value only when a person adds
+    or activates it in the dictionary. Merchant lines (an address, a person's
+    name) are counted in the summary and not listed.
+    """
+    from services import operator_dictionary_service as dictionary
+
+    items = dictionary.review_operators(db)
+    listed = [
+        item for item in items
+        if item["shareable"] and item["status"] not in ("merchant_or_individual", "no_operator_or_cash")
+    ]
+    return {"summary": dictionary.review_summary(items), "total": len(listed), "items": listed[:limit]}
 
 
 @router.get("/applications")

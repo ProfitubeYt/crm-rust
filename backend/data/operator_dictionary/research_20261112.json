@@ -1,0 +1,410 @@
+{
+  "schema": 1,
+  "title": "Operator / application research for the shared dictionary (operator_reference)",
+  "researched_on": "2026-11-12",
+  "receipts_at_research": 1934,
+  "distinct_operator_lines_at_research": 268,
+  "field_meaning": "«Приложение» is the application or online service that the receipt's own operator line identifies: the payment app whose gateway processed the operation, or the online service that was paid. It does not assert which app was open on the cardholder's phone. A shop, terminal, ATM, bank office or generic processing line names no application and stays empty.",
+  "method": "Focused web searches followed by fetching the real pages (official company / bank / application sites, official app-store listings, government and Central Bank pages). Search snippets were not used as evidence. Only public organisation and service names were searched: no receipt, card number, phone number or personal name. Counts are receipts per operator line on the research date.",
+  "verified_rule": "A line is 'verified' when (1) it carries the brand name of an application or online service itself, (2) an official source confirms that brand is such a service with the function the line shows, (3) no other entity plausibly produces the same line, and (4) it does not contradict an entry the owner typed or a value a person set. Everything else is kept apart under needs_owner_review or not_an_application and is never imported.",
+  "verified": [
+    {
+      "id": "plum",
+      "application": "Plum",
+      "official_name": "Plum",
+      "operated_by": "PLUM TECHNOLOGIES JSC (the payment service called MyUzcard until August 2023)",
+      "label_basis": "official product name",
+      "confidence": "high",
+      "lines": [
+        {"operator": "PLUM OPLATA, UZ", "is_p2p": false, "receipts": 14, "note": "also answers 'PLUM Oplata>TASHKENT' (1 receipt): the same name with a city, variant tier"}
+      ],
+      "rationale": "The line is the brand name plus OPLATA (payment). Plum is a licensed Uzbek payment service with payments and card transfers.",
+      "sources": [
+        {"url": "https://play.google.com/store/apps/details?id=mobile.uzcard.uz.uzcard&hl=en", "quote": "Plum — \"PLUM TECHNOLOGIES\" JSC — Make payments and money transactions easily, quickly, and securely.", "checked": "2026-11-12"},
+        {"url": "https://www.gazeta.uz/ru/2023/08/10/plum/", "quote": "Приложение My Uzcard сменило название на Plum.", "checked": "2026-11-12"}
+      ]
+    },
+    {
+      "id": "click",
+      "application": "Click",
+      "official_name": "Click SuperApp (trademark click™)",
+      "operated_by": "АО «CLICK», payment organisation licensed by the Central Bank",
+      "label_basis": "short brand name, in the style of the owner's dictionary (Payme, Paynet, Xazna)",
+      "confidence": "high",
+      "lines": [
+        {"operator": "CLICK P2P, UZ", "is_p2p": true, "receipts": 2},
+        {"operator": "CLICK P2P U2H ER>TAS", "is_p2p": true, "receipts": 1},
+        {"operator": "UZCARD TO HUMO CLICK", "is_p2p": true, "receipts": 1},
+        {"operator": "AO CLICK, UZ", "is_p2p": false, "receipts": 4, "note": "the operator's legal name, as 'AO PAYNET MOBILE' is for Paynet"}
+      ],
+      "rationale": "Each line carries the brand CLICK with a card-to-card direction or the operator's legal form. Click offers payments and Uzcard/Humo card transfers.",
+      "sources": [
+        {"url": "https://click.uz/ru/terms", "quote": "официальным публичным предложением Платёжной организации АО „CLICK“ … Мобильное приложение click™ CLICK SUPERAPP доступное для IOS и Android платформ", "checked": "2026-11-12"},
+        {"url": "https://click.uz/ru/news/188/uvedomlenie-ob-izmeneniyah", "quote": "при переводах с карты на карту: Uzcard → Uzcard, Uzcard → Humo, Humo → Humo и Humo → Uzcard комиссия составит 1,1%", "checked": "2026-11-12"}
+      ]
+    },
+    {
+      "id": "alliance-pay",
+      "application": "Alliance Pay",
+      "official_name": "Alliance Pay",
+      "operated_by": "JSCB Asia Alliance Bank",
+      "label_basis": "official product name",
+      "confidence": "high",
+      "lines": [
+        {"operator": "ALLIANCE PAY P2P NA", "is_p2p": true, "receipts": 4}
+      ],
+      "rationale": "The line carries the product name ALLIANCE PAY with P2P. Alliance Pay is the bank's mobile app with transfers between cards.",
+      "sources": [
+        {"url": "https://aab.uz/en/private/alliance/", "quote": "New mobile app Alliance Pay - a modern and convenient digital bank on your smartphone", "checked": "2026-11-12"},
+        {"url": "https://apps.apple.com/us/app/alliance-pay/id6469618319", "quote": "Переводить деньги в национальной валюте между банковскими картами (P2P)", "checked": "2026-11-12"}
+      ]
+    },
+    {
+      "id": "milliy-konvers",
+      "application": "Milliy 2.0",
+      "official_name": "Milliy (Google Play title: Milliy 2.0)",
+      "operated_by": "JSC National Bank of Uzbekistan (NBU)",
+      "label_basis": "the owner's existing dictionary name",
+      "confidence": "high",
+      "lines": [
+        {"operator": "NBU KONVERS MILLIY 2026 UZCARD, UZ", "is_p2p": false, "receipts": 11},
+        {"operator": "NBU KONVERS MILLIY 2", "is_p2p": false, "receipts": 6}
+      ],
+      "rationale": "The line carries NBU, the app name MILLIY 2… and KONVERS; currency exchange is a documented function of the app. The owner's dictionary already files every NBU app line under Milliy 2.0.",
+      "sources": [
+        {"url": "https://nbu.uz/en/milliy", "quote": "Milliy mobile application … Currency exchange … Available 24/7 with a card of any bank in Uzbekistan", "checked": "2026-11-12"},
+        {"url": "https://play.google.com/store/apps/details?id=com.tune.milliy&hl=uz", "quote": "Milliy 2.0 — Официальное мобильное приложение Национального банка Узбекистана … Обмен валют", "checked": "2026-11-12"}
+      ]
+    },
+    {
+      "id": "humo-card-bot",
+      "application": "HUMO Card",
+      "official_name": "HUMO Card (Telegram bot t.me/HUMOcardbot), package «Premium»",
+      "operated_by": "the HUMO payment system (National Interbank Processing Centre)",
+      "label_basis": "official name of the paid service",
+      "confidence": "high",
+      "lines": [
+        {"operator": "HUMOCARDBOT PREMIUM", "is_p2p": false, "receipts": 7, "note": "one of the seven carries a stored 'Humans' of unknown origin: it is not changed, only reported"}
+      ],
+      "rationale": "The line is the bot's own handle plus the name of its paid package: the online service that was paid.",
+      "sources": [
+        {"url": "https://humocard.uz/ru/press_center/news/premium-funktsii-v-telegram-bote/", "quote": "Теперь бот HUMO Card (https://t.me/HUMOcardbot) предлагает пользователям два типа пакетa услуг … Пакет «Premium»", "checked": "2026-11-12"}
+      ]
+    },
+    {
+      "id": "via",
+      "application": "VIA",
+      "official_name": "VIA (store title: VIA - Платёжная система)",
+      "operated_by": "АО «DEVHUB», Central Bank licence № 50",
+      "label_basis": "official product name",
+      "confidence": "high for the service, medium-high for the line (the exact string is documented nowhere; no other Uzbek payment organisation carries the name)",
+      "lines": [
+        {"operator": "VIA PAYMENT, UZ", "is_p2p": false, "receipts": 58}
+      ],
+      "rationale": "The line is the brand VIA plus PAYMENT; VIA is a licensed Uzbek payment service and a partner of the UZCARD system, on whose receipts the line appears.",
+      "sources": [
+        {"url": "https://via.uz/", "quote": "Платежи, переводы, финансы всё через VIA … AO \"DEVHUB\" © 2022 - 2026 … Лицензия ЦБ РУз №50", "checked": "2026-11-12"},
+        {"url": "https://api.uzcard.uz/news/tezqr_expands_capabilities/", "quote": "В мобильных приложениях VIA, Beepul и Click SuperApp", "checked": "2026-11-12"}
+      ]
+    },
+    {
+      "id": "paysend",
+      "application": "Paysend",
+      "official_name": "Paysend",
+      "operated_by": "Paysend, with Ipoteka-bank as the partner bank in Uzbekistan",
+      "label_basis": "official product name",
+      "confidence": "high",
+      "lines": [
+        {"operator": "Ipoteka bank PAYSEND", "is_p2p": false, "receipts": 1}
+      ],
+      "rationale": "The line names the transfer service and its documented partner bank: an incoming international transfer through Paysend.",
+      "sources": [
+        {"url": "https://www.ipotekabank.uz/ru/blog/news/paysend/", "quote": "Инновационный сервис «Paysend» при поддержке банка-партнера в Узбекистане АКИБ «Ипотека-банк» … запускает международные онлайн переводы на карты, эмитированные в Узбекистане.", "checked": "2026-11-12"}
+      ]
+    },
+    {
+      "id": "alif",
+      "application": "Alif",
+      "official_name": "Alif",
+      "operated_by": "Alif Tech (alif.uz)",
+      "label_basis": "official product name",
+      "confidence": "high for the service, medium-high for the line ('075' is unexplained)",
+      "lines": [
+        {"operator": "ALIF UZ U2U 075, UZ", "is_p2p": true, "receipts": 2}
+      ],
+      "rationale": "The line carries ALIF UZ with a card-to-card direction; card transfers are a documented function of the Alif app.",
+      "sources": [
+        {"url": "https://www.alif.uz/ru/", "quote": "Переводите на карты HUMO и Uzcard с минимальной комиссией. … Переводы, оплата услуг, покупки, рассрочка, авиабилеты и многое другое в приложении Alif", "checked": "2026-11-12"}
+      ]
+    },
+    {
+      "id": "wildberries",
+      "application": "Wildberries",
+      "official_name": "Wildberries",
+      "operated_by": "ООО «WB INT EXPORT», the entity through which Wildberries works in Uzbekistan",
+      "label_basis": "brand of the online service, as the owner files 'OOO UZUM MARKET' under Uzum",
+      "confidence": "high",
+      "lines": [
+        {"operator": "WB INT EXPORT OPLATA, UZ", "is_p2p": false, "receipts": 11},
+        {"operator": "OOO WB INT EXPORT, UZ", "is_p2p": false, "receipts": 1}
+      ],
+      "rationale": "The line is the marketplace's own Uzbek legal entity, named by the Tax Committee.",
+      "sources": [
+        {"url": "https://gov.uz/ru/soliq/news/view/39131", "quote": "WILDBERRIES осуществляет свою деятельность в Узбекистане через юридическое лицо в форме ООО „WB INT EXPORT“.", "checked": "2026-11-12"}
+      ]
+    },
+    {
+      "id": "ezviz",
+      "application": "EZVIZ",
+      "official_name": "EZVIZ (app; paid cloud service EZVIZ CloudPlay)",
+      "operated_by": "EZVIZ",
+      "label_basis": "official product name",
+      "confidence": "high for the brand; that each charge is the CloudPlay subscription is the documented recurring charge, not proven per receipt",
+      "lines": [
+        {"operator": "EZVIZ", "is_p2p": false, "receipts": 27}
+      ],
+      "rationale": "The line is the brand alone; EZVIZ sells a recurring cloud subscription in its app and charges the card directly.",
+      "sources": [
+        {"url": "https://www.ezviz.com/legal/cloudplay-paid-subscription-terms", "quote": "you may elect to purchase our Cloud Services on a subscription basis (e.g., monthly or annually (as applicable) on EZVIZ Apps … authorize EZVIZ to charge you for the Cloud Services using your payment method", "checked": "2026-11-12"}
+      ]
+    },
+    {
+      "id": "uzum-visa",
+      "application": "UzumBank",
+      "official_name": "Uzum Bank",
+      "operated_by": "Uzum Bank",
+      "label_basis": "the owner's existing dictionary name",
+      "confidence": "medium-high",
+      "lines": [
+        {"operator": "UB VISAUZUM TO HUMO>", "is_p2p": true, "receipts": 3}
+      ],
+      "rationale": "The owner's own line 'UB PEREVOD CROSSBORDER 6 SEND' already files UB under UzumBank, and this line adds the card product VISAUZUM (Uzum Visa), from which transfers to Humo are documented. One of the three receipts already carries UzumBank.",
+      "sources": [
+        {"url": "https://uzum.com/ru/press-center/news-and-press-releases/uzum-bank-and-visa-launch-plastic-debit-cards/", "quote": "Банк открыл ранний доступ к пластиковым картам Uzum Visa … переводы до 100 млн сум в месяц с карты Uzum на карты Uzcard и Humo", "checked": "2026-11-12"}
+      ]
+    },
+    {
+      "id": "google-play",
+      "application": "Google Play",
+      "official_name": "Google Play",
+      "operated_by": "Google",
+      "label_basis": "owner's decision of 2026-11-12: one value for every GOOGLE * line",
+      "confidence": "high that the lines are Google charges; the label is the owner's",
+      "lines": [
+        {"operator": "GOOGLE", "is_p2p": false, "receipts": 48, "note": "answers every line that holds the word GOOGLE (15 lines today: CapCut, V380 Pro, Google One, Telegram, G1SK… codes and others). A Google product that is not a Play purchase would read Google Play as well."}
+      ],
+      "rationale": "Google documents that its charges read GOOGLE* followed by the app, developer or content name.",
+      "sources": [
+        {"url": "https://support.google.com/googleplay/answer/2851610?hl=en", "quote": "All Google Play purchases will appear on your statement under one of these names: \"GOOGLE*App developer name\" (for Android apps) \"GOOGLE*App name\" (for Android apps) \"GOOGLE*Content type\"", "checked": "2026-11-12"}
+      ]
+    }
+  ],
+  "needs_owner_review": [
+    {
+      "id": "nbu-other",
+      "candidate": "Milliy 2.0",
+      "confidence": "medium",
+      "lines": [
+        {"operator": "NBU OBRAT KONVER MPKUZCARD M 2, UZ", "receipts": 3},
+        {"operator": "NBU MUNIS OPLATA M.PRILOJ, UZ", "receipts": 1},
+        {"operator": "NBU UZCARDHUMO P2P>t", "receipts": 1}
+      ],
+      "why_not_verified": "None of the three carries the app's name. 'M 2' and 'M.PRILOJ' read as Milliy 2 / mobile app, and the owner's four NBU P2P lines all go to Milliy 2.0, but NBU has other apps too.",
+      "sources": [{"url": "https://nbu.uz/en/milliy", "quote": "Transfers to UZS cards in Uzbekistan … Public services and penalties", "checked": "2026-11-12"}]
+    },
+    {
+      "id": "ub-p2p",
+      "candidate": "UzumBank",
+      "confidence": "low-medium",
+      "lines": [{"operator": "UB P2P Humo2Humo>TAS", "receipts": 3}],
+      "why_not_verified": "UB is Uzum Bank in the owner's own dictionary line, but Universalbank also moves money between Humo cards and no page documents the abbreviation.",
+      "sources": [{"url": "https://unired.uz/en", "quote": "Move money between Uzcard, Humo and VISA cards in any direction", "checked": "2026-11-12"}]
+    },
+    {
+      "id": "tbc",
+      "candidate": "TBC",
+      "confidence": "medium",
+      "prefixes": ["TBC"],
+      "lines": [
+        {"operator": "TBC PEREVOD SO SCHET", "receipts": 3, "note": "all three already carry a stored 'TBC' of unknown origin"},
+        {"operator": "TBC HUMO NA KOSHELEK", "receipts": 2},
+        {"operator": "TBC P2P S HUMO NA UZ", "receipts": 1},
+        {"operator": "TBC P2P S UZCARD NA", "receipts": 1},
+        {"operator": "TBC UZCARD2VISA SALOM, UZ", "receipts": 1},
+        {"operator": "TBC, UZ", "receipts": 1}
+      ],
+      "why_not_verified": "TBC Bank is a digital bank whose channel is the TBC UZ app, but a bank's name alone does not prove the app: its cards are also topped up from other apps.",
+      "sources": [{"url": "https://new.tbcbank.uz/ru/onlayn-banking/", "quote": "основным каналом дистанционного обслуживания является приложение TBC UZ", "checked": "2026-11-12"}]
+    },
+    {
+      "id": "multicard",
+      "candidate": "Multicard (the app is now called Rahmat)",
+      "confidence": "high for the company, undecided for the value",
+      "prefixes": ["MULTICARD"],
+      "lines": [
+        {"operator": "MULTICARD MUNIS, UZ", "receipts": 3},
+        {"operator": "MULTICARD ECOM, UZ", "receipts": 1},
+        {"operator": "MULTICARD ECOM>Toshk", "receipts": 1}
+      ],
+      "why_not_verified": "The lines are the payment gateway of AO Multicard Payment (clearing and e-commerce acquiring). A gateway charge on a merchant's page does not show its app was used, and the app has been renamed: which name to store is the owner's call.",
+      "sources": [
+        {"url": "http://corp.multicard.uz/", "quote": "АО “MULTICARD PAYMENT” осуществляет свою деятельность как коммерческая организация с 2020 года", "checked": "2026-11-12"},
+        {"url": "https://apps.apple.com/uz/app/rahmat-%D0%BF%D0%BB%D0%B0%D1%82%D0%B5%D0%B6%D0%B8-%D0%B8-%D1%80%D0%B0%D1%81%D1%81%D1%80%D0%BE%D1%87%D0%BA%D0%B0/id1530741420", "quote": "Multicard теперь Rahmat.", "checked": "2026-11-12"}
+      ]
+    },
+    {
+      "id": "beelab",
+      "candidate": "Beepul",
+      "confidence": "medium",
+      "lines": [{"operator": "BEELAB OPLATA, UZ", "receipts": 2}],
+      "why_not_verified": "Beelab is the company that operates Beepul, not an app. No source says a BEELAB OPLATA charge is a Beepul charge; it may come from the Beeline app or a partner checkout.",
+      "sources": [{"url": "https://www.uzdaily.uz/ru/operator-platezhnogo-servisa-beepul-preobrazovan-v-ao/", "quote": "Компания Beelab, оператор платежного сервиса Beepul, преобразована в акционерное общество.", "checked": "2026-11-12"}]
+    },
+    {
+      "id": "universal-vivod",
+      "candidate": "Unired",
+      "confidence": "medium",
+      "lines": [{"operator": "UNIVERSAL BANK VIVOD, UZ", "receipts": 13}],
+      "why_not_verified": "The line names only Universalbank and a withdrawal. Unired is that bank's transfer app, and the owner's own confirmed notes on 5 of the 13 receipts name Unired; the line itself does not.",
+      "sources": [{"url": "https://unired.uz/en/about", "quote": "Unired is an official financial app created by JSCB Universalbank in 2021.", "checked": "2026-11-12"}]
+    },
+    {
+      "id": "hamkor-bank",
+      "candidate": "Hamkor",
+      "confidence": "medium",
+      "lines": [{"operator": "Hamkor Bank", "receipts": 3, "note": "two of the three already carry a stored 'Hamkor' of unknown origin"}],
+      "why_not_verified": "The bank's name alone, read off a picture or free text and not a gateway line.",
+      "sources": [{"url": "https://hamkorbank.uz/", "quote": "Скачайте приложение «Hamkor»", "checked": "2026-11-12"}]
+    },
+    {
+      "id": "cut-mavrid",
+      "candidate": "Mavrid",
+      "confidence": "medium-high",
+      "lines": [{"operator": "UZCARD P2P HUMO MAVR", "receipts": 2}],
+      "why_not_verified": "The app's name is cut at 20 characters (MAVR…). Mavrid is the only application in the dictionary that starts so, but a cut word is not a name.",
+      "sources": [{"url": "https://mkbank.uz/en/private/remote-banking/mobile-app/", "quote": "\"Mavrid\" is mobile application of Mkbank", "checked": "2026-11-12"}]
+    },
+    {
+      "id": "cut-paynet",
+      "candidate": "Paynet",
+      "confidence": "medium-high",
+      "lines": [{"operator": "UZC OTHERS TO H PAYN", "receipts": 1}],
+      "why_not_verified": "The name is cut at 20 characters (PAYN…); the full line 'UZCARD OTHERS TO HUMO PAYNET NEW' is Paynet.",
+      "sources": [{"url": "https://paynet.uz/en/about-us", "quote": "In collaboration with Halk Bank, a remote banking service system was implemented", "checked": "2026-11-12"}]
+    },
+    {
+      "id": "xazna-paynet",
+      "candidate": "Xazna or Paynet",
+      "confidence": "unresolved",
+      "lines": [{"operator": "XAZNA PAYNET TOLOV>T", "receipts": 2}],
+      "why_not_verified": "The line names two applications of the dictionary; the detector reports it as ambiguous and writes nothing.",
+      "sources": []
+    },
+    {
+      "id": "atto",
+      "candidate": "ATTO",
+      "confidence": "low-medium",
+      "prefixes": ["OOO ATTO TOLOV"],
+      "lines": [],
+      "why_not_verified": "A merchant line with an address that carries the ATTO brand (1 receipt). ATTO is the transport-fare operator and also an app; whether the debit was a card tap, a top-up in the app or a ticket cannot be told.",
+      "sources": [{"url": "https://www.atto.uz/uz/about", "quote": "“ATTO” savdo belgisining huquqiy egasi hamda O‘zbekiston Respublikasida yo‘l haqi uchun avtomatlashtirilgan to‘lov tizimining operatori hisoblanadi.", "checked": "2026-11-12"}]
+    }
+  ],
+  "not_an_application": [
+    {
+      "id": "card-to-card",
+      "category": "payment_processing",
+      "prefixes": ["UZCARD TO VISA", "HUMO TO VISA", "VISA TO UZCARD", "CONV MC TO HUMO", "HUMO TO MC"],
+      "receipts": 192,
+      "finding": "A generic transfer between a national card and an international one. At least eight unrelated providers offer it (Unired, Payme, Agrobank Mobile, TBC, Kapitalbank, Infinbank, SQB, Milliy) and no page documents who prints the line. The application cannot be told from the receipt.",
+      "sources": [
+        {"url": "https://uznews.uz/ru/news/80350", "quote": "В приложении payme появилась возможность переводить деньги с карт Humo и Uzcard на локальные карты Visa и наоборот с помощью сервиса Visa Direct.", "checked": "2026-11-12"},
+        {"url": "https://unired.uz/ru/blog/uzcard-humo-visa-kartaga-komissiyasiz-pul-otkazma", "quote": "Unired позволяет держателям карт Uzcard и Humo переводить деньги напрямую на любую карту Visa любого банка Узбекистана.", "checked": "2026-11-12"}
+      ]
+    },
+    {
+      "id": "nbu-card-credit",
+      "category": "bank_operation",
+      "prefixes": ["MILLIY BANK PK KIRIM"],
+      "receipts": 97,
+      "finding": "An incoming credit to a card processed by the National Bank (KIRIM: incoming). It lacks the app markers of the Milliy lines. The 12 receipts that already carry 'Milliy 2.0' got it from an earlier automatic guess; they are not changed and are listed for the owner.",
+      "sources": [{"url": "https://nbu.uz/en/milliy", "quote": "JSC \"National Bank of Uzbekistan\". License of the Central Bank of Uzbekistan No. 22", "checked": "2026-11-12"}]
+    },
+    {
+      "id": "aab-office",
+      "category": "bank_office",
+      "prefixes": ["OPERU ASIA ALLIANCE BANK", "ASIA ALLIANCE BANK A", "TOSHKENT SH ASIA A"],
+      "receipts": 39,
+      "finding": "ОПЕРУ is the bank's Operations Department (branch code 01095), not an application. No third-party app is publicly tied to it.",
+      "sources": [{"url": "https://cbu.uz/ru/credit-organizations/banks/exchange-offices/180503/", "quote": "ASIA ALLIANCE BANK — ОПЕРУ АКБ ASIA ALLIANCE BANK", "checked": "2026-11-12"}]
+    },
+    {
+      "id": "kapitalbank-offices",
+      "category": "bank_office",
+      "prefixes": ["KAPITALBANK ATB", "KAPITALBANK YAGONA"],
+      "receipts": 20,
+      "finding": "Branch and department names of Kapitalbank (Mirzo Ulug'bek, Yashnobod, operations, Yagona). Nothing public ties them to an application.",
+      "sources": [{"url": "https://bank.uz/uz/branches_atms/tags/kapitalbank_branches", "quote": "Kapitalbank Mirzo Ulug'bek filiali … “Kapitalbank”ning Yashnobod filiali … Operatsiya departamenti", "checked": "2026-11-12"}]
+    },
+    {
+      "id": "bank-offices-other",
+      "category": "bank_office",
+      "prefixes": ["GARANT BANK AJ", "URTACHIRCHIK AT HALK", "BUSTONLIK BXO", "GAZALKENT BXO", "ATB QQB GAZALKENT", "AT KHALK BANKI YAKKASAROY", "01041OPERATSIONNOE", "KOMISSIYA ZA OTK PK"],
+      "exact": ["SNJATIE NALICHNIH", "OPLATA", "HUMO"],
+      "receipts": 16,
+      "finding": "Bank offices and service points (BXO: banking services office), a bank fee, a cash withdrawal and bare words such as 'oplata' or the payment system's own name. None names an application. One of them carries a wrong inactive suggestion ('Humans') from the earlier automatic pass.",
+      "sources": []
+    },
+    {
+      "id": "transport-fare",
+      "category": "merchant",
+      "prefixes": ["TRANSPORT TOLOV"],
+      "receipts": 27,
+      "finding": "A public-transport fare: 22 of the 27 are 1 700 UZS, the contactless fare of the Tashkent metro and buses. A card tap needs no application.",
+      "sources": [{"url": "https://uzmetro.uz/uz/tolov-usullari", "quote": "kontaktsiz to'lov orqali metro va avtobusda to'lov - 1,700 so'm", "checked": "2026-11-12"}]
+    },
+    {
+      "id": "government",
+      "category": "government_payment",
+      "prefixes": ["SHTRAF I GOSUSLUGI", "GNK CASHBACK", "SOLIQ SERVIS ECP"],
+      "receipts": 7,
+      "finding": "Fines and public services (no single service uses this name), the Tax Committee's 1 % receipts cashback paid to the card, and the electronic-signature fee. None names an application.",
+      "sources": [{"url": "https://gov.uz/ru/soliq/sections/view/23120", "quote": "потребители могут получить кешбэк в размере 1%", "checked": "2026-11-12"}]
+    },
+    {
+      "id": "merchants-by-name",
+      "category": "merchant",
+      "prefixes": ["ANGLESEY FOOD", "FATH OIL", "GROSS SUG URTA KOMPANIYASI", "BLOOMSHOP", "ELEKSIR"],
+      "receipts": 10,
+      "finding": "Short merchant lines without an address: a restaurant operator, a fuel station, an insurance company, a shop and a store terminal (store and terminal codes). Read as merchants by their form; not researched further, and none names an application.",
+      "sources": []
+    },
+    {
+      "id": "streetpark",
+      "category": "merchant",
+      "prefixes": ["OOO STREETPARK"],
+      "receipts": 9,
+      "finding": "The technical operator of Tashkent's paid street parking. Cards are taken in the Poytaxt Parking app, at terminals and on the web portal alike, so the line names the merchant and not an application.",
+      "sources": [{"url": "https://poytaxtparking.uz/ru/public_offer", "quote": "Управление платными парковками осуществляется ООО «StreetPark Systems» как Техническим оператором", "checked": "2026-11-12"}]
+    }
+  ],
+  "existing_dictionary_review": {
+    "note": "The owner's 70 active lines were checked against official sources. Every application exists. Nothing below is changed by this work: these are the owner's own entries and stored values, listed for the owner to decide.",
+    "confirmed_applications": ["Milliy 2.0 (NBU; store title)", "MyUztelecom (Uzbektelecom; offers card transfers)", "Tenge24 (Tenge Bank)", "Xazna (Xalq Banki)", "Davr Mobile (Davr Bank)", "Hamkor (Hamkorbank)", "OQ (Unitel / Beeline)", "Paynet (JSC Paynet; Halk Bank partnership confirmed)", "Mavrid (Mikrokreditbank)", "Agrobank (Agrobank Mobile)", "Asakabank", "Beepul (Unitel / Beeline)", "Chakanapay (Agrobank)", "PayWay", "Payme (TBC group)", "UzumBank", "Uzum (Uzum Market, a separate product)", "SQB (SQB Mobile)", "Яндекс (the line itself names YANDEXPLUS)"],
+    "for_the_owner": [
+      {"item": "Joyda and SQB", "finding": "One app today: JOYDA was renamed SQB MOBILE on 13.11.2024.", "source": "https://sqb.uz/press-center/ads-ru/sqb-mobile-obnovlennoe-prilozhenie-dlya-udobnogo-onlayn-bankinga/"},
+      {"item": "SmartBank", "finding": "The bank was renamed Open Bank in 2025; the app is now Openbank. New lines may read OPENBANK.", "source": "https://openbank.uz/ru/about/investors"},
+      {"item": "UPAY … → Humans", "finding": "UPay (Maroqand) joined the Humans group in 2022 and stayed a separate app; only 'DAVR UPAY HUMANS …' names Humans itself.", "source": "https://www.uzdaily.uz/en/upay-payment-service-will-become-part-of-the-humans-fintech-ecosystem/"},
+      {"item": "TOSHKENT SH., AT KHALK BANKI BOSH AMALIY → Paynet", "finding": "Xalq Banki is Paynet's partner bank and also runs xazna: on public data the head-office line cannot be told apart between the two (40 receipts).", "source": "https://paynet.uz/en/details"},
+      {"item": "UZCARD P2P → Agrobank; UZCARD PLYUS P2P → Joyda; NEW DBO UZKART-HUMO → Tenge24; PSP P2P AKSIYA → MyUztelecom", "finding": "The lines carry no word of the bank or app: owner knowledge that cannot be confirmed publicly. PSP (Payment System Platform) lost its licence on 31.07.2024.", "source": "https://www.spot.uz/ru/2024/07/31/payment-system-platform/"}
+    ],
+    "stored_values_for_review": [
+      {"operator": "MILLIY BANK PK KIRIM, UZ", "stored": "Milliy 2.0", "receipts": 12, "finding": "see not_an_application / nbu-card-credit"},
+      {"operator": "OOO UZUM MARKET …, Uzum Market", "stored": "UzumBank", "receipts": 4, "finding": "the owner's own example files Uzum Market under Uzum"},
+      {"operator": "HUMOCARD, HUMOCARDBOT PREMIUM", "stored": "Humans", "receipts": 2, "finding": "the payment system's bot, not the Humans app"},
+      {"operator": "TBC PEREVOD SO SCHET", "stored": "TBC", "receipts": 3, "finding": "plausible, see needs_owner_review / tbc"},
+      {"operator": "Hamkor Bank", "stored": "Hamkor", "receipts": 2, "finding": "plausible, see needs_owner_review / hamkor-bank"}
+    ],
+    "inactive_suggestions": "95 inactive lines written by the optional AI on 2026-05-23 and 2026-07-12 were never reviewed. Some are wrong (a telecom operator under a payment app, a bank service office under Humans, Click under Paynet, Uzum Market under UzumBank). They are ignored by the matcher and are not activated or deleted by this work."
+  }
+}

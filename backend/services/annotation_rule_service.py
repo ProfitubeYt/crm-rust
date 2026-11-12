@@ -73,6 +73,12 @@ DETAILS_RECENT_AGREE = int(os.getenv("ANNOTATION_DETAILS_RECENT_AGREE", "3"))
 #: What it needs to be mentioned as a suggestion: about 86 right in 100.
 DETAILS_SUGGEST_SUPPORT = 3
 
+#: How old the note rules may grow before the background pass relearns them, in
+#: hours. 0 (the default) leaves relearning to a person: the first relearning on
+#: a database also lets `fill_defaults` write notes into old receipts, and that
+#: is done once, with a reviewed manifest and a backup, not by a timer.
+DETAILS_RULES_REFRESH_HOURS = float(os.getenv("ANNOTATION_DETAILS_RULES_REFRESH_HOURS", "0"))
+
 #: Separates the parts of a details key. A normalized operator key holds only
 #: letters, digits and single spaces, so it can never contain this.
 _DETAILS_KEY_SEPARATOR = " | "
@@ -325,6 +331,35 @@ def recompute(
 # --------------------------------------------------------------------------
 # Lookup + apply
 # --------------------------------------------------------------------------
+
+def refresh_details_rules(db: Session, *, max_age_hours: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    """Relearn the note rules once they are older than `max_age_hours`.
+
+    New receipts get their notes from the rules as they stand, so rules that
+    are never relearned keep writing a note the confirmed receipts have since
+    left. Relearning on a schedule switches such a rule off (and brings in the
+    patterns people confirmed meanwhile) without anyone pressing a button.
+    Only the rules change here: a note already written is taken back only by
+    `apply_rules(revalidate=True)`, on request.
+
+    Returns the `recompute` summary, or None when the rules are fresh enough or
+    the refresh is off (`ANNOTATION_DETAILS_RULES_REFRESH_HOURS`, 0 by default).
+    """
+    from sqlalchemy import func
+
+    hours = DETAILS_RULES_REFRESH_HOURS if max_age_hours is None else max_age_hours
+    if hours <= 0:
+        return None
+    latest = (
+        db.query(func.max(AnnotationRule.computed_at))
+        .filter(AnnotationRule.field == "details")
+        .filter(AnnotationRule.operator_key.contains(_DETAILS_KEY_SEPARATOR))
+        .scalar()
+    )
+    if latest is not None and (datetime.utcnow() - latest).total_seconds() < hours * 3600:
+        return None
+    return recompute(db, fields=("details",))
+
 
 def _load_rules(db: Session) -> Dict[str, Dict[str, str]]:
     """`{key: {field: value}}` for every enabled rule.
@@ -670,6 +705,62 @@ def details_report(db: Session) -> Dict[str, Any]:
         else:
             report["unknown_origin"] += 1
     return report
+
+
+def details_plan(db: Session) -> Dict[str, List[Dict[str, Any]]]:
+    """Receipt by receipt, what a pass over «Подробности» would write or only suggest.
+
+    The same decisions as `details_report`, kept with the receipt they belong
+    to: `fills` is what `recompute` followed by `apply_rules` writes into empty
+    notes, `suggestions` is what it reports and never writes. Reads only and
+    writes nothing. The result names receipts and notes: it belongs in a
+    protected change manifest, never in a log or a ticket.
+    """
+    histories = _details_histories(db)
+    decisions = {key: details_decision(history) for key, history in histories.items()}
+    pinned = {
+        key: value
+        for key, value in db.query(AnnotationRule.operator_key, AnnotationRule.value)
+        .filter(AnnotationRule.field == "details")
+        .filter(AnnotationRule.is_pinned.is_(True))
+        .filter(AnnotationRule.is_enabled.is_(True))
+    }
+    locks = _locked_ranges(db)
+    nothing = DetailsDecision(None, "none", "no_confirmed_similar", 0, 0)
+    plan: Dict[str, List[Dict[str, Any]]] = {"fills": [], "suggestions": [], "locked": []}
+    rows = db.query(
+        Transaction.id, Transaction.operator_raw, Transaction.card_last_4, Transaction.transaction_type,
+        Transaction.transaction_date, Transaction.annotation_details, Transaction.annotation_details_src,
+    ).filter(Transaction.operator_raw.isnot(None)).order_by(Transaction.id)
+    for tx_id, operator_raw, card, kind, when, note, source in rows.yield_per(1000):
+        if source in ("manual", "import") or (note or "").strip():
+            continue
+        pinned_note = pinned.get(_normalized_key(operator_raw))
+        if pinned_note:
+            key = _normalized_key(operator_raw)
+            decision = DetailsDecision(pinned_note, "confident", "pinned_rule", 0, 0)
+        else:
+            key = details_key(operator_raw, card, kind)
+            decision = decisions.get(key, nothing)
+        if decision.tier == "none":
+            continue
+        entry = {
+            "id": int(tx_id),
+            # The rule that speaks for this receipt: taking the note back means stopping that rule too.
+            "key": key,
+            "before": {"details": None, "src": source},
+            "after": {"details": decision.value, "src": "rule"},
+            "reason": decision.reason,
+            "support": decision.support,
+            "total": decision.total,
+        }
+        if decision.tier == "suggestion":
+            plan["suggestions"].append(entry)
+        elif when and any(start <= when.date() <= end for start, end in locks):
+            plan["locked"].append(entry)
+        else:
+            plan["fills"].append(entry)
+    return plan
 
 
 def details_report_lines(report: Dict[str, Any]) -> List[str]:

@@ -361,3 +361,70 @@ def test_the_dry_run_agrees_with_what_apply_then_does(db_session):
     after = R.details_report(db_session)
     assert (after["would_fill"], after["rule_would_retract"], after["rule_would_change"]) == (0, 0, 0)
     assert after["rule_supported"] == 4
+
+
+# --- the plan behind a change manifest -----------------------------------------------------
+
+def test_the_plan_names_exactly_the_receipts_apply_then_fills(db_session):
+    _confirmed(db_session, 5, "internal top-up")
+    _confirmed(db_session, 3, "rare", first=20, operator="RARE GATE, UZ")
+    empty = [
+        _receipt(db_session, 30), _receipt(db_session, 31),
+        _receipt(db_session, 32, card="2222"), _receipt(db_session, 33, operator="RARE GATE, UZ"),
+    ]
+    key = "GATE PAY TO VISA UZ | ПК 1111 | DEBIT"
+
+    plan = R.details_plan(db_session)
+    assert [(item["id"], item["after"], item["key"]) for item in plan["fills"]] == [
+        (empty[0].id, {"details": "internal top-up", "src": "rule"}, key),
+        (empty[1].id, {"details": "internal top-up", "src": "rule"}, key),
+    ]
+    # Weaker evidence is named apart and is never part of what gets written.
+    assert [(item["id"], item["reason"]) for item in plan["suggestions"]] == [(empty[3].id, "few_confirmed")]
+    report = R.details_report(db_session)
+    assert (len(plan["fills"]), len(plan["suggestions"])) == (report["would_fill"], sum(report["suggestions"].values()))
+    assert db_session.query(Transaction).filter(Transaction.annotation_details_src == "rule").count() == 0
+
+    assert _learn_and_apply(db_session)["updated"] == 2
+    written = {t.id for t in db_session.query(Transaction).filter(Transaction.annotation_details_src == "rule")}
+    assert written == {empty[0].id, empty[1].id}
+    assert R.details_plan(db_session)["fills"] == []
+
+
+# --- relearning on a schedule ---------------------------------------------------------------
+
+def test_relearning_is_off_until_it_is_asked_for(db_session):
+    _confirmed(db_session, 5, "internal top-up")
+    assert R.DETAILS_RULES_REFRESH_HOURS == 0
+    assert R.refresh_details_rules(db_session) is None
+    assert db_session.query(AnnotationRule).count() == 0
+    late = _receipt(db_session, 50)
+    R.fill_defaults(db_session)
+    db_session.refresh(late)
+    assert late.annotation_details is None
+
+
+def test_scheduled_relearning_keeps_the_rules_with_the_confirmed_receipts(db_session):
+    _confirmed(db_session, 5, "internal top-up")
+    assert R.refresh_details_rules(db_session, max_age_hours=6)["created"] == 1
+    # Fresh rules are left alone, however often the background pass comes by.
+    assert R.refresh_details_rules(db_session, max_age_hours=6) is None
+    first = _receipt(db_session, 50)
+    R.fill_defaults(db_session)
+    db_session.refresh(first)
+    assert (first.annotation_details, first.annotation_details_src) == ("internal top-up", "rule")
+
+    # People then write another note three times running: the pattern has moved on.
+    _confirmed(db_session, 3, "to the reserve card", first=60)
+    rule = db_session.query(AnnotationRule).filter_by(field="details").one()
+    rule.computed_at = datetime.utcnow() - timedelta(hours=7)
+    db_session.commit()
+    assert R.refresh_details_rules(db_session, max_age_hours=6)["disabled"] == 1
+
+    late = _receipt(db_session, 70)
+    R.fill_defaults(db_session)
+    db_session.refresh(late)
+    db_session.refresh(first)
+    # The outdated note stops reaching new receipts. The one already written stays until --revalidate.
+    assert late.annotation_details is None
+    assert first.annotation_details == "internal top-up"

@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session
 from database.models import Transaction
 from services.application_detection import (
     DETECTED_SOURCES,
+    ApplicationDetector,
     Detection,
     detector_for,
     has_provenance,
@@ -74,6 +75,9 @@ class BackfillReport:
     #: Receipts with any application at all, before this run.
     already_set: int = 0
     total: int = 0
+    #: Every write this run made or would make, receipt by receipt, with the
+    #: value it replaces: what a change manifest and a targeted undo need.
+    changes: List[Dict[str, object]] = field(default_factory=list)
 
     @property
     def unmatched(self) -> int:
@@ -91,9 +95,14 @@ def backfill_applications(
     set_p2p: bool = False,
     limit: Optional[int] = None,
     revalidate: bool = False,
+    detector: Optional[ApplicationDetector] = None,
 ) -> BackfillReport:
-    """Run the detector over every receipt; write only when ``apply``."""
-    detector = detector_for(db, fresh=True)
+    """Run the detector over every receipt; write only when ``apply``.
+
+    ``detector`` is for a dry run that previews dictionary lines not stored yet
+    (`OperatorMapper.preview_rows`); the default reads the dictionary afresh.
+    """
+    detector = detector or detector_for(db, fresh=True)
     locks = period_lock_service.get_active_locks(db)
     provenance = has_provenance(db)
 
@@ -126,6 +135,8 @@ def backfill_applications(
     detections: Dict[str, Detection] = {}
     # id -> (application or None, source, confidence, is_p2p to set or None)
     writes: Dict[int, Tuple[Optional[str], Optional[str], Optional[float], Optional[bool]]] = {}
+    # id -> (stored value or None, its source, why it changes): the other half of a change.
+    before: Dict[int, Tuple[Optional[str], Optional[str], str]] = {}
 
     for tx_id, operator_raw, stored, source, is_p2p, when in query.all():
         report.total += 1
@@ -150,6 +161,7 @@ def backfill_applications(
                 report.stale += 1
                 if revalidate and not locked:
                     report.revalidated += 1
+                    before[int(tx_id)] = (stored, source, f"revalidated:{detection.reason}")
                     writes[int(tx_id)] = (detection.application, detection.source, detection.confidence, None)
             elif detection.found and detection.application != stored:
                 if source == "ai":
@@ -157,6 +169,7 @@ def backfill_applications(
                     report.stale += 1
                     if revalidate and not locked:
                         report.revalidated += 1
+                        before[int(tx_id)] = (stored, source, f"revalidated:{detection.reason}")
                         writes[int(tx_id)] = (detection.application, detection.source, detection.confidence, None)
                 else:
                     report.disagreements[(stored, detection.application)] += 1
@@ -182,7 +195,19 @@ def backfill_applications(
             p2p = None
         if p2p is not None:
             report.p2p_changed += 1
+        before[int(tx_id)] = (None, source, detection.reason)
         writes[int(tx_id)] = (detection.application, detection.source, detection.confidence, p2p)
+
+    report.changes = [
+        {
+            "id": tx_id,
+            "before": {"application": before[tx_id][0], "src": before[tx_id][1]},
+            "after": {"application": application, "src": source, "confidence": confidence},
+            "reason": before[tx_id][2],
+            **({"is_p2p": p2p} if p2p is not None else {}),
+        }
+        for tx_id, (application, source, confidence, p2p) in sorted(writes.items())
+    ]
 
     if apply and writes:
         ids = sorted(writes)

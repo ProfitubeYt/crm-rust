@@ -8,7 +8,7 @@ import threading
 import time
 import unicodedata
 from dataclasses import dataclass
-from typing import Optional, List, Tuple, Dict
+from typing import Iterable, Optional, List, Tuple, Dict
 
 from sqlalchemy.orm import Session
 
@@ -132,6 +132,9 @@ class OperatorMapper:
 
     def __init__(self, db_session: Session):
         self.db_session = db_session
+        # Lines shown to this mapper only (see `preview_rows`): id -> form.
+        self._preview: List[Tuple[int, str, str, bool]] = []
+        self._preview_forms: Dict[int, OperatorForm] = {}
         # Initial load (uses shared cache).
         self.mappings_cache: List[Tuple[int, str, str, bool]] = _get_cached(db_session)
 
@@ -160,10 +163,27 @@ class OperatorMapper:
 
     def refresh_cache(self) -> None:
         """Reload cache from operator_reference (only active rows). Force = bypass TTL."""
-        self.mappings_cache = _get_cached(self.db_session, force=True)
+        self.mappings_cache = _get_cached(self.db_session, force=True) + self._preview
+
+    def preview_rows(self, rows: Iterable[Tuple[str, str, bool]]) -> None:
+        """Let this mapper alone see dictionary lines that are not stored yet.
+
+        The dry run of an import: `(operator_name, application_name, is_p2p)`
+        lines get negative ids, live in this instance and vanish with it. The
+        shared cache, and so every other mapper, is not touched.
+        """
+        for operator_name, application_name, is_p2p in rows:
+            form = operator_form(operator_name)
+            if not form.full or not (application_name or "").strip():
+                continue
+            ref_id = -(len(self._preview) + 1)
+            self._preview.append((ref_id, form.full, application_name.strip(), bool(is_p2p)))
+            self._preview_forms[ref_id] = form
+        stored = [item for item in self.mappings_cache if item[0] >= 0]
+        self.mappings_cache = stored + self._preview
 
     def _form_of(self, ref_id: int, pattern: str) -> OperatorForm:
-        form = _cache_forms.get(ref_id)
+        form = self._preview_forms.get(ref_id) or _cache_forms.get(ref_id)
         if form is None or form.full != pattern:
             # A cache handed over by hand: only the normalized pattern is known.
             form = OperatorForm(full=pattern, tokens=tuple(pattern.split()), cut=False)

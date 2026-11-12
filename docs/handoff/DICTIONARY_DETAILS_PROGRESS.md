@@ -31,10 +31,10 @@ Status words: **verified** = a check named here ran in this session and passed;
 
 | # | Milestone | State |
 |---|---|---|
-| 1 | «Описание» removed from the desktop table and the view panel; saved views migrate | **WIP** — `tbs-core` verified, `tbs-app` tests not yet run (see section 3) |
-| 2 | Dictionary: why it did not grow, full operator inventory, web research, verified import | in progress |
-| 3 | «Подробности»: recalculated dry-run, protected manifest, administrator procedure | in progress |
-| 4 | Ongoing processing: cache invalidation, review of unknown operators | not started |
+| 1 | «Описание» removed from the desktop table and the view panel; saved views migrate | code done, `tbs-core` and `tbs-app` tests **verified** (section 3); Windows not run |
+| 2 | Dictionary: why it did not grow, full operator inventory, web research, verified import | **WIP** — code and research file pushed; 17 lines **proposed**, none imported (section 4) |
+| 3 | «Подробности»: recalculated dry-run, protected manifest, administrator procedure | **WIP** — manifest and apply tool pushed; 59 fills **proposed**, none applied (section 4) |
+| 4 | Ongoing processing: cache invalidation, review of unknown operators | **WIP** — code and tests pushed (section 4) |
 
 ## 3. Milestone 1 — «Описание» (WIP)
 
@@ -49,6 +49,38 @@ Status words: **verified** = a check named here ran in this session and passed;
   A name the table never had is still refused, as before. `LAYOUT` stays 4.
 - **verified**: `cargo test -p tbs-core --locked` — 123 unit and 2 integration tests passed
   (Rust stable, Linux).
-- **not verified yet**: `cargo test -p tbs-app --features devtools` (needs the GTK/WebKit headers
-  of `desktop/tools/linux-dev.Dockerfile`; the image was still building when this was written).
-  Windows build, installer and a real Windows screen: not run in this session.
+- **verified**: `cargo test -p tbs-app --features devtools --locked` inside the image built from
+  `desktop/tools/linux-dev.Dockerfile` — 306 passed, 0 failed (run 09:24–09:45 UTC on the pushed
+  desktop code, commit `3e46811`).
+- **not verified**: Windows build, installer and a real Windows screen; Excel add-in on Windows.
+
+## 4. Milestones 2–4 — WIP checkpoint 2 (2026-11-12, about 10:10 UTC)
+
+Pushed as work in progress so that nothing is lost. **Everything below is proposed, nothing was
+written to production.** A full write-up with the operator accounting replaces this section.
+
+What is in the commit:
+
+- `backend/data/operator_dictionary/research_20261112.json` — the research registry: 12 verified
+  entries (17 dictionary lines), 11 entries for the owner's review, 9 groups that name no
+  application, and the review of the 70 existing active lines. Public names and sources only.
+- `backend/services/operator_dictionary_service.py`, `backend/scripts/operator_dictionary.py` — the
+  read-only import plan (`add`, `covered`, `exists`, conflicts that are never overwritten) and the
+  review of operators without an application; `GET /api/reference/review` shows the same review.
+- `backend/api/routes/reference.py` — creating, changing, deleting or importing a dictionary line
+  now drops the matcher's cache in that process.
+- `backend/scripts/build_change_manifest.py`, `backend/scripts/apply_change_manifest.py` — the
+  protected change manifest (reads only) and the administrator's verify / apply / rollback tool
+  with a per-record journal.
+- `backend/services/annotation_rule_service.py`, `backend/workers/celery_worker.py`,
+  `.env.example` — `details_plan` (receipt-level dry run) and relearning of the note rules on a
+  timer, **off by default** (`ANNOTATION_DETAILS_RULES_REFRESH_HOURS=0`).
+- `docs/handoff/ADMIN_EXECUTION_REQUEST_20261112.md` — the request to the administrator.
+
+State of the checks at this checkpoint:
+
+- **verified**: backend suite `pytest -q` — 1242 passed, 1 skipped; `backend/tools` tests — 2 passed.
+- **measured / proposed** (production, read-only, 1 938 receipts): 17 dictionary lines to add,
+  656 «Приложение» fills, 59 «Подробности» fills, 46 note suggestions that are never applied.
+- **not finished**: re-check of every research source against its page, the review of the apply
+  tool against the live schema, the operator accounting, the final report.
