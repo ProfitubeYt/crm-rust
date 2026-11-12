@@ -305,9 +305,10 @@ never while the new backend is up.
 taken back where it was given, in `/admin/`. In one statement, if the panel is not at hand:
 `q "UPDATE users SET time_role = NULL"` closes Time for everyone at their next request.
 
-**Clients.** The 2.0.3 client works against the new and the old server (seen in a window on
-Linux). A new client against a 2.0.3 server shows Checks and nothing else: it offers Time
-and administration only when the server says so (unit tests; not run in a window).
+**Clients.** The 2.0.3 client goes on working against the new server (seen in a window on
+Linux, receipts and the user list). A new client against a 2.0.3 server shows Checks and
+nothing else: it offers Time and administration only when the server says so (unit tests;
+not run in a window).
 
 **What is never a rollback:** restoring `before.dump`. It would lose the receipts, the
 annotations and the attendance recorded since.
