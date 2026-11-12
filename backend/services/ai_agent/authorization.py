@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from database.models import AccessScope, LockedPeriod, Transaction, User
 from services.period_lock_service import period_lock_service
 from services.user_service import build_permissions_snapshot
+from services.workspace_access import WORKSPACE_CHECKS, has_workspace
 
 
 class AgentAuthorizationError(ValueError):
@@ -265,6 +266,8 @@ def current_agent_authorization(db: Session, user_id: Any) -> AgentAuthorization
     if row is None or not row.is_active:
         raise AgentAuthorizationError("inactive_or_missing_actor")
     user = build_permissions_snapshot(row)
+    if not has_workspace(user, WORKSPACE_CHECKS):
+        raise AgentAuthorizationError("workspace_forbidden:checks")
     role = str(user.get("role") or "operator").lower()
     allowed_sources = None if role == "admin" else frozenset(_normalize_ints(user.get("allowed_sources")))
     folder_windows = () if role == "admin" else _scope_windows(db, _normalize_ints(user.get("allowed_folders")))

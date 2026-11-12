@@ -41,6 +41,7 @@ from services.auth_service import (
     verify_user_token,
 )
 from services.user_service import authenticate, build_permissions_snapshot
+from services.workspace_access import ALL_WORKSPACES, WORKSPACE_CHECKS, snapshot_workspaces
 from api.dependencies import get_effective_folder_scope_for_user
 from services.totp_service import verify_2fa_code
 from services.system_settings_service import is_totp_2fa_enabled
@@ -152,6 +153,21 @@ class UserInfoResponse(BaseModel):
     force_2fa: bool = False
     session_ttl_days: int = 7
     exp: Optional[int] = None
+    # What the Hub lists. Asked again by a running client, so a grant or a
+    # revocation shows up without signing in again.
+    workspaces: list[str] = Field(default_factory=list)
+    checks_access: bool = True
+    time_role: Optional[str] = None
+
+
+def _workspace_fields(user: Optional[dict]) -> Dict[str, Any]:
+    """The workspace part of a snapshot, in the Hub's order."""
+    granted = snapshot_workspaces(user)
+    return {
+        "workspaces": [name for name in ALL_WORKSPACES if name in granted],
+        "checks_access": WORKSPACE_CHECKS in granted,
+        "time_role": (user or {}).get("time_role"),
+    }
 
 
 async def get_current_user(authorization: Optional[str] = Header(None)):
@@ -1114,6 +1130,7 @@ async def get_current_user_info(user: dict = Depends(get_current_app_user)):
         force_2fa=bool(user.get("force_2fa")),
         session_ttl_days=int(user.get("session_ttl_days") or USER_SESSION_TTL_DEFAULT_DAYS),
         exp=user.get("exp"),
+        **_workspace_fields(user),
     )
 
 
@@ -1170,4 +1187,5 @@ async def get_entitlement(
         "allowed_tabs": (current_user or {}).get("allowed_tabs") or [],
         "permissions_version": int((current_user or {}).get("permissions_version") or 1),
         "checked_at": datetime.now(timezone.utc).isoformat(),
+        **_workspace_fields(current_user),
     }

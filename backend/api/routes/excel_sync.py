@@ -43,6 +43,7 @@ from services.root_access_config_service import (
     get_config_scopes, is_system_blocked, system_access_enforced,
 )
 from services.user_service import build_permissions_snapshot
+from services.workspace_access import WORKSPACE_CHECKS, has_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +137,9 @@ def _check_user(user: User) -> dict:
     if user.locked_until and _naive_utc(user.locked_until) > now:
         raise HTTPException(403, "user_locked")
     snapshot = build_permissions_snapshot(user)
+    # A workbook is a way into Checks; without the workspace there is none.
+    if not has_workspace(snapshot, WORKSPACE_CHECKS):
+        raise HTTPException(403, "workspace_forbidden:checks")
     if snapshot["role"] != "admin":
         if dependencies.access_expired_at(snapshot):
             raise HTTPException(403, "access_expired")

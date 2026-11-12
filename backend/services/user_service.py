@@ -13,6 +13,13 @@ from sqlalchemy.orm import Session
 from database.models import User
 from services.access_control_service import hash_password, verify_password
 from services.root_access_config_service import hash_password_argon2, verify_secret
+from services.workspace_access import (
+    WorkspaceError,
+    checks_access_of,
+    normalize_time_role,
+    time_role_of,
+    workspaces_of,
+)
 
 LOGIN_MAX_ATTEMPTS = int(os.getenv("USER_LOGIN_MAX_ATTEMPTS", "5"))
 LOGIN_LOCKOUT_MINUTES = int(os.getenv("USER_LOGIN_LOCKOUT_MINUTES", "15"))
@@ -159,7 +166,44 @@ def build_permissions_snapshot(user: User) -> Dict[str, Any]:
         "access_until": user.access_until.isoformat() if getattr(user, "access_until", None) else None,
         "access_note": getattr(user, "access_note", None),
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+        # Which workspaces the Hub opens for this account. Read from the row on
+        # every request, so a grant or a revocation needs no new token.
+        "checks_access": checks_access_of(user),
+        "time_role": time_role_of(user),
+        "workspaces": workspaces_of(user),
     }
+
+
+def ensure_admin_remains(
+    db: Session,
+    user: User,
+    *,
+    role: Optional[str] = None,
+    is_active: Optional[bool] = None,
+) -> None:
+    """Refuse a change that would leave the system without an active administrator.
+
+    Accounts are administered only by administrators, so losing the last one
+    closes account management to everybody for good. Asked by every path that
+    can demote or disable an account, the bot's commands included.
+    """
+    is_admin_now = str(user.role or "").strip().lower() == ROLE_ADMIN and bool(user.is_active)
+    if not is_admin_now:
+        return
+    stays_admin = str(role or user.role or "").strip().lower() == ROLE_ADMIN
+    stays_active = bool(user.is_active) if is_active is None else bool(is_active)
+    if stays_admin and stays_active:
+        return
+    # Row-locked, so two administrators removing each other at the same moment
+    # cannot both find the other one still there.
+    others = (
+        db.query(User)
+        .filter(User.role == ROLE_ADMIN, User.is_active.is_(True), User.id != user.id)
+        .with_for_update()
+        .all()
+    )
+    if not others:
+        raise UserServiceError("last_admin")
 
 
 def increment_permissions_version(user: User) -> None:
@@ -287,9 +331,15 @@ def create_user(
     is_active: bool = True,
     telegram_id: Optional[int] = None,
     telegram_username: Optional[str] = None,
+    checks_access: bool = True,
+    time_role: Optional[str] = None,
 ) -> User:
     username_norm = _validate_username(username)
     role_norm = _validate_role(role)
+    try:
+        time_role_norm = normalize_time_role(time_role)
+    except WorkspaceError as exc:
+        raise UserServiceError(str(exc)) from exc
 
     if get_user_by_username(db, username_norm):
         raise UserServiceError("username_exists")
@@ -325,6 +375,10 @@ def create_user(
         permissions_version=1,
         telegram_id=telegram_id,
         telegram_username=(telegram_username or "").strip()[:255] or None,
+        # A caller that says nothing creates a Checks account, which is what
+        # every account was before workspaces; Time is never implied.
+        checks_access=bool(checks_access),
+        time_role=time_role_norm,
     )
     db.add(user)
     db.commit()
@@ -374,8 +428,11 @@ def update_user(
     access_until: Optional[Any] = None,
     access_note: Optional[str] = None,
     password: Optional[str] = None,
+    checks_access: Optional[bool] = None,
+    time_role: Optional[str] = None,
 ) -> User:
     new_role = _validate_role(role) if role is not None else (user.role or ROLE_OPERATOR)
+    ensure_admin_remains(db, user, role=new_role, is_active=is_active)
 
     permissions_changed = False
 
@@ -412,6 +469,21 @@ def update_user(
 
     if access_note is not None:
         user.access_note = (str(access_note).strip()[:200] or None)
+
+    # Workspace grants deliberately leave permissions_version alone. The row is
+    # read on every request, so the change is already in force for a running
+    # client, and bumping the version would sign the person out of the other
+    # workspace and cut their Excel connections for no gain.
+    if checks_access is not None:
+        user.checks_access = bool(checks_access)
+
+    if time_role is not None:
+        # An empty string takes the Time workspace away, the way an empty
+        # access_until clears the date: distinct from "not mentioned".
+        try:
+            user.time_role = normalize_time_role(time_role)
+        except WorkspaceError as exc:
+            raise UserServiceError(str(exc)) from exc
 
     if any(value is not None for value in (allowed_tabs, role)):
         tabs = _normalize_tabs(allowed_tabs if allowed_tabs is not None else _json_list(user.allowed_tabs), role=new_role)
@@ -465,6 +537,7 @@ def unlock_user(db: Session, user: User) -> User:
 def deactivate_user(db: Session, user: User) -> User:
     if not user.is_active:
         return user
+    ensure_admin_remains(db, user, is_active=False)
     user.is_active = False
     increment_permissions_version(user)
     db.commit()

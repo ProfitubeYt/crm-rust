@@ -34,6 +34,11 @@ from services.root_access_config_service import (
 )
 from services.user_service import build_permissions_snapshot
 from services.system_settings_service import is_launch_gate_enabled, is_otp_enabled
+from services.workspace_access import (
+    has_workspace,
+    required_workspace_for_path,
+    workspace_denied_detail,
+)
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -201,6 +206,11 @@ async def get_current_user_optional(
     if token_version != db_version:
         return None
     snapshot = build_permissions_snapshot(row)
+    # An account without the workspace this path belongs to is nobody here:
+    # the endpoint answers as it would to an anonymous caller.
+    workspace = required_workspace_for_path(conn.url.path)
+    if workspace and not has_workspace(snapshot, workspace):
+        return None
     snapshot["token_kind"] = "app_user"
     snapshot["exp"] = payload.get("exp")
     snapshot["phone"] = payload.get("phone")
@@ -282,6 +292,13 @@ async def get_current_user(
     if token_version != db_version:
         raise HTTPException(status_code=401, detail="permissions_outdated")
     snapshot = build_permissions_snapshot(row)
+    # Workspace access is judged here, for every endpoint at once, from the row
+    # just read: a revocation reaches a running client with its next request.
+    # A 403 and not a 401, so the client keeps its session for the workspace
+    # it still has.
+    workspace = required_workspace_for_path(conn.url.path)
+    if workspace and not has_workspace(snapshot, workspace):
+        raise HTTPException(status_code=403, detail=workspace_denied_detail(workspace))
     snapshot["token_kind"] = "app_user"
     snapshot["exp"] = payload.get("exp")
     snapshot["phone"] = payload.get("phone")
