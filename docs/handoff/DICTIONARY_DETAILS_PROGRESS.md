@@ -157,11 +157,21 @@ providers offer the same transfer), `MILLIY BANK PK KIRIM` (an incoming credit),
 Asia Alliance Bank, Kapitalbank and others, transport fares, fines and tax cashback, a parking
 operator and a few merchants.
 
-**The owner's 70 existing lines** were checked too: every application exists. Nothing is changed;
-the research file lists what the owner may want to look at (Joyda is SQB Mobile now, SmartBank is
-Openbank, UPay is not Humans, four lines carry no word of their application). Stored values that
-differ from the evidence are reported, never overwritten: 4 × UzumBank where the line says Uzum
-Market, 1 × Humans on the HUMO Card bot, 12 × Milliy 2.0 on the incoming-credit line.
+**The owner's 70 existing lines** were checked too, and a second independent check of the same 20
+applications agreed: every application exists. Nothing is changed; the research file lists what the
+owner may want to look at:
+
+- Joyda is SQB Mobile since 13.11.2024, so the dictionary holds one app under two names; SmartBank
+  is Openbank since 2025; the bank now calls Davr Mobile «DavrMobile 2.0».
+- UPay is a separate app from Humans, and a court declared its owner bankrupt on 2 February 2026.
+- Four lines carry no word of their application (`UZCARD P2P`, `UZCARD PLYUS P2P`, `NEW DBO
+  UZKART-HUMO`, `PSP P2P AKSIYA`) and the Xalq Banki head-office line cannot be told apart between
+  Paynet and xazna: they rest on the owner's knowledge.
+- «Яндекс» comes from the owner's own example through a brand rule of 2.0.2: the line itself reads
+  `YANDEXPLUS`. Nothing public ties Octobank to Yandex beyond that line.
+
+Stored values that differ from the evidence are reported, never overwritten: 4 × UzumBank where the
+line says Uzum Market, 1 × Humans on the HUMO Card bot, 12 × Milliy 2.0 on the incoming-credit line.
 
 ### 4.4 Imported
 
