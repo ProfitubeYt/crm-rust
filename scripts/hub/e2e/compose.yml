@@ -1,0 +1,122 @@
+# A disposable stand-in for the server, for end-to-end checks of the Hub: the
+# service names of docker-compose.yml, made-up secrets from e2e.env, data that
+# dies with the containers. Only run.sh uses it, together with
+# deploy/time-hub/docker-compose.time.yml exactly as the server would.
+#
+# The default network is internal: the backend, Time and the stand-in for
+# Telegram cannot reach the internet, so nothing here can touch the real
+# Telegram or the real server. Caddy alone has a second network, for the port
+# published on this machine.
+#
+# The backend runs from the Python image and requirements pinned in
+# backend/Dockerfile, without the TDLib that image compiles: receipts from
+# Telegram are not part of these checks.
+name: hub-e2e
+
+x-backend: &backend
+  image: ${E2E_PYTHON_IMAGE}
+  user: "${E2E_UID}:${E2E_GID}"
+  working_dir: /app
+  environment: &backend-env
+    HOME: /tmp
+    PYTHONDONTWRITEBYTECODE: "1"
+    PYTHONPATH: /app
+    DATABASE_URL: postgresql://hub:e2e-only@postgres:5432/hub_e2e
+    REDIS_URL: redis://:e2e-only@redis:6379/0
+    JWT_SECRET: e2e-only-jwt-secret-0123456789abcdef0123456789
+    TELEGRAM_API_ID: "1"
+    TELEGRAM_API_HASH: e2e-only
+    TDLIB_DATABASE_DIR: /tmp/tdlib
+    ROOT_ACCESS_SERVER_CONFIG_PATH: /run/hub-e2e/root-access.server.json
+    SYSTEM_ACCESS_ENFORCED: "true"
+    SCOPES_MANAGED_BY_CONFIG: "false"
+    SYSTEM_ACCESS_TOKEN: ${SYSTEM_ACCESS_TOKEN}
+    TIMELIST_INTERNAL_URL: http://timelist:8080
+    TIMELIST_API_TOKEN: ${TIMELIST_API_TOKEN}
+    TIME_HUB_KEY: ${TIME_HUB_KEY}
+    TIME_BOT_CHAT_ID: ${TIME_BOT_CHAT_ID}
+  volumes:
+    - ${E2E_BACKEND_DIR:-./backend}:/app:ro
+    - ./scripts/hub/e2e:/e2e:ro
+    - ./deploy:/deploy:ro
+    - hub-backend-venv:/venv:ro
+    - run:/run/hub-e2e
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: hub
+      POSTGRES_PASSWORD: e2e-only
+      POSTGRES_DB: hub_e2e
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hub -d hub_e2e"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --requirepass e2e-only --save ""
+
+  # One-off commands: migrations, seeding, the checks themselves.
+  tool:
+    <<: *backend
+    profiles: ["tool"]
+    entrypoint: ["/venv/bin/python"]
+
+  backend:
+    <<: *backend
+    # The command line of docker-compose.yml.
+    command: /venv/bin/python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips=*
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "/venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+
+  # The rest of this service is deploy/time-hub/docker-compose.time.yml.
+  timelist:
+    environment:
+      TELEGRAM_API_BASE: http://faketg:8081
+    depends_on:
+      - faketg
+
+  faketg:
+    image: ${E2E_PYTHON_IMAGE}
+    environment:
+      FAKE_TG_TOKEN: ${TIME_BOT_TOKEN}
+    volumes:
+      - ./scripts/hub/e2e:/e2e:ro
+    command: python -u /e2e/fake_telegram.py
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      SYSTEM_ACCESS_TOKEN: ${SYSTEM_ACCESS_TOKEN}
+    volumes:
+      - run:/run/hub-e2e:ro
+    # deploy/Caddyfile with the site address replaced; see prepare.py.
+    command: caddy run --config /run/hub-e2e/Caddyfile --adapter caddyfile
+    ports:
+      - "127.0.0.1:${E2E_PORT:-18080}:80"
+    networks:
+      - default
+      - edge
+
+networks:
+  default:
+    internal: true
+  edge: {}
+
+volumes:
+  run:
+  hub-backend-venv:
+    external: true

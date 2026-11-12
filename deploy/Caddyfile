@@ -14,6 +14,11 @@
 
     reverse_proxy /health backend:8000
 
+    # CRM administration panel: three static files. Its data comes from
+    # /api/admin/* above, which authorises every call.
+    @admin path /admin /admin/*
+    reverse_proxy @admin backend:8000
+
     # Frontend SPA shell
     reverse_proxy frontend:80
 }

@@ -86,21 +86,29 @@ pub struct QrStatus {
     pub user: Option<UserInfo>,
 }
 
+/// Another sign-in, or a sign-out, finished while this one was on its way.
+/// Its tokens are not kept, so its answer must not read as a sign-in either:
+/// the window would name one account while the session belonged to another.
+fn overtaken() -> ApiError {
+    ApiError::Http { status: 409, code: Some("sign_in_overtaken".to_owned()), message: "Вход отменён: сессия изменилась. Войдите ещё раз".to_owned() }
+}
+
 impl Api {
-    fn accept_login(&self, reply: LoginResponse) -> LoginResponse {
-        if reply.ok && reply.token.is_some() {
-            self.store_session(reply.token.clone(), reply.refresh_token.clone(), reply.scope_token.clone());
+    fn accept_login(&self, reply: LoginResponse, epoch: u64) -> Result<LoginResponse, ApiError> {
+        if reply.ok && reply.token.is_some() && !self.begin_session(epoch, reply.token.clone(), reply.refresh_token.clone(), reply.scope_token.clone()) {
+            return Err(overtaken());
         }
-        reply
+        Ok(reply)
     }
 
     /// A rejected password is a 200 or a 401 with `ok:false`; both are normal
     /// answers the login form needs to read, not failures.
     async fn login_call(&self, call: Call) -> Result<LoginResponse, ApiError> {
+        let epoch = self.epoch();
         let reply = self.execute(&call).await?;
         if let Ok(parsed) = serde_json::from_slice::<LoginResponse>(&reply.bytes) {
             if (200..300).contains(&reply.status) || parsed.error.is_some() || parsed.locked_seconds.is_some() {
-                return Ok(self.accept_login(parsed));
+                return self.accept_login(parsed, epoch);
             }
         }
         Err(super::error_from_body(reply.status, &reply.bytes))
@@ -119,6 +127,7 @@ impl Api {
     /// Restores a session from the stored refresh token at startup.
     pub async fn resume(&self) -> Result<Option<UserInfo>, ApiError> {
         let Some(token) = self.refresh_token() else { return Ok(None) };
+        let epoch = self.epoch();
         let call = Call::new(Method::POST, "/api/auth/refresh")
             .json(&json!({ "refresh_token": token }))
             .header("X-Refresh-Token", token);
@@ -129,13 +138,16 @@ impl Api {
         let parsed: LoginResponse = serde_json::from_slice(&reply.bytes).unwrap_or_default();
         if reply.status == 200 && parsed.ok && parsed.token.is_some() {
             let user = parsed.user.clone();
-            self.accept_login(parsed);
+            self.accept_login(parsed, epoch)?;
             return match user {
                 Some(u) => Ok(Some(u)),
                 None => self.me().await.map(Some),
             };
         }
-        self.clear_session();
+        // The saved session was refused; one begun meanwhile is not it.
+        if self.epoch() == epoch {
+            self.clear_session();
+        }
         Ok(None)
     }
 
@@ -175,9 +187,10 @@ impl Api {
 
     /// The server hands the tokens out once, on the first poll after confirmation.
     pub async fn qr_status(&self, session_id: &str) -> Result<QrStatus, ApiError> {
+        let epoch = self.epoch();
         let reply: QrStatus = self.get(&format!("/api/auth/qr/status/{session_id}"), &[]).await?;
-        if reply.status == "confirmed" && reply.token.is_some() {
-            self.store_session(reply.token.clone(), reply.refresh_token.clone(), reply.scope_token.clone());
+        if reply.status == "confirmed" && reply.token.is_some() && !self.begin_session(epoch, reply.token.clone(), reply.refresh_token.clone(), reply.scope_token.clone()) {
+            return Err(overtaken());
         }
         Ok(reply)
     }

@@ -24,8 +24,12 @@ use crate::ui::{self, El, Icon, Kind as Look};
 
 pub use assets::Kind;
 pub use host::Signal;
+use host::Owner;
 
 const PAGE_START_LIMIT: Duration = Duration::from_secs(20);
+/// The engine lets go of its files a moment after its view is closed.
+const DISCARD_TRIES: u32 = 20;
+const DISCARD_PAUSE: Duration = Duration::from_millis(250);
 
 #[derive(Clone, Debug, PartialEq)]
 enum Page {
@@ -37,10 +41,12 @@ enum Page {
 
 #[derive(Clone, Debug)]
 pub enum Msg {
-    Attached(Result<(), String>),
+    Attached(Owner, Result<(), String>),
     Signal(Signal),
     Tick,
     Retry,
+    /// The workbook, for the opening of the page that asked for it.
+    Fetched(Owner, Result<(String, Vec<u8>), String>),
     Saved(Result<Option<String>, String>),
     /// The panel as the server itself serves it, in the system's browser.
     Browser,
@@ -63,6 +69,8 @@ pub struct Hosted {
     /// The workspace's name, as the start window calls it.
     name: &'static str,
     page: Page,
+    /// The opening of the page its web view was made for; 0 before the first.
+    owner: Owner,
     shown: bool,
     saving: bool,
     forget: bool,
@@ -78,9 +86,41 @@ fn web_dir(ctx: &Ctx, kind: Kind) -> PathBuf {
     ctx.data_dir.join("web").join(format!("{}-{}-{}", kind.scheme(), ctx.user_key(), ctx.host_key()))
 }
 
+/// The folder of one page for the account that is signed in.
+pub fn folder(ctx: &Ctx, kind: Kind) -> PathBuf {
+    web_dir(ctx, kind)
+}
+
+/// The folders of every page for the account that is signed in.
+pub fn folders(ctx: &Ctx) -> Vec<PathBuf> {
+    [Kind::Time, Kind::Admin].into_iter().map(|kind| web_dir(ctx, kind)).collect()
+}
+
+/// Removes what the web views kept in these folders: the account signed out
+/// or lost the page. A folder the engine still holds is tried again for a few
+/// seconds, away from the interface.
+pub fn discard(folders: Vec<PathBuf>) {
+    let folders: Vec<PathBuf> = folders.into_iter().filter(|folder| folder.exists()).collect();
+    if folders.is_empty() {
+        return;
+    }
+    std::thread::spawn(move || {
+        for folder in folders {
+            for tries_left in (0..DISCARD_TRIES).rev() {
+                match std::fs::remove_dir_all(&folder) {
+                    Ok(()) => break,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                    Err(error) if tries_left == 0 => tracing::warn!("what a page kept was not removed: {error}"),
+                    Err(_) => std::thread::sleep(DISCARD_PAUSE),
+                }
+            }
+        }
+    });
+}
+
 impl Hosted {
     pub fn new(kind: Kind, name: &'static str) -> Self {
-        Self { kind, name, page: Page::Absent, shown: false, saving: false, forget: false }
+        Self { kind, name, page: Page::Absent, owner: 0, shown: false, saving: false, forget: false }
     }
 
     /// Starts the page once. The work window has to be up: a web view is a
@@ -95,7 +135,9 @@ impl Hosted {
             return Task::none();
         }
         self.page = Page::Starting(Instant::now());
-        let spec = host::Spec { kind: self.kind, api: ctx.api.clone(), dir: web_dir(ctx, self.kind), dark: ctx.dark, area: page_area(ctx) };
+        self.owner = host::claim();
+        let owner = self.owner;
+        let spec = host::Spec { kind: self.kind, owner, api: ctx.api.clone(), dir: web_dir(ctx, self.kind), dark: ctx.dark, area: page_area(ctx) };
         Task::future(async { tokio::runtime::Handle::current() })
             .then(move |runtime| {
                 let spec = spec.clone();
@@ -107,7 +149,7 @@ impl Hosted {
                     }
                 })
             })
-            .map(Msg::Attached)
+            .map(move |made| Msg::Attached(owner, made))
     }
 
     fn visible(&self) -> bool {
@@ -119,17 +161,17 @@ impl Hosted {
     pub fn set_shown(&mut self, shown: bool) {
         if self.shown != shown {
             self.shown = shown;
-            host::show(self.kind, self.visible());
+            host::show(self.owner, self.visible());
         }
     }
 
     /// The window or the rail changed size: the page keeps to what both leave.
     pub fn resized(&self, ctx: &Ctx) {
-        host::place(self.kind, page_area(ctx));
+        host::place(self.owner, page_area(ctx));
     }
 
     pub fn theme_changed(&self, ctx: &Ctx) {
-        host::run(self.kind, &self.kind.theme_script(ctx.dark));
+        host::run(self.owner, &self.kind.theme_script(ctx.dark));
     }
 
     /// Shows a toast inside the page when the page covers the app's own.
@@ -137,7 +179,7 @@ impl Hosted {
         if !self.visible() {
             return false;
         }
-        host::run(self.kind, &self.kind.toast_script(message, matches!(tone, Tone::Danger | Tone::Warning)));
+        host::run(self.owner, &self.kind.toast_script(message, matches!(tone, Tone::Danger | Tone::Warning)));
         true
     }
 
@@ -146,8 +188,8 @@ impl Hosted {
     pub fn reload(&mut self) {
         if self.page != Page::Absent {
             self.page = Page::Starting(Instant::now());
-            host::show(self.kind, false);
-            host::reload(self.kind);
+            host::show(self.owner, false);
+            host::reload(self.owner);
         }
     }
 
@@ -168,22 +210,29 @@ impl Hosted {
         self.page != Page::Absent
     }
 
+    #[cfg(test)]
+    pub fn owner(&self) -> Owner {
+        self.owner
+    }
+
     pub fn update(&mut self, message: Msg, ctx: &mut Ctx) -> Task<Msg> {
         match message {
             // The window may have changed while the view was being created.
-            Msg::Attached(Ok(())) => self.resized(ctx),
-            Msg::Attached(Err(reason)) => {
+            Msg::Attached(owner, Ok(())) if owner == self.owner => self.resized(ctx),
+            Msg::Attached(owner, Err(reason)) if owner == self.owner => {
                 tracing::error!("hosted page web view failed: {reason}");
                 self.page = Page::Failed(format!("Не удалось запустить WebView2: {reason}"));
             }
-            Msg::Signal(Signal::Loaded(kind)) if kind == self.kind => {
+            // Of an opening that has since been closed or tried again.
+            Msg::Attached(..) => {}
+            Msg::Signal(Signal::Loaded(owner)) if owner == self.owner => {
                 if matches!(self.page, Page::Starting(_)) {
                     self.page = Page::Ready;
-                    host::show(self.kind, self.visible());
+                    host::show(self.owner, self.visible());
                     self.theme_changed(ctx);
                 }
             }
-            Msg::Signal(Signal::Said(kind, raw)) if kind == self.kind => match serde_json::from_str::<PageMessage>(&raw) {
+            Msg::Signal(Signal::Said(owner, raw)) if owner == self.owner => match serde_json::from_str::<PageMessage>(&raw) {
                 // Whatever was refused, the server's own answer has told the
                 // shell already; this asks what the account may still open.
                 Ok(PageMessage::AccessLost) => ctx.request(Request::AccessChanged),
@@ -196,15 +245,25 @@ impl Hosted {
                 if let Page::Starting(since) = self.page
                     && since.elapsed() > PAGE_START_LIMIT
                 {
-                    host::close(self.kind, false);
+                    host::close(self.owner, false);
                     self.page = Page::Failed("Страница не ответила".to_owned());
                 }
             }
             Msg::Retry => {
-                host::close(self.kind, false);
+                host::close(self.owner, false);
                 self.page = Page::Absent;
                 return self.attach(ctx);
             }
+            // Offered to whoever asked: a page closed or opened again since
+            // then belongs to another moment, perhaps to another account.
+            Msg::Fetched(owner, fetched) if owner == self.owner => match fetched {
+                Ok((name, bytes)) => return Task::perform(files::save_as(name, bytes), Msg::Saved),
+                Err(reason) => {
+                    self.saving = false;
+                    ctx.toast(Tone::Danger, reason);
+                }
+            },
+            Msg::Fetched(..) => {}
             Msg::Saved(outcome) => {
                 self.saving = false;
                 match outcome {
@@ -225,13 +284,13 @@ impl Hosted {
             return Task::none();
         }
         self.saving = true;
-        let api = ctx.api.clone();
+        let (api, owner) = (ctx.api.clone(), self.owner);
         Task::perform(
             async move {
                 let (name, bytes) = api.time_export(&month).await.map_err(text_error)?;
-                files::save_as(name.unwrap_or_else(|| format!("TimeList-{month}.xlsx")), bytes).await
+                Ok((name.unwrap_or_else(|| format!("TimeList-{month}.xlsx")), bytes))
             },
-            Msg::Saved,
+            move |fetched| Msg::Fetched(owner, fetched),
         )
     }
 
@@ -271,7 +330,7 @@ impl Hosted {
 
 impl Drop for Hosted {
     fn drop(&mut self) {
-        host::close(self.kind, self.forget);
+        host::close(self.owner, self.forget);
     }
 }
 
@@ -289,8 +348,18 @@ mod tests {
         ctx
     }
 
-    fn said(kind: Kind, raw: &str) -> Msg {
-        Msg::Signal(Signal::Said(kind, raw.to_owned()))
+    fn said(owner: Owner, raw: &str) -> Msg {
+        Msg::Signal(Signal::Said(owner, raw.to_owned()))
+    }
+
+    fn gone(folder: &std::path::Path) -> bool {
+        for _ in 0..100 {
+            if !folder.exists() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
     }
 
     fn sees(screen: &Hosted, ctx: &Ctx, wanted: &str) -> bool {
@@ -320,10 +389,12 @@ mod tests {
         screen.set_shown(true);
         assert!(!screen.visible(), "a page that has not loaded is not put over the window");
 
-        // Another page's news is not this one's.
-        let _ = screen.update(Msg::Signal(Signal::Loaded(Kind::Admin)), &mut ctx);
+        // News of another opening, a page closed a moment ago, is not this one's.
+        let _ = screen.update(Msg::Signal(Signal::Loaded(screen.owner + 1)), &mut ctx);
+        let _ = screen.update(Msg::Signal(Signal::Loaded(0)), &mut ctx);
+        let _ = screen.update(Msg::Attached(screen.owner + 1, Err("поздно".into())), &mut ctx);
         assert!(matches!(screen.page, Page::Starting(_)));
-        let _ = screen.update(Msg::Signal(Signal::Loaded(Kind::Time)), &mut ctx);
+        let _ = screen.update(Msg::Signal(Signal::Loaded(screen.owner)), &mut ctx);
         assert_eq!(screen.page, Page::Ready);
         assert!(screen.visible());
         let _ = screen.enter(&mut ctx);
@@ -340,10 +411,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut ctx = ctx(&dir, 7);
         let mut screen = Hosted::new(Kind::Admin, "Администрирование CRM");
-        let _ = screen.update(Msg::Attached(Err("нет среды выполнения".into())), &mut ctx);
+        let _ = screen.update(Msg::Attached(screen.owner, Err("нет среды выполнения".into())), &mut ctx);
         assert!(sees(&screen, &ctx, "Раздел «Администрирование CRM» не открылся"));
         assert!(sees(&screen, &ctx, "Повторить") && sees(&screen, &ctx, "Открыть в браузере"));
+        let before = screen.owner;
         let _ = screen.update(Msg::Retry, &mut ctx);
+        assert!(matches!(screen.page, Page::Starting(_)));
+        // The new try is a new opening: the first one's late load is not its own.
+        assert_ne!(screen.owner, before);
+        let _ = screen.update(Msg::Signal(Signal::Loaded(before)), &mut ctx);
         assert!(matches!(screen.page, Page::Starting(_)));
 
         screen.page = Page::Starting(Instant::now().checked_sub(PAGE_START_LIMIT + Duration::from_secs(1)).unwrap());
@@ -352,7 +428,7 @@ mod tests {
 
         // Time has no page on the server to fall back to: it is never published.
         let mut time = Hosted::new(Kind::Time, "Учёт времени");
-        let _ = time.update(Msg::Attached(Err("x".into())), &mut ctx);
+        let _ = time.update(Msg::Attached(time.owner, Err("x".into())), &mut ctx);
         assert!(sees(&time, &ctx, "Повторить") && !sees(&time, &ctx, "Открыть в браузере"));
     }
 
@@ -361,7 +437,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut ctx = ctx(&dir, 7);
         let mut screen = Hosted::new(Kind::Time, "Учёт времени");
-        let _ = screen.update(said(Kind::Time, r#"{"type":"access-lost"}"#), &mut ctx);
+        let _ = screen.update(said(screen.owner, r#"{"type":"access-lost"}"#), &mut ctx);
         assert!(matches!(ctx.requests.as_slice(), [Request::AccessChanged]), "{:?}", ctx.requests);
         // The page decides nothing here: the workspace is closed by the shell, on the server's word.
         assert!(ctx.user.is_some());
@@ -373,23 +449,31 @@ mod tests {
         let mut ctx = ctx(&dir, 7);
         let mut time = Hosted::new(Kind::Time, "Учёт времени");
         for wrong in [r#"{"type":"export","ym":"../../auth/me"}"#, r#"{"type":"export","ym":"2026-11/../x"}"#, r#"{"type":"export","ym":""}"#] {
-            let _ = time.update(said(Kind::Time, wrong), &mut ctx);
+            let _ = time.update(said(time.owner, wrong), &mut ctx);
             assert!(!time.saving, "{wrong}");
         }
-        let _ = time.update(said(Kind::Time, r#"{"type":"export","ym":"2026-11"}"#), &mut ctx);
+        let _ = time.update(said(time.owner, r#"{"type":"export","ym":"2026-11"}"#), &mut ctx);
         assert!(time.saving);
+        // A workbook fetched for a page that has been closed since is offered to nobody.
+        let _ = time.update(Msg::Fetched(time.owner + 1, Ok(("TimeList-2026-11.xlsx".into(), vec![1]))), &mut ctx);
+        let _ = time.update(Msg::Fetched(time.owner + 1, Err("чужой ответ".into())), &mut ctx);
+        assert!(time.saving && ctx.toasts.is_empty());
         // One at a time; the answer frees the next.
         let _ = time.update(Msg::Saved(Ok(Some("C:/x/TimeList-2026-11.xlsx".into()))), &mut ctx);
         assert!(!time.saving);
         assert!(ctx.toasts.iter().any(|(_, text)| text.contains("TimeList-2026-11.xlsx")));
         let _ = time.update(Msg::Saved(Err("Сервис учёта времени не отвечает".into())), &mut ctx);
         assert!(ctx.toasts.iter().any(|(tone, _)| *tone == Tone::Danger));
+        // A workbook the server refused frees the next as well.
+        let _ = time.update(said(time.owner, r#"{"type":"export","ym":"2026-12"}"#), &mut ctx);
+        let _ = time.update(Msg::Fetched(time.owner, Err("Нет доступа".into())), &mut ctx);
+        assert!(!time.saving && ctx.toasts.iter().any(|(_, text)| text == "Нет доступа"));
 
         let mut admin = Hosted::new(Kind::Admin, "Администрирование CRM");
-        let _ = admin.update(said(Kind::Admin, r#"{"type":"export","ym":"2026-11"}"#), &mut ctx);
+        let _ = admin.update(said(admin.owner, r#"{"type":"export","ym":"2026-11"}"#), &mut ctx);
         assert!(!admin.saving, "the panel has nothing to save");
-        // A message that names another page is not acted on.
-        let _ = admin.update(said(Kind::Time, r#"{"type":"access-lost"}"#), &mut ctx);
+        // A message of another opening is not acted on.
+        let _ = admin.update(said(admin.owner + 1, r#"{"type":"access-lost"}"#), &mut ctx);
         assert!(ctx.requests.is_empty());
     }
 
@@ -404,5 +488,22 @@ mod tests {
         }
         // Nor is it the folder the Telegram page keeps.
         assert!(folders.iter().all(|folder| *folder != dir.path().join("webview")));
+    }
+
+    #[test]
+    fn what_the_pages_kept_is_removed_for_the_account_and_for_nobody_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let (anna, boris) = (ctx(&dir, 7), ctx(&dir, 8));
+        for folder in folders(&anna).into_iter().chain(folders(&boris)) {
+            std::fs::create_dir_all(folder.join("Default")).unwrap();
+            std::fs::write(folder.join("Default").join("Preferences"), b"{}").unwrap();
+        }
+        assert_eq!(folders(&anna), [folder(&anna, Kind::Time), folder(&anna, Kind::Admin)]);
+        discard(folders(&anna));
+        assert!(folders(&anna).iter().all(|folder| gone(folder)));
+        assert!(folders(&boris).iter().all(|folder| folder.join("Default").join("Preferences").exists()));
+        // Nothing there: nothing to do, and no harm in asking.
+        discard(folders(&anna));
+        discard(Vec::new());
     }
 }

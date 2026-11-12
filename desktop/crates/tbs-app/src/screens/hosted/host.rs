@@ -5,6 +5,7 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use iced::Subscription;
@@ -13,7 +14,7 @@ use iced::window::Window;
 use tbs_core::api::Api;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use wry::http::{Request, Response};
+use wry::http::{HeaderValue, Request, Response};
 use wry::{NewWindowResponse, PageLoadEvent, PermissionResponse, RequestAsyncResponder, WebContext, WebView, WebViewBuilder};
 
 use super::assets::{self, Kind};
@@ -22,11 +23,16 @@ use crate::screens::telegram::host::{Area, background, failure, reply_to_page, w
 /// A page has little to tell the shell; anything longer is not its message.
 const MESSAGE_LIMIT: usize = 4096;
 
+/// One opening of a page. Its web view and whatever that view reports carry
+/// the number, so news from a page that was closed, or opened again, while it
+/// was on its way is nobody's.
+pub type Owner = u64;
+
 #[derive(Clone, Debug)]
 pub enum Signal {
     /// What the page posted, as it posted it.
-    Said(Kind, String),
-    Loaded(Kind),
+    Said(Owner, String),
+    Loaded(Owner),
 }
 
 struct Bus {
@@ -58,13 +64,29 @@ pub fn signals() -> Subscription<Signal> {
     Subscription::run(stream)
 }
 
+struct Host {
+    /// The opening a view is expected for, or is there for; 0 with no page open.
+    owner: Owner,
+    view: Option<WebView>,
+}
+
 thread_local! {
-    static HOST: RefCell<Option<(Kind, WebView)>> = const { RefCell::new(None) };
+    static HOST: RefCell<Host> = const { RefCell::new(Host { owner: 0, view: None }) };
+}
+
+/// A page is about to be opened: the number its view will carry. A view
+/// still there from before is closed.
+pub fn claim() -> Owner {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let owner = NEXT.fetch_add(1, Ordering::Relaxed);
+    HOST.with(|host| *host.borrow_mut() = Host { owner, view: None });
+    owner
 }
 
 #[derive(Clone)]
 pub struct Spec {
     pub kind: Kind,
+    pub owner: Owner,
     pub api: Api,
     /// Where the web view keeps what the page stores. One folder per account.
     pub dir: PathBuf,
@@ -83,11 +105,21 @@ fn page_headers(request: &wry::http::request::Parts) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The server's answer is data for the page's scripts. Were it ever shown as
+/// a page of its own, it would be shown as the type it declares and run
+/// nothing.
+fn sealed(mut response: Response<Cow<'static, [u8]>>) -> Response<Cow<'static, [u8]>> {
+    let headers = response.headers_mut();
+    headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    headers.insert("content-security-policy", HeaderValue::from_static("default-src 'none'; sandbox"));
+    response
+}
+
 async fn forward(api: Api, request: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
     let (parts, body) = request.into_parts();
     let target = parts.uri.path_and_query().map_or_else(|| parts.uri.path().to_owned(), |p| p.as_str().to_owned());
     let headers = page_headers(&parts);
-    reply_to_page(api.proxy(parts.method, &target, headers, body).await)
+    sealed(reply_to_page(api.proxy(parts.method, &target, headers, body).await))
 }
 
 fn serve(kind: Kind, api: &Api, runtime: &Handle, request: Request<Vec<u8>>, responder: RequestAsyncResponder) {
@@ -107,14 +139,25 @@ fn serve(kind: Kind, api: &Api, runtime: &Handle, request: Request<Vec<u8>>, res
             let api = api.clone();
             runtime.spawn(async move { responder.respond(forward(api, request).await) });
         }
-        assets::Route::Forbidden => responder.respond(failure(403, "Запрос закрыт политикой клиента")),
-        assets::Route::Missing => responder.respond(failure(404, "Не найдено")),
+        assets::Route::Forbidden => responder.respond(sealed(failure(403, "Запрос закрыт политикой клиента"))),
+        assets::Route::Missing => responder.respond(sealed(failure(404, "Не найдено"))),
     }
 }
 
+/// The page has one document. Its address with another query or fragment is
+/// still that document; an address of the API is not a page to show.
+fn at_home(entry: &str, url: &str) -> bool {
+    url.split(['?', '#']).next() == Some(entry)
+}
+
 pub fn create(window: &dyn Window, spec: Spec, runtime: Handle) -> Result<(), String> {
-    let kind = spec.kind;
-    let origin = kind.origin();
+    // Closed, or opened again, while the window was being asked for.
+    if HOST.with(|host| host.borrow().owner) != spec.owner {
+        return Ok(());
+    }
+    let (kind, owner) = (spec.kind, spec.owner);
+    let entry = format!("{}/{}", kind.origin(), kind.entry());
+    let home = entry.clone();
     let mut context = WebContext::new(Some(spec.dir));
     let api = spec.api;
     let builder = WebViewBuilder::new_with_web_context(&mut context)
@@ -130,72 +173,78 @@ pub fn create(window: &dyn Window, spec: Spec, runtime: Handle) -> Result<(), St
         .with_ipc_handler(move |request| {
             let raw = request.into_body();
             if raw.len() <= MESSAGE_LIMIT {
-                emit(Signal::Said(kind, raw));
+                emit(Signal::Said(owner, raw));
             }
         })
         .with_on_page_load_handler(move |event, _| {
             if matches!(event, PageLoadEvent::Finished) {
-                emit(Signal::Loaded(kind));
+                emit(Signal::Loaded(owner));
             }
         })
         // The page stays where it was put: it has no links that lead elsewhere.
-        .with_navigation_handler(move |url| url.starts_with(&format!("{origin}/")))
+        .with_navigation_handler(move |url| at_home(&home, &url))
         .with_new_window_req_handler(|_, _| NewWindowResponse::Deny)
         .with_permission_handler(|_| PermissionResponse::Deny)
-        .with_url(format!("{origin}/{}", kind.entry()));
+        .with_url(entry);
     let view = builder.build_as_child(&window).map_err(|error| error.to_string())?;
-    HOST.with(|host| *host.borrow_mut() = Some((kind, view)));
+    HOST.with(|host| host.borrow_mut().view = Some(view));
     Ok(())
 }
 
-fn with_view(kind: Kind, act: impl FnOnce(&WebView)) {
+fn with_view(owner: Owner, act: impl FnOnce(&WebView)) {
     HOST.with(|host| {
-        if let Some((open, view)) = host.borrow().as_ref()
-            && *open == kind
+        let host = host.borrow();
+        if host.owner == owner
+            && let Some(view) = &host.view
         {
             act(view);
         }
     });
 }
 
-pub fn run(kind: Kind, script: &str) {
-    with_view(kind, |view| {
+pub fn run(owner: Owner, script: &str) {
+    with_view(owner, |view| {
         if let Err(error) = view.evaluate_script(script) {
             tracing::warn!("hosted page script failed: {error}");
         }
     });
 }
 
-pub fn place(kind: Kind, area: Area) {
-    with_view(kind, |view| {
+pub fn place(owner: Owner, area: Area) {
+    with_view(owner, |view| {
         let _ = view.set_bounds(area.rect());
     });
 }
 
-pub fn show(kind: Kind, visible: bool) {
-    with_view(kind, |view| {
+pub fn show(owner: Owner, visible: bool) {
+    with_view(owner, |view| {
         let _ = view.set_visible(visible);
         let _ = if visible { view.focus() } else { view.focus_parent() };
     });
 }
 
 /// Loads the page again from its own files, on the session as it is now.
-pub fn reload(kind: Kind) {
-    with_view(kind, |view| {
+pub fn reload(owner: Owner) {
+    with_view(owner, |view| {
         let _ = view.reload();
     });
 }
 
-/// Closes the page. `forget` also empties what the web view kept for it, for
-/// an account that signed out or lost the access.
-pub fn close(kind: Kind, forget: bool) {
+/// Closes this opening's view, and with it the opening: a view still being
+/// made for it is not put up. `forget` also empties what the web view kept,
+/// for an account that signed out or lost the access.
+pub fn close(owner: Owner, forget: bool) {
     HOST.with(|host| {
         let mut host = host.borrow_mut();
-        if host.as_ref().is_some_and(|(open, _)| *open == kind)
-            && let Some((_, view)) = host.take()
+        if host.owner != owner {
+            return;
+        }
+        host.owner = 0;
+        if let Some(view) = host.view.take()
             && forget
+            && let Err(error) = view.clear_all_browsing_data()
         {
-            let _ = view.clear_all_browsing_data();
+            tracing::warn!("what a page kept was not emptied: {error}");
         }
     });
 }
@@ -220,5 +269,46 @@ mod tests {
             .unwrap();
         let (parts, _) = request.into_parts();
         assert_eq!(page_headers(&parts), [("content-type".to_owned(), "application/json".to_owned())]);
+    }
+
+    #[test]
+    fn the_page_is_shown_and_an_address_of_the_api_is_not() {
+        for kind in [Kind::Time, Kind::Admin] {
+            let entry = format!("{}/{}", kind.origin(), kind.entry());
+            assert!(at_home(&entry, &entry));
+            assert!(at_home(&entry, &format!("{entry}#2026-11")) && at_home(&entry, &format!("{entry}?v=2")));
+            let origin = kind.origin();
+            for elsewhere in [
+                format!("{origin}/api/time/export/2026-11"),
+                format!("{origin}/api/admin/users"),
+                format!("{origin}/"),
+                format!("{entry}/../api/auth/me"),
+                format!("{entry}x"),
+                "https://example.com/".to_owned(),
+                "about:blank".to_owned(),
+            ] {
+                assert!(!at_home(&entry, &elsewhere), "{elsewhere}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_answer_of_the_server_is_never_a_page_that_runs() {
+        let response = sealed(failure(403, "x"));
+        assert_eq!(response.headers()["x-content-type-options"], "nosniff");
+        assert_eq!(response.headers()["content-security-policy"], "default-src 'none'; sandbox");
+    }
+
+    #[test]
+    fn a_view_belongs_to_one_opening() {
+        let first = claim();
+        let second = claim();
+        assert_ne!(first, second);
+        assert_eq!(HOST.with(|host| host.borrow().owner), second);
+        // The first opening was replaced: closing it late leaves the second alone.
+        close(first, true);
+        assert_eq!(HOST.with(|host| host.borrow().owner), second);
+        close(second, false);
+        assert_eq!(HOST.with(|host| host.borrow().owner), 0);
     }
 }

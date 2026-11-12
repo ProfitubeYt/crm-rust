@@ -1,0 +1,45 @@
+# The Time workspace next to the existing stack: one container, one volume.
+# Used together with the main file, from the project directory:
+#
+#   docker compose -f docker-compose.yml -f deploy/time-hub/docker-compose.time.yml up -d timelist
+#
+# Nothing in the main file changes and no port is published: Time is reached
+# only by the backend's gateway (/api/time/*) on the compose network, and Time
+# itself calls only the backend (who may mark attendance) and api.telegram.org.
+#
+# The project .env on the server carries the values (never git):
+#
+#   TIMELIST_INTERNAL_URL=http://timelist:8080   read by the backend
+#   TIMELIST_API_TOKEN=<random, 32+ characters>  the gateway's token for Time
+#   TIME_HUB_KEY=<random, 24+ characters>        the bot's key for the backend
+#   TIME_BOT_TOKEN=<from @BotFather>             empty: the bot stays off
+#   TIME_BOT_CHAT_ID=<work group id(s)>          empty: no group is accepted
+#
+# The backend takes its three from .env through its own env_file, so a plain
+# `docker compose up -d backend` without this file keeps the gateway working.
+# The image is built off the server (time/Dockerfile) and loaded by name.
+services:
+  timelist:
+    image: ${TIMELIST_IMAGE:-timelist:local}
+    container_name: uzbek_parser_timelist
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+    environment:
+      TIMELIST_API_TOKEN: ${TIMELIST_API_TOKEN:?TIMELIST_API_TOKEN is not set in .env}
+      TIMELIST_HUB_URL: http://backend:8000
+      TIMELIST_HUB_KEY: ${TIME_HUB_KEY:?TIME_HUB_KEY is not set in .env}
+      # Named differently in .env: the backend has a TELEGRAM_BOT_TOKEN of its own.
+      TELEGRAM_BOT_TOKEN: ${TIME_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TIME_BOT_CHAT_ID:-}
+    volumes:
+      # The whole of Time's data: the SQLite file and its journal.
+      - timelist_data:/data
+    restart: unless-stopped
+    stop_grace_period: 20s
+    mem_limit: 256m
+
+volumes:
+  timelist_data:

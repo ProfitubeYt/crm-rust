@@ -159,6 +159,9 @@ struct Inner {
     system_token: RwLock<Option<String>>,
     tokens: RwLock<Tokens>,
     generation: AtomicU64,
+    /// Which sign-in the tokens belong to. Unlike `generation` it stays put
+    /// while the same session only renews its tokens.
+    epoch: AtomicU64,
     refresh_gate: Mutex<()>,
     vault: Arc<dyn SecretStore>,
     events: broadcast::Sender<ApiEvent>,
@@ -273,6 +276,7 @@ impl Api {
             system_token: RwLock::new(system_token),
             tokens: RwLock::new(Tokens::default()),
             generation: AtomicU64::new(0),
+            epoch: AtomicU64::new(0),
             refresh_gate: Mutex::new(()),
             vault,
             events,
@@ -311,9 +315,28 @@ impl Api {
         let _ = self.0.events.send(event);
     }
 
-    pub(crate) fn store_session(&self, auth: Option<String>, refresh: Option<String>, scope: Option<String>) {
+    /// Signing in or out moves it. What was asked before that speaks for a
+    /// session that is no longer the one there is: its refusals, its renewed
+    /// tokens and its sign-in answer are all let go.
+    pub(crate) fn epoch(&self) -> u64 {
+        self.0.epoch.load(Ordering::SeqCst)
+    }
+
+    /// The tokens of a sign-in that set out at `epoch`. `false`: another
+    /// sign-in or a sign-out got there first, and nothing was kept.
+    pub(crate) fn begin_session(&self, epoch: u64, auth: Option<String>, refresh: Option<String>, scope: Option<String>) -> bool {
+        self.keep_tokens(epoch, true, auth, refresh, scope)
+    }
+
+    fn keep_tokens(&self, epoch: u64, begins: bool, auth: Option<String>, refresh: Option<String>, scope: Option<String>) -> bool {
         {
             let mut t = self.0.tokens.write().unwrap();
+            if self.0.epoch.load(Ordering::SeqCst) != epoch {
+                return false;
+            }
+            if begins {
+                self.0.epoch.fetch_add(1, Ordering::SeqCst);
+            }
             if auth.is_some() {
                 t.auth = auth;
             }
@@ -326,6 +349,7 @@ impl Api {
             }
         }
         self.0.generation.fetch_add(1, Ordering::SeqCst);
+        true
     }
 
     pub fn set_scope_token(&self, token: Option<String>) {
@@ -337,7 +361,11 @@ impl Api {
     }
 
     pub fn clear_session(&self) {
-        *self.0.tokens.write().unwrap() = Tokens::default();
+        {
+            let mut t = self.0.tokens.write().unwrap();
+            *t = Tokens::default();
+            self.0.epoch.fetch_add(1, Ordering::SeqCst);
+        }
         self.0.vault.delete(&self.vault_key());
         self.0.generation.fetch_add(1, Ordering::SeqCst);
     }
@@ -428,9 +456,14 @@ impl Api {
     }
 
     /// One refresh at a time. A caller that arrives after another finished
-    /// finds the generation moved and simply retries with the new token.
-    async fn refresh_after(&self, seen_generation: u64) -> Result<bool, ApiError> {
+    /// finds the generation moved and simply retries with the new token. A
+    /// caller whose session has ended or been replaced does neither: what it
+    /// asked is not asked again on somebody else's session.
+    async fn refresh_after(&self, seen_generation: u64, epoch: u64) -> Result<bool, ApiError> {
         let _gate = self.0.refresh_gate.lock().await;
+        if self.epoch() != epoch {
+            return Ok(false);
+        }
         if self.0.generation.load(Ordering::SeqCst) != seen_generation {
             return Ok(self.has_auth_token());
         }
@@ -444,8 +477,9 @@ impl Api {
         }
         let parsed: LoginResponse = serde_json::from_slice(&reply.bytes).unwrap_or_default();
         if reply.status == 200 && parsed.ok && parsed.token.is_some() {
-            self.store_session(parsed.token, parsed.refresh_token, parsed.scope_token);
-            return Ok(true);
+            // Signed out while the server was answering: nobody holds the
+            // session these tokens renew.
+            return Ok(self.keep_tokens(epoch, false, parsed.token, parsed.refresh_token, parsed.scope_token));
         }
         Ok(false)
     }
@@ -495,17 +529,19 @@ impl Api {
     /// Runs a call with the whole session protocol and returns the raw answer,
     /// error statuses included.
     pub async fn execute(&self, call: &Call) -> Result<Reply, ApiError> {
-        let seen = self.0.generation.load(Ordering::SeqCst);
+        let (seen, epoch) = (self.0.generation.load(Ordering::SeqCst), self.epoch());
         let mut reply = self.dispatch(call).await?;
         if reply.status == StatusCode::UNAUTHORIZED.as_u16() && !refresh_exempt(&call.path) && !rejects_input(&reply) {
-            if self.refresh_after(seen).await? {
+            if self.refresh_after(seen, epoch).await? {
                 reply = self.dispatch(call).await?;
             }
-            if reply.status == StatusCode::UNAUTHORIZED.as_u16() && !rejects_input(&reply) {
+            if reply.status == StatusCode::UNAUTHORIZED.as_u16() && !rejects_input(&reply) && self.epoch() == epoch {
                 self.session_lost();
             }
         }
-        if reply.status == StatusCode::FORBIDDEN.as_u16() {
+        // A refusal that arrives after the account signed out, or another
+        // signed in, was meant for the session that asked.
+        if reply.status == StatusCode::FORBIDDEN.as_u16() && self.epoch() == epoch {
             self.inspect_forbidden(&call.path, &reply);
         }
         Ok(reply)

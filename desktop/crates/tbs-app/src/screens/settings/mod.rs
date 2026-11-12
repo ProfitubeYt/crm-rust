@@ -231,6 +231,27 @@ impl Settings {
         Subscription::batch(all)
     }
 
+    /// The section the account may see: its own choice while it is still for
+    /// it, the profile otherwise.
+    fn shown(&self, ctx: &Ctx) -> Section {
+        let open = NAV.iter().flat_map(|group| group.items).find(|(listed, ..)| *listed == self.section).is_none_or(|(.., audience)| audience.open_to(ctx));
+        if open { self.section } else { Section::Profile }
+    }
+
+    /// What the account may manage changed while the settings were open. A
+    /// section it no longer has is left, and the accounts loaded for it are
+    /// not kept: they are not this account's to look at any more.
+    pub fn access_changed(&mut self, ctx: &Ctx) {
+        self.section = self.shown(ctx);
+        if !For::Accounts.open_to(ctx) {
+            self.users = Users::new(ctx);
+            self.sessions = Sessions::new(ctx);
+        }
+        if !For::Both.open_to(ctx) {
+            self.access = Access::default();
+        }
+    }
+
     /// Every visit reloads the open section: the team changes without us.
     pub fn enter(&mut self, ctx: &mut Ctx) -> Task<Msg> {
         self.load(ctx)
@@ -327,12 +348,14 @@ impl Settings {
     }
 
     pub fn view(&self, ctx: &Ctx) -> El<'_, Msg> {
-        let (name, hint) = page_text(self.section);
-        let aside: El<'_, Msg> = match self.section {
+        // Nothing of a section is drawn for an account that has just lost it.
+        let section = self.shown(ctx);
+        let (name, hint) = page_text(section);
+        let aside: El<'_, Msg> = match section {
             Section::Users => ui::btn_icon(Icon::Plus, "Добавить", ui::Kind::Primary, Some(Msg::Add)).into(),
             _ => iced::widget::Space::new().into(),
         };
-        let body: El<'_, Msg> = match self.section {
+        let body: El<'_, Msg> = match section {
             Section::Profile => tall(self.profile.view(ctx).map(Msg::Profile)),
             Section::Security => tall(self.security.view(ctx).map(Msg::Security)),
             Section::Appearance => tall(self.profile.appearance(ctx).map(Msg::Profile)),
@@ -408,5 +431,26 @@ mod tests {
         // Manages accounts and is an operator in Checks: the accounts, not Checks' own administration.
         assert_eq!(offered("operator", Some(true)), ["Пользователи", "Сессии", "Обновления", "Профиль"]);
         assert_eq!(offered("operator", Some(false)), ["Обновления", "Профиль"]);
+    }
+
+    #[test]
+    fn an_account_that_stops_managing_accounts_is_taken_off_their_pages() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = Ctx::for_tests(dir.path());
+        ctx.user = Some(UserInfo { id: 3, username: "u".into(), role: "operator".into(), global_admin: Some(true), ..Default::default() });
+        let mut screen = Settings::new(&ctx);
+        screen.section = Section::Users;
+        let sees = |screen: &Settings, ctx: &Ctx, wanted: &str| Simulator::with_size(SimSettings::default(), iced::Size::new(1360.0, 860.0), screen.view(ctx)).find(wanted).is_ok();
+        assert!(sees(&screen, &ctx, "Добавить"));
+
+        // The right is taken away. Before the screen is told, nothing of the section is drawn.
+        ctx.user.as_mut().unwrap().global_admin = Some(false);
+        assert!(!sees(&screen, &ctx, "Добавить"));
+        screen.access_changed(&ctx);
+        assert!(screen.section == Section::Profile);
+        // A section the account still has is left where it is.
+        screen.section = Section::Updates;
+        screen.access_changed(&ctx);
+        assert!(screen.section == Section::Updates);
     }
 }

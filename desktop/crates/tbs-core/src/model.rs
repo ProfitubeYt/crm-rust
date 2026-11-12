@@ -120,12 +120,27 @@ pub struct UserInfo {
     /// The workspaces the start window lists for this account, by the server's
     /// word. A server from before workspaces does not send it: Checks is all
     /// that server has, and every account on it is a Checks account.
+    #[serde(deserialize_with = "as_sent")]
     pub workspaces: Option<Vec<String>>,
     /// Every role held, the workspaces the start window does not list included.
+    #[serde(deserialize_with = "as_sent")]
     pub workspace_roles: Option<BTreeMap<String, String>>,
     /// May administer the accounts of the whole CRM. A server from before that
     /// right was taken apart from the Checks role does not send it.
+    #[serde(deserialize_with = "as_sent")]
     pub global_admin: Option<bool>,
+}
+
+/// A grant described in a shape this build does not read is taken as not
+/// described at all: the account signs in as on a server from before
+/// workspaces, and the server goes on judging every request itself.
+fn as_sent<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).ok())
 }
 
 /// The workspaces as the server names them.

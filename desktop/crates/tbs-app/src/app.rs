@@ -159,7 +159,7 @@ pub enum Message {
     /// The page of a workspace that is one: Time, CRM administration.
     Hosted(hosted::Msg),
     /// What the server says of the account now: what it may open.
-    Account(Result<UserInfo, String>),
+    Account(u64, Result<UserInfo, String>),
     Resized(iced::Size),
     /// The other window is up: `true` for the small one of the start window.
     WindowSwapped(bool),
@@ -181,6 +181,9 @@ pub struct App {
     /// The window on screen is the small one of the start window.
     compact: bool,
     swapping: bool,
+    /// How many times the server was asked about the account. Answers come
+    /// back in any order, and only the latest question's is taken.
+    account_asked: u64,
     /// What the work window holds: the choice made on the start window.
     workspace: Subsystem,
     route: Route,
@@ -297,6 +300,7 @@ impl App {
             phase: Phase::Login(start),
             compact: true,
             swapping: false,
+            account_asked: 0,
             workspace: Subsystem::Receipts,
             route: Route::Transactions,
             tx: None,
@@ -427,12 +431,16 @@ impl App {
     }
 
     fn sign_out(&mut self) -> Task<Message> {
+        // Whoever signs in next finds nothing the pages kept for this account:
+        // the open one is emptied, and the folders of both are removed.
+        let kept = hosted::folders(&self.ctx);
         self.ctx.user = None;
-        // Whoever signs in next finds nothing the page kept for this account.
+        self.account_asked += 1;
         if let Some(screen) = &mut self.hosted {
             screen.forget_on_close();
         }
         self.close_workspace();
+        hosted::discard(kept);
         self.enter_login()
     }
 
@@ -473,12 +481,13 @@ impl App {
     /// Asks the server what the account may open now. Grants and revocations
     /// are made while clients run; the start window and an open workspace
     /// follow them without anybody signing in again.
-    fn refresh_account(&self) -> Task<Message> {
+    fn refresh_account(&mut self) -> Task<Message> {
         if self.ctx.user.is_none() || matches!(self.phase, Phase::Blocked { .. }) {
             return Task::none();
         }
-        let api = self.ctx.api.clone();
-        Task::perform(async move { api.me().await.map_err(text_error) }, Message::Account)
+        self.account_asked += 1;
+        let (api, asked) = (self.ctx.api.clone(), self.account_asked);
+        Task::perform(async move { api.me().await.map_err(text_error) }, move |answer| Message::Account(asked, answer))
     }
 
     /// Somebody signed in at the start window. The workspace chosen there
@@ -529,6 +538,12 @@ impl App {
         // After the workspace is closed: a file its screens hold open stays.
         if lost_checks && !store::remove_cache(&store_path(&self.ctx, &user)) {
             tracing::warn!("the cache of a revoked workspace is still on disk, emptied");
+        }
+        // The same for a page the account may no longer open, open just now or not.
+        let pages = [(Subsystem::Time, hosted::Kind::Time), (Subsystem::Admin, hosted::Kind::Admin)];
+        hosted::discard(pages.into_iter().filter(|(workspace, _)| !workspace.open_to(&user)).map(|(_, page)| hosted::folder(&self.ctx, page)).collect());
+        if let Some(screen) = &mut self.settings {
+            screen.access_changed(&self.ctx);
         }
         task
     }
@@ -655,7 +670,9 @@ impl App {
                         // was not yet; a page the server refused starts over.
                         if let Some(page) = &mut self.hosted {
                             page.reload();
-                            return task;
+                            // Asked for while the work window was on its way,
+                            // the page has not been started: nothing else will.
+                            return Task::batch([task, self.enter_hosted()]);
                         }
                         if self.workspace != Subsystem::Receipts || self.tx.is_none() {
                             return self.enter_main();
@@ -754,14 +771,21 @@ impl App {
                     screen.server_answered(online);
                 }
             }
-            Message::Account(Ok(fresh)) => {
+            Message::Account(asked, Ok(fresh)) => {
+                // The server has been asked again since: this answer may be
+                // older than what the client already knows.
+                if asked != self.account_asked {
+                    return Task::none();
+                }
                 // Asked for by an account that has since signed out, or been replaced.
                 let Some(current) = self.ctx.user.as_mut().filter(|current| current.id == fresh.id) else { return Task::none() };
                 current.adopt_access(&fresh);
                 return self.access_changed();
             }
             // Out of reach, or a refusal the session's own events have told of.
-            Message::Account(Err(reason)) => tracing::debug!("account not refreshed: {reason}"),
+            Message::Account(_, Err(reason)) => tracing::debug!("account not refreshed: {reason}"),
+            // Late news of a session that is already gone: nobody is signed in.
+            Message::Api(ApiEvent::SessionRevoked | ApiEvent::AccountDisabled) if self.ctx.user.is_none() => {}
             Message::Api(ApiEvent::SessionRevoked) => {
                 // Every request the session failed says so: it is told once.
                 let news = "Сессия завершена, войдите снова";
@@ -1783,26 +1807,26 @@ mod workspace_tests {
         let dir = tempfile::tempdir().unwrap();
         // At work: the workspace on screen is taken away, and the periodic question finds out.
         let mut app = opened(&dir, account(&["time"], true), "Открыть Учёт времени");
-        let _ = app.update(Message::Account(Ok(account(&[], true))));
+        let _ = app.update(Message::Account(app.account_asked, Ok(account(&[], true))));
         assert!(on_the_start_window(&app) && app.hosted.is_none());
         assert!(sees(&app, "Открыть Администрирование CRM") && !sees(&app, "Открыть Учёт времени"));
 
         // On the start window: a grant appears, a revocation disappears.
-        let _ = app.update(Message::Account(Ok(account(&["checks", "time"], false))));
+        let _ = app.update(Message::Account(app.account_asked, Ok(account(&["checks", "time"], false))));
         assert!(sees(&app, "Транзакции и учёт чеков") && sees(&app, "Табель и отметки сотрудников") && !sees(&app, "Учётные записи и доступ"));
 
         // Somebody else's answer, come late: nothing of it is taken.
         let mut other = account(&[], true);
         other.id = 99;
-        let _ = app.update(Message::Account(Ok(other)));
+        let _ = app.update(Message::Account(app.account_asked, Ok(other)));
         assert!(sees(&app, "Транзакции и учёт чеков") && !sees(&app, "Учётные записи и доступ"));
         // A server that could not be asked changes nothing.
-        let _ = app.update(Message::Account(Err("Нет связи с сервером".into())));
+        let _ = app.update(Message::Account(app.account_asked, Err("Нет связи с сервером".into())));
         assert!(sees(&app, "Табель и отметки сотрудников"));
 
         // An open workspace the account still has is left alone.
         let mut app = opened(&dir, account(&["checks", "time"], true), "Табель и отметки сотрудников");
-        let _ = app.update(Message::Account(Ok(account(&["time"], false))));
+        let _ = app.update(Message::Account(app.account_asked, Ok(account(&["time"], false))));
         assert!(matches!(app.phase, Phase::Main) && app.hosted.is_some());
     }
 
@@ -1954,10 +1978,80 @@ mod workspace_tests {
     }
 
     #[test]
+    fn a_page_the_launch_password_stood_before_is_started_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        // The password is asked for while the work window is on its way: the
+        // page has not been started yet, and the window's arrival finds the
+        // password in front of it.
+        let mut app = resumed(&dir, account(&["time"], false));
+        press(&mut app, "Открыть Учёт времени");
+        let _ = app.update(Message::Entitled(Entitled::Allowed));
+        let _ = app.update(Message::Api(ApiEvent::LaunchRequired));
+        let _ = app.update(Message::WindowSwapped(false));
+        assert!(matches!(app.phase, Phase::Launch(_)));
+        assert!(app.hosted.as_ref().is_some_and(|page| !page.started()), "the page was started behind the password");
+        let unlocked = LaunchVerify { verified: true, session_token: Some("launch".into()), ..Default::default() };
+        let _ = app.update(Message::Launch(gate::Msg::Answer(Ok(unlocked))));
+        assert!(matches!(app.phase, Phase::Main));
+        assert!(app.hosted.as_ref().is_some_and(Hosted::started), "the page stays on «Загрузка…» for good");
+    }
+
+    #[test]
+    fn an_older_answer_about_the_account_does_not_undo_a_newer_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = resumed(&dir, account(&["checks", "time"], false));
+        assert!(sees(&app, "Табель и отметки сотрудников"));
+        // Asked twice, Time taken away in between; the answers arrive the other way round.
+        app.account_asked = 2;
+        let _ = app.update(Message::Account(2, Ok(account(&["checks"], false))));
+        assert!(!sees(&app, "Табель и отметки сотрудников"));
+        let _ = app.update(Message::Account(1, Ok(account(&["checks", "time"], false))));
+        assert!(!sees(&app, "Табель и отметки сотрудников"), "the first answer, come last, gave Time back");
+    }
+
+    fn gone(folder: &std::path::Path) -> bool {
+        for _ in 0..100 {
+            if !folder.exists() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[test]
+    fn what_the_pages_kept_goes_with_the_sign_in_and_with_the_access() {
+        let dir = tempfile::tempdir().unwrap();
+        // On the start window, no page open: signing out removes the folders all the same.
+        let mut app = resumed(&dir, account(&["time"], true));
+        let kept = hosted::folders(&app.ctx);
+        for folder in &kept {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let _ = app.update(Message::LoggedOut);
+        assert!(app.ctx.user.is_none() && kept.iter().all(|folder| gone(folder)));
+        // Late news of the session that ended changes nothing for whoever is next.
+        let asked = app.account_asked;
+        let _ = app.update(Message::Api(ApiEvent::SessionRevoked));
+        let _ = app.update(Message::Api(ApiEvent::AccountDisabled));
+        assert!(app.toasts.is_empty() && app.account_asked == asked);
+
+        // Time is taken away while its page is closed: its folder goes, the panel's stays.
+        let mut app = resumed(&dir, account(&["checks", "time"], true));
+        let (time, admin) = (hosted::folder(&app.ctx, hosted::Kind::Time), hosted::folder(&app.ctx, hosted::Kind::Admin));
+        for folder in [&time, &admin] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        let _ = app.update(Message::Account(app.account_asked, Ok(account(&["checks"], true))));
+        assert!(gone(&time) && admin.exists());
+    }
+
+    #[test]
     fn a_refused_page_has_the_account_asked_about_and_decides_nothing_itself() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = opened(&dir, account(&["time"], false), "Открыть Учёт времени");
-        let lost = hosted::Msg::Signal(hosted::Signal::Said(hosted::Kind::Time, r#"{"type":"access-lost"}"#.into()));
+        let owner = app.hosted.as_ref().unwrap().owner();
+        let lost = hosted::Msg::Signal(hosted::Signal::Said(owner, r#"{"type":"access-lost"}"#.into()));
         let _ = app.update(Message::Hosted(lost));
         // The page's word closes nothing: the server's does, when it is asked.
         assert!(matches!(app.phase, Phase::Main) && app.hosted.is_some());
