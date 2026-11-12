@@ -171,11 +171,15 @@ def summary_lines(manifest: dict) -> list:
 
 def _inside_repository(path: Path) -> bool:
     repository = ROOT.parent
+    # Source archives and deployed containers do not carry Git metadata.
+    # Protect the whole checkout when recognizable, otherwise the backend package.
+    if not (repository / ".git").exists() and not (repository / "desktop" / "Cargo.toml").is_file():
+        repository = ROOT
     try:
         path.resolve().relative_to(repository.resolve())
     except ValueError:
         return False
-    return (repository / ".git").exists()
+    return True
 
 
 def main(argv=None) -> int:

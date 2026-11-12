@@ -300,3 +300,16 @@ def test_a_part_of_the_manifest_can_be_run_alone_and_the_tool_stands_by_itself(d
     source = open(tool.__file__, encoding="utf-8").read()
     for module in ("database", "services", "parsers", "api", "workers"):
         assert f"from {module}" not in source and f"import {module}" not in source
+
+
+def test_manifest_guard_protects_source_archives_and_installed_backend(tmp_path, monkeypatch):
+    backend = tmp_path / "release" / "backend"
+    backend.mkdir(parents=True)
+    monkeypatch.setattr(builder, "ROOT", backend)
+    assert builder._inside_repository(backend / "manifest.json")
+    assert not builder._inside_repository(tmp_path / "private" / "manifest.json")
+    desktop = backend.parent / "desktop"
+    desktop.mkdir()
+    (desktop / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+    assert builder._inside_repository(backend.parent / "docs" / "manifest.json")
+    assert not builder._inside_repository(tmp_path / "private" / "manifest.json")
