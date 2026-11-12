@@ -1,8 +1,10 @@
 # Continue: Time / Hub / global CRM administration
 
-Repository `https://github.com/tashiekachludzinskizuvoqe47-spec/fix`, branch
-`work/time-hub-admin-resume` (from `main` `7c4e4f4`). Continue on this branch; do not
-restart from `main`, do not redo or revert what is on it.
+Repository: https://github.com/josukekleinjewite51-ui/fix . Current main already includes
+all work through 10f7ea811da0a29452fe3f41ac854268b4ad83ad plus this handoff correction.
+Create work/time-hub-admin-finish from CURRENT main. Do not use the previous account's
+older main, replay existing commits or publish to the old repository. Application code
+is unchanged by this handoff.
 
 Read first, in this order:
 
@@ -50,7 +52,7 @@ priority 2. State of the last commit: the desktop tests pass (348 app, 141 core;
    progress record. Then the final report and the request for approval.
 
 Commit and push after every one of these with an explicit refspec
-(`git push origin work/time-hub-admin-resume:refs/heads/work/time-hub-admin-resume`), check
+(`git push origin work/time-hub-admin-finish:refs/heads/work/time-hub-admin-finish`), check
 `git status --untracked-files=all` before each commit and compare `git ls-remote` with
 `git rev-parse HEAD` after each push.
 
