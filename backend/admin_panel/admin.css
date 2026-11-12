@@ -103,14 +103,15 @@ input[type="checkbox"] { min-height: 0; width: 16px; height: 16px; margin: 0; ac
   border-left: 1px solid var(--line); box-shadow: var(--shadow); z-index: 11; display: flex; flex-direction: column;
 }
 .sheet-head { display: flex; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
-.sheet-body { padding: 4px 20px 28px; overflow: auto; }
+.sheet-body { padding: 4px 20px 0; overflow: auto; }
+.sheet-body > :last-child { margin-bottom: 28px; }
 .section { padding: 16px 0; border-bottom: 1px solid var(--line); }
 .section:last-child { border-bottom: 0; }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
 .note { background: var(--chip); border-radius: 6px; padding: 8px 10px; font-size: 12.5px; margin-top: 10px; }
 .sessions { list-style: none; margin: 0 0 10px; padding: 0; }
 .sessions li { padding: 6px 0; border-bottom: 1px dashed var(--line); font-size: 12.5px; }
-.rules { list-style: none; margin: 6px 0 0; padding: 0; font-size: 12.5px; color: var(--muted); }
+.rules { list-style: none; margin: 6px 0 10px; padding: 0; font-size: 12.5px; color: var(--muted); }
 .rules li.met { color: var(--ok); }
 .rules li::before { content: "○ "; }
 .rules li.met::before { content: "● "; }
@@ -123,6 +124,32 @@ input[type="checkbox"] { min-height: 0; width: 16px; height: 16px; margin: 0; ac
   max-width: 440px;
 }
 .toast.err { background: var(--danger); color: #fff; }
+
+/* Карточка пользователя: рабочие пространства, периоды, панель сохранения */
+.lines { list-style: none; margin: 0; padding: 0; }
+.lines li { padding: 2px 0; }
+.ws { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin-top: 10px; }
+.ws-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ws-head .check { margin: 0; font-weight: 600; }
+.ws-head select { min-width: 190px; }
+.ws-body { margin-top: 8px; }
+.sub { margin-top: 12px; }
+.sub > .label { font-size: 12.5px; color: var(--muted); margin-bottom: 4px; }
+.sub > input { display: block; width: 100%; }
+.period { display: flex; gap: 8px; align-items: center; margin-top: 6px; }
+.savebar {
+  position: sticky; bottom: 0; background: var(--surface); border-top: 1px solid var(--line);
+  padding: 12px 0; margin-top: -1px; display: flex; gap: 8px; align-items: center; z-index: 1;
+}
+.inline { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+.inline .field { margin-top: 0; flex: 1; min-width: 150px; }
+
+/* Рабочие пространства */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; }
+.cards .card h3 { font-size: 17px; margin-bottom: 4px; }
+.roles { width: 100%; border-collapse: collapse; margin-top: 10px; }
+.roles td { padding: 6px 0; border-top: 1px solid var(--line); vertical-align: top; font-size: 13px; }
+.roles td.num { text-align: right; white-space: nowrap; padding-left: 12px; font-variant-numeric: tabular-nums; }
 
 @media (max-width: 720px) {
   .topbar { flex-wrap: wrap; gap: 8px; }

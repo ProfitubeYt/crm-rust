@@ -11,10 +11,61 @@ Nothing here is deployed; production was not read or changed.
 | 1 | Backend: migration 0034, workspace access on the account, enforcement on every request | done | `bfbd068` |
 | 2 | Backend: admin API (grants, per-user sessions, guards, audit), Time gateway, bot identity endpoint | done | `bfbd068` |
 | 3 | Time: hub mode, bot checks per message, UI in gateway mode, container image | done | `35f8138` |
-| 4 | Scope correction: CRM administration separate from workspaces (migration 0035, registry, generic API) | done | this commit |
-| 5 | CRM administration panel (Russian), `/admin/` | static shell and route in; script and browser check next | — |
+| 4 | Scope correction: CRM administration separate from workspaces (migration 0035, registry, generic API) | done | `b47d06f` |
+| 5 | CRM administration panel (Russian), `/admin/` | done | this commit |
 | 6 | Desktop: «Учёт времени» and «Администрирование CRM» in the Hub | pending | — |
 | 7 | Deployment artefacts, local end-to-end run, deployment and rollback plan for approval | pending | — |
+
+## Milestone 5 — the CRM administration panel (2026-11-12)
+
+`backend/admin_panel/` (`index.html`, `admin.css`, `admin.js`, no build step, no dependency) served by
+`backend/api/admin_panel.py` at `/admin/`. It is a client of `/api/admin/*` and nothing more: it holds
+no data, and every call it makes is authorised on the server.
+
+What the owner can do in it: find accounts (search; filters by state, by workspace, without any
+workspace, CRM administrators); create an account; edit name, expiry, session lifetime; appoint or
+remove a CRM administrator; grant or revoke each workspace with its role; edit the Checks data
+restrictions of an operator (tabs, folders, sources, closed periods); set a new password (with a
+generator and the server's rules shown); require or reset 2FA; see and end sessions; link a Telegram
+ID; lift a sign-in lock; disable and enable; read each account's effective access and its journal;
+see the workspaces with their roles and holders; read the account journal.
+
+How it keeps the administrator's session: the access token lives in the page's memory only; the
+session is continued by the backend's existing HttpOnly refresh cookie, which script cannot read.
+Nothing is written to `localStorage`. Behind the launch gate it asks for the launch password first
+and keeps only that gate token for the tab. The page is served with
+`default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; form-action 'none';
+frame-ancestors 'none'`; it has no inline script or style and builds the page from text nodes.
+
+### Evidence
+
+| What | How | Result |
+|---|---|---|
+| Files and policy | `tests/test_admin_panel_static.py` (4 tests): only the three named files are served, traversal and other names 404, headers and CSP, the page obeys its own policy, files are public while `/api/admin/meta` is 401 / 403 `global_admin_required` | passed |
+| Whole backend suite | `pytest tests` | **1330 passed** |
+| The panel in a browser | headless Chrome 157 against the real application's HTTP layer with PostgreSQL 15 and Redis 7 in local containers; ten seeded test accounts. The lifespan was replaced so TDLib, history loading and the agent scheduler did not start, and the system-access gate was off because no Caddy stood in front | below |
+
+Observed in the browser run (`/tmp/hoplite/tools/panel-e2e.sh`, `panel-e2e-launch.sh`; a local
+simulation with test data, not production):
+
+- A Checks administrator and a Time manager sign in with correct passwords and are refused:
+  «У этой учётной записи нет прав администратора CRM»; the session just opened is closed again.
+- A CRM administrator with no workspace opens the panel; after a reload the session resumes with
+  nothing in web storage and no cookie visible to script.
+- Create with a generated password (6/6 rules): the row is `operator | checks f | time manager |
+  global_admin f | argon2id`; the password is not in the journal.
+- New password: asks first, then the new password signs in and the old sessions are gone.
+- A change reaches a signed-in client: with one token, Checks `200` → revoke → `403
+  workspace_forbidden` → grant CRM administration → admin API `200`, Checks still `403` → restore →
+  admin API `403`, Checks `200`; `permissions_version` unchanged.
+- End sessions: the token gets `401`. Disable: token `401`, sign-in `inactive_user`; enable: signs in.
+- Own card: the administrator box and the disable button are disabled; direct requests for the same
+  are refused by the server (`cannot_demote_self`, `cannot_disable_self`).
+- An account stripped of CRM administration but still Checks administrator and Time manager: admin
+  API, sessions and system settings `403`, Checks scopes `200`.
+- Behind the launch gate: the API answers `launch_required`, the page still loads, the panel asks
+  for the launch password, counts wrong attempts, then signs in and survives a reload.
+- No page errors and no console output during the runs; dark scheme and a 430 px viewport render.
 
 ## Milestone 4 — administration is global (2026-11-12, after the owner's correction)
 
@@ -103,8 +154,10 @@ skipped — same as the 2.0.2 record; Time workspace 38 passed.
 
 ## Open items / unrun checks
 
-- The panel's script is not written yet, so `/admin/` serves the page shell without behaviour. No
-  browser check has been made.
+- The panel was exercised in headless Chrome only; no other browser, and not behind the production
+  Caddy (which adds `X-System-Access` and needs the `/admin*` route from the deployment plan).
+- The panel does not set up 2FA for an administrator who is required to have it and has none yet;
+  it says so and points to the desktop sign-in, where that flow exists.
 - Desktop: no change yet; the Hub does not list «Учёт времени».
 - `cargo clippy` and `cargo fmt --check` for Time: the tools are absent from the pinned image.
 - Windows build of the desktop, a real Telegram bot and production were not exercised.
