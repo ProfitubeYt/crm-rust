@@ -198,3 +198,8 @@ _In progress._ Recovery of the build: done (§0). P2 backend, P3 filters: in wor
 ## Production integration — 12 November 2026
 
 Backend b6419c6 and Rust UI 83f5bdd were merged without conflicts at b5bbc0d. Backend deployed with migration 0032 after backups. Native 2.0.1 release and private installer built. Fresh Windows checks: 116 core and 264 app tests pass. Fresh isolated backend checks: 1092 pass, 1 optional oletools check skipped. See docs/handoff/DEPLOYMENT_20261112.md for backup paths, rollback, live smoke checks and limitations. Earlier unfinished-state statements above describe previous sessions; real Excel execution and interactive Windows validation remain unverified.
+
+
+## Release 2.0.2 — 12 November 2026
+
+Hub/separators 44e2f98 and enrichment/column-order 6eaa51c merged at d16c1c9. Windows checks: 120 core and 302 app unit tests passed; release executable and private installer 2.0.2 built. Isolated backend: 1226 passed, 1 optional VBA inspection skipped. Production migrated to 0033 and application image updated with fresh backups; workers and HTTPS health verified. Historical fills were dry-run only (457 application and 59 details proposals). See docs/handoff/DEPLOYMENT_2_0_2_20261112.md for evidence, rollback and remaining runtime/Excel verification limits.
