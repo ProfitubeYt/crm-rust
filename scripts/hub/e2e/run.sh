@@ -12,6 +12,8 @@
 #   scripts/hub/e2e/run.sh start      the stack as it would be deployed: backend, Time, Caddy and
 #                                     the stand-in for Telegram; Caddy on 127.0.0.1:18080
 #   scripts/hub/e2e/run.sh checks     checks.py against it
+#   scripts/hub/e2e/run.sh page       for work on the Time page, after `start`: a made-up month in
+#                                     Time and page_host.py, the page in a browser as in the program
 #   scripts/hub/e2e/run.sh down       containers, network and data removed
 #   scripts/hub/e2e/run.sh compose …  docker compose with the stack's files, for a look inside
 #
@@ -127,7 +129,20 @@ checks() {
 }
 
 down() {
-    compose --profile tool down -v --remove-orphans
+    compose --profile tool --profile page down -v --remove-orphans
+}
+
+# For work on the Time page: a made-up month in Time, and the page served to a
+# browser the way the desktop program serves it to its web view (page_host.py).
+page() {
+    say "a made-up month in Time (timelist demo)"
+    compose run --rm -T --no-deps timelist demo || echo "(Time has people in it already: left as it is)"
+    say "the backend again, without the limit of 200 requests a minute that page_shots.py would run into"
+    E2E_RATE_LIMIT=20000 compose up -d --wait --force-recreate backend >/dev/null 2>&1
+    say "the page host: a manager on 8101, a viewer on 8102, on the stack's network"
+    E2E_RATE_LIMIT=20000 compose --profile page up -d --force-recreate pagehost
+    sleep 4
+    compose --profile page logs --no-log-prefix --tail 3 pagehost
 }
 
 case "${1:-all}" in
@@ -135,6 +150,7 @@ case "${1:-all}" in
     rehearse) rehearse ;;
     start) start ;;
     checks) shift; checks "$@" ;;
+    page) page ;;
     down) down ;;
     compose) shift; compose "$@" ;;
     all)
@@ -144,5 +160,5 @@ case "${1:-all}" in
         checks || { echo "checks failed; the stack is left running, '$0 down' removes it" >&2; exit 1; }
         down
         ;;
-    *) sed -n '2,22p' "$0"; exit 2 ;;
+    *) sed -n '2,24p' "$0"; exit 2 ;;
 esac

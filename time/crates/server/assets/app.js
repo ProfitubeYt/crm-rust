@@ -83,6 +83,9 @@ const S = {
 };
 
 async function api(method, path, body, raw) {
+  // Только просмотр: правку не отправляют вовсе. Сервер отказал бы в ней сам,
+  // а «Проверить фразу» ничего не записывает и открыта всем.
+  if (S.readonly && method !== 'GET' && path !== '/parse') throw new Error(HUB_ERRORS.time_role_forbidden);
   // Имя для журнала изменений в Hub ставит сервер по учётной записи.
   const opt = { method, headers: HUB ? {} : { 'X-Timelist-User': encodeURIComponent(S.user) } };
   if (body !== undefined) {
@@ -171,8 +174,11 @@ async function loadMeta() {
   if (HUB) {
     const who = S.meta.hub || {};
     S.user = who.display_name || who.username || '';
+    const was = S.readonly;
     S.readonly = !who.can_edit;
     document.body.classList.toggle('readonly', S.readonly);
+    // Права сменили, пока страница открыта: кнопки правки появляются или исчезают сразу.
+    if (was !== undefined && was !== S.readonly && S.view) render(true);
     // Потока событий через шлюз нет: о переменах говорит счётчик изменений.
     const changed = S.revision != null && S.meta.revision !== S.revision;
     S.revision = S.meta.revision;
@@ -251,9 +257,12 @@ function render(keepScroll) {
   $('#month-input').value = S.ym;
   $('#lock-chip').hidden = !(v && v.lock);
   if (v && v.lock) $('#lock-chip').title = `Закрыт ${v.lock.locked_at}${v.lock.locked_by ? ' · ' + v.lock.locked_by : ''}`;
-  $('#user-btn').textContent = HUB ? (S.user || 'Учётная запись') + (S.readonly ? ' · просмотр' : '') : S.user || 'Указать имя';
+  // В Hub учётную запись показывает окно программы; здесь — только то, что она для просмотра.
+  if (!HUB) $('#user-btn').textContent = S.user || 'Указать имя';
+  $('#ro-chip').hidden = !S.readonly;
   for (const b of $$('#tabs button')) {
     b.classList.toggle('active', b.dataset.tab === S.tab);
+    b.setAttribute('aria-selected', b.dataset.tab === S.tab ? 'true' : 'false');
     if (b.dataset.tab === 'timelist') b.innerHTML = 'Тайм-лист' + (v && v.issues ? ` <span class="badge">${v.issues}</span>` : '');
   }
   const main = $('#main');
@@ -268,7 +277,7 @@ function emptyState(main) {
   main.innerHTML = `<div class="page narrow"><div class="card"><div class="empty">
     <b>Сотрудников пока нет</b>
     Добавьте их в разделе «Справочники» или импортируйте прежнюю книгу Excel — оттуда же подтянутся отметки и сообщения.
-    <div style="margin-top:14px"><button class="btn primary" data-go="refs">Открыть справочники</button></div>
+    <div style="margin-top:14px"><button class="btn primary" data-ro data-go="refs">Открыть справочники</button></div>
   </div></div></div>`;
 }
 
@@ -363,21 +372,21 @@ function renderTimelist(main) {
   main.innerHTML = `
     <div class="toolbar">
       <div class="seg" id="view-seg" title="Вид таблицы">
-        <button data-compact="0" class="${S.compact ? '' : 'active'}">Как в Excel</button>
-        <button data-compact="1" class="${S.compact ? 'active' : ''}">Компактно</button>
+        <button data-ro data-compact="0" class="${S.compact ? '' : 'active'}">Как в Excel</button>
+        <button data-ro data-compact="1" class="${S.compact ? 'active' : ''}">Компактно</button>
       </div>
-      <button class="btn" id="issues-btn" ${v.issues ? '' : 'disabled'}>На проверку <span class="badge${errors ? ' err' : v.issues ? '' : ' ok'}">${v.issues}</span></button>
-      <button class="btn" id="period-btn">+ Отпуск, больничный, командировка</button>
+      <button class="btn" data-ro id="issues-btn" ${v.issues ? '' : 'disabled'}>На проверку <span class="badge${errors ? ' err' : v.issues ? '' : ' ok'}">${v.issues}</span></button>
+      <button class="btn" id="period-btn" title="Отпуск, больничный, командировка: период отсутствия">+ Отсутствие</button>
+      <span class="spacer"></span>
       <div class="legend">
         <span><span class="dot" style="background:var(--auto)"></span>из Telegram</span>
         <span><span class="dot" style="background:var(--manual)"></span><b>вручную</b></span>
         <span><span class="dot" style="background:var(--warn-bg);border:1px solid var(--warn-text)"></span>проверить</span>
         <span><span class="dot" style="background:var(--err-bg);border:1px solid var(--err-text)"></span>ошибка</span>
       </div>
-      <span class="spacer"></span>
-      <a class="btn" href="${API_BASE}/export/${S.ym}" download>Excel</a>
+      <a class="btn" data-ro href="${API_BASE}/export/${S.ym}" download title="Выгрузить месяц в Excel">Excel</a>
       <button class="btn" id="lock-btn">${v.lock ? 'Открыть месяц' : 'Закрыть месяц'}</button>
-      <button class="icon-btn" id="side-btn" title="Панель дня">${S.sideOpen ? '⟩' : '⟨'}</button>
+      <button class="icon-btn" data-ro id="side-btn" title="Панель дня" aria-label="Панель дня">${S.sideOpen ? '⟩' : '⟨'}</button>
     </div>
     <div class="tl-layout">
       <div class="grid-wrap" id="grid" tabindex="0">${gridHtml(v)}</div>
@@ -467,7 +476,7 @@ render.badge = () => {
 
 function startEdit(initial) {
   const cur = selectedCell();
-  if (!cur || S.editing) return;
+  if (!cur || S.editing || S.readonly) return;
   if (S.view.lock) return toast('Месяц закрыт — откройте его, чтобы вносить правки', true);
   if (S.compact) {
     if (!S.sideOpen) toggleSide();
@@ -519,7 +528,7 @@ function startEdit(initial) {
 
 function clearSelected() {
   const cur = selectedCell();
-  if (!cur || S.compact) return;
+  if (!cur || S.compact || S.readonly) return;
   if (S.view.lock) return toast('Месяц закрыт — откройте его, чтобы вносить правки', true);
   const manual = (cur.cell.mask >> S.sel.f) & 1;
   if (cur.cell.m[cur.field] != null) saveMark(cur.emp, cur.day.date, { set: { [cur.field]: null } });
@@ -588,7 +597,7 @@ function renderSide(keepFocus) {
   const cur = selectedCell();
   if (!cur) {
     side.innerHTML = `<div class="empty"><b>Выберите ячейку</b>Здесь появятся сообщения сотрудника за день, расчёт и история правок.<br><br>
-      <span class="hint">Стрелки — перемещение, Enter или ввод с клавиатуры — правка, Delete — очистить. Время можно вводить как 930, 9.30 или 9:30.</span></div>`;
+      <span class="hint">${S.readonly ? 'Стрелки — перемещение по таблице. Учётной записи открыт только просмотр.' : 'Стрелки — перемещение, Enter или ввод с клавиатуры — правка, Delete — очистить. Время можно вводить как 930, 9.30 или 9:30.'}</span></div>`;
     return;
   }
   const { emp, day, cell } = cur;
@@ -599,7 +608,8 @@ function renderSide(keepFocus) {
     loadDetail(emp.id, day.date, key);
   }
   const focused = keepFocus && document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.field : null;
-  const locked = !!S.view.lock;
+  // Закрытый месяц и учётная запись «только просмотр» выглядят одинаково: поля не правятся, действий нет.
+  const locked = !!S.view.lock || !!S.readonly;
   const d = S.detail;
   const kindChip = { weekend: 'выходной', holiday: day.title || 'праздник', short: 'сокращённый день', work: '' }[day.kind];
   const fieldInput = (f, fi) => {
@@ -743,7 +753,7 @@ function issuesDialog() {
   items.sort((a, b) => (a.i.severity === b.i.severity ? a.di - b.di || a.ei - b.ei : a.i.severity === 'error' ? -1 : 1));
   const body = openModal(`На проверку: ${items.length}`, `
     <p class="hint">Автоматика расставила отметки сама, но в этих днях сомневается. Нажмите на строку — откроется день с сообщениями и кнопками быстрого исправления.</p>
-    <div class="issues-list">${items.map((x, n) => `<button data-n="${n}"><span class="when">${v.days[x.di].dow} ${dmy(v.days[x.di].date)}</span><span class="who">${esc(x.e.nick)}</span><span class="chip ${x.i.severity === 'error' ? 'err' : 'warn'}">${esc(x.i.text)}</span></button>`).join('')}</div>`, true);
+    <div class="issues-list">${items.map((x, n) => `<button data-ro data-n="${n}"><span class="when">${v.days[x.di].dow} ${dmy(v.days[x.di].date)}</span><span class="who">${esc(x.e.nick)}</span><span class="chip ${x.i.severity === 'error' ? 'err' : 'warn'}">${esc(x.i.text)}</span></button>`).join('')}</div>`, true);
   body.onclick = (ev) => {
     const b = ev.target.closest('button[data-n]');
     if (!b) return;
@@ -857,7 +867,7 @@ function renderTabel(main) {
       </table></div>
     </div>
     <div class="card">
-      <header><h3>По дням</h3><div class="seg" id="tabel-emp">${v.employees.map((e) => `<button data-id="${e.id}" class="${e.id === emp.id ? 'active' : ''}" title="${esc(e.full_name)}">${esc(e.nick)}</button>`).join('')}</div></header>
+      <header><h3>По дням</h3><div class="seg" id="tabel-emp">${v.employees.map((e) => `<button data-ro data-id="${e.id}" class="${e.id === emp.id ? 'active' : ''}" title="${esc(e.full_name)}">${esc(e.nick)}</button>`).join('')}</div></header>
       <div class="body flush"><table class="tbl">
         <thead>
           <tr><th rowspan="2">№</th><th rowspan="2">Дата</th><th rowspan="2">Д.нед.</th><th colspan="2" class="c">Отраб. врем.</th><th colspan="7" class="c">Т-лист</th><th colspan="2" class="c">Опоздания</th><th colspan="2" class="c">Отсутствия</th><th colspan="2" class="c">Ранний уход</th></tr>
@@ -1005,7 +1015,7 @@ async function renderTelegram(main) {
       <div class="card">
         <header><h3>Проверить фразу</h3></header>
         <div class="body">
-          <div class="row"><input id="probe-text" placeholder="Например: 17.09 уход 18:00" style="flex:1"><button class="btn" id="probe-btn">Разобрать</button></div>
+          <div class="row"><input data-ro id="probe-text" placeholder="Например: 17.09 уход 18:00" style="flex:1"><button class="btn" data-ro id="probe-btn">Разобрать</button></div>
           <div id="probe-out" class="hint" style="margin-top:10px">Покажет, как бот поймёт сообщение: вид отметки, время, дату и код причины.</div>
         </div>
       </div>
@@ -1024,12 +1034,12 @@ async function renderTelegram(main) {
     </div>
     <div class="card">
       <header><h3>Сообщения · ${esc(S.view.title)}</h3>
-        <select id="msg-emp"><option value="">Все сотрудники</option>${S.employees.map((e) => `<option value="${e.id}" ${String(e.id) === f.employee ? 'selected' : ''}>${esc(e.nick)}</option>`).join('')}</select>
-        <select id="msg-only">
+        <select data-ro id="msg-emp"><option value="">Все сотрудники</option>${S.employees.map((e) => `<option value="${e.id}" ${String(e.id) === f.employee ? 'selected' : ''}>${esc(e.nick)}</option>`).join('')}</select>
+        <select data-ro id="msg-only">
           <option value="">Все сообщения</option><option value="unrecognized" ${f.only === 'unrecognized' ? 'selected' : ''}>Не распознанные</option>
           <option value="unassigned" ${f.only === 'unassigned' ? 'selected' : ''}>Без сотрудника</option><option value="ignored" ${f.only === 'ignored' ? 'selected' : ''}>Не учитываются</option>
         </select>
-        <input id="msg-q" placeholder="Поиск по тексту" value="${esc(f.q)}" style="width:200px">
+        <input data-ro id="msg-q" placeholder="Поиск по тексту" value="${esc(f.q)}" style="width:200px">
         <button class="btn" id="paste-btn">Вставить чат</button>
         <button class="btn" id="add-msg">+ Сообщение</button>
       </header>
@@ -1152,7 +1162,7 @@ async function renderRefs(main) {
           <p>Импорт прежней книги <code>TimeList-ГГГГ-М.xlsm</code>: сотрудники, коэффициенты, нормы, отметки месяца и сообщения с листа «Telegram».</p>
           <div class="row"><input type="file" id="xlsx-file" accept=".xlsm,.xlsx" style="flex:1"><button class="btn primary" id="xlsx-import">Импортировать</button></div>
           <p class="hint" style="margin-top:8px">Отметки импортируются как ручные, поэтому цифры месяца совпадут с книгой.</p>
-          <p style="margin-top:14px"><a class="btn" href="${API_BASE}/export/${S.ym}" download>Выгрузить ${esc(S.view ? S.view.title : S.ym)} в Excel</a></p>
+          <p style="margin-top:14px"><a class="btn" data-ro href="${API_BASE}/export/${S.ym}" download>Выгрузить ${esc(S.view ? S.view.title : S.ym)} в Excel</a></p>
         </div>
       </div>
     </div>
@@ -1426,6 +1436,29 @@ function bind() {
   });
 }
 
+// ------------------------------------------------------------------ только просмотр
+
+/**
+ * Учётной записи «только просмотр» правку не предлагают: в разделах и диалогах
+ * остаётся то, что помечено `data-ro` (переходы, фильтры, проверка фразы, выгрузка),
+ * остальные кнопки убираются, а поля становятся неизменяемыми. Всё, что появится
+ * позже и не помечено, тоже скрывается: забытая пометка прячет лишнее, а не открывает
+ * правку. Права проверяет сервер; здесь — только то, что человеку показано.
+ */
+function applyReadonly() {
+  if (!S.readonly) return;
+  for (const root of [$('#main'), $('#modal-body')]) {
+    if (!root) continue;
+    for (const el of $$('button:not([data-ro]):not([hidden]), a.btn:not([data-ro]):not([hidden]), [data-reset]:not([hidden])', root)) el.hidden = true;
+    for (const el of $$('input:not([data-ro]):not(:disabled), select:not([data-ro]):not(:disabled), textarea:not([data-ro]):not(:disabled)', root)) el.disabled = true;
+  }
+}
+
+function watchReadonly() {
+  const watch = new MutationObserver(applyReadonly);
+  for (const root of [$('#main'), $('#modal-body')]) watch.observe(root, { childList: true, subtree: true });
+}
+
 function connectEvents() {
   if (HUB) {
     // Счётчик изменений читается вместе с состоянием бота; сбой опроса не показывается.
@@ -1440,9 +1473,10 @@ function connectEvents() {
 async function boot() {
   bind();
   if (HUB) {
+    document.body.classList.add('hub');
     if (HUB.theme) document.documentElement.dataset.theme = HUB.theme;
-    $('#user-btn').title = 'Учётная запись';
     $('#theme-btn').hidden = !!HUB.native;
+    watchReadonly();
     try {
       await loadMeta();
     } catch (e) {

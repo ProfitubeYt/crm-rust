@@ -30,6 +30,10 @@ x-backend: &backend
     ROOT_ACCESS_SERVER_CONFIG_PATH: /run/hub-e2e/root-access.server.json
     SYSTEM_ACCESS_ENFORCED: "true"
     SCOPES_MANAGED_BY_CONFIG: "false"
+    # The server's own limit of requests a minute from one address, as in
+    # .env.example. Only `run.sh page` raises it: its browser reloads the page
+    # some sixty times a minute, which is no client's pace.
+    RATE_LIMIT_PER_MINUTE: ${E2E_RATE_LIMIT:-200}
     TIMELIST_INTERNAL_URL: http://timelist:8080
     TIMELIST_API_TOKEN: ${TIMELIST_API_TOKEN}
     TIME_HUB_KEY: ${TIME_HUB_KEY}
@@ -71,6 +75,20 @@ services:
       SYSTEM_ACCESS_TOKEN: ${SYSTEM_ACCESS_TOKEN}
       TIME_BOT_CHAT_ID: ${TIME_BOT_CHAT_ID}
       E2E_PASSWORD: ${E2E_PASSWORD}
+
+  # The Time page for a browser, served as the desktop program serves it to its
+  # web view; see page_host.py. For work on the page's layout only.
+  pagehost:
+    <<: *backend
+    profiles: ["page"]
+    entrypoint: ["/venv/bin/python", "/e2e/page_host.py"]
+    environment:
+      <<: *backend-env
+      E2E_PASSWORD: ${E2E_PASSWORD}
+    volumes:
+      - ./scripts/hub/e2e:/e2e:ro
+      - ./time/crates/server/assets:/time-assets:ro
+      - hub-backend-venv:/venv:ro
 
   backend:
     <<: *backend

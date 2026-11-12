@@ -16,26 +16,17 @@
   </script>
 </head>
 <body>
+  <!-- Одна строка: разделы, период, состояние. В окне программы (Hub) название,
+       учётную запись и выход показывает сама программа, здесь их нет. -->
   <header class="topbar">
     <div class="brand">
       <span class="logo" aria-hidden="true">
-        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
       </span>
       <span class="brand-name">Тайм-лист</span>
     </div>
 
-    <div class="month-nav" id="month-nav">
-      <button class="icon-btn" id="month-prev" title="Предыдущий месяц" aria-label="Предыдущий месяц">‹</button>
-      <label class="month-title" title="Выбрать месяц">
-        <span id="month-title">…</span>
-        <input type="month" id="month-input" aria-label="Месяц">
-      </label>
-      <button class="icon-btn" id="month-next" title="Следующий месяц" aria-label="Следующий месяц">›</button>
-      <button class="btn ghost small" id="month-today">Сегодня</button>
-      <span class="chip lock-chip" id="lock-chip" hidden>Месяц закрыт</span>
-    </div>
-
-    <nav class="tabs" id="tabs" role="tablist">
+    <nav class="tabs" id="tabs" role="tablist" aria-label="Разделы">
       <button role="tab" data-tab="timelist">Тайм-лист</button>
       <button role="tab" data-tab="tabel">Табель</button>
       <button role="tab" data-tab="svodka">Сводка</button>
@@ -44,7 +35,19 @@
       <button role="tab" data-tab="refs">Справочники</button>
     </nav>
 
+    <div class="month-nav" id="month-nav">
+      <button class="icon-btn" id="month-prev" title="Предыдущий месяц" aria-label="Предыдущий месяц">‹</button>
+      <label class="month-title" title="Выбрать месяц">
+        <span id="month-title">…</span>
+        <input type="month" id="month-input" aria-label="Месяц">
+      </label>
+      <button class="icon-btn" id="month-next" title="Следующий месяц" aria-label="Следующий месяц">›</button>
+      <button class="btn ghost small" id="month-today" title="К текущему месяцу">Сегодня</button>
+      <span class="chip lock-chip" id="lock-chip" hidden><span class="wide">Месяц закрыт</span><span class="tight">Закрыт</span></span>
+    </div>
+
     <div class="topbar-right">
+      <span class="chip gray" id="ro-chip" hidden title="Учётной записи открыт только просмотр: правки вносит руководитель"><span class="wide">Только просмотр</span><span class="tight">Просмотр</span></span>
       <span class="bot-state" id="bot-state" title="Состояние Telegram-бота"><i></i><span>бот</span></span>
       <button class="btn ghost small" id="user-btn" title="Имя для журнала изменений">Гость</button>
       <button class="icon-btn" id="theme-btn" title="Светлая / тёмная тема" aria-label="Переключить тему">
