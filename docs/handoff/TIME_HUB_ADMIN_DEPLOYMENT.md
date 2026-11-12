@@ -326,9 +326,9 @@ annotations and the attendance recorded since.
 
 **Approved by the owner on 2026-11-12, on conditions; not executed.** The owner approved this
 plan for production once the Time UI adaptation is finished and after the preflight checks,
-the tests and fresh verified backups. Decided with it: both accounts `admin` and `stlee`
-keep CRM administration; no credential is reset, nobody is signed out, Time is granted to
-nobody by the deployment; the Time bot stays off (`TIME_BOT_TOKEN` and `TIME_BOT_CHAT_ID`
+the tests and fresh verified backups. The owner also decided that both accounts `admin` and `stlee`
+keep CRM administration. As the plan already has it, no credential is reset, nobody is signed out, Time is granted to
+nobody by the deployment. The limits on the group are read as: the Time bot stays off (`TIME_BOT_TOKEN` and `TIME_BOT_CHAT_ID`
 empty in `.env`) until the group's ID is verified and privacy mode is disabled.
 
 Still open before step C may be taken: the UI adaptation (not finished, see the progress
