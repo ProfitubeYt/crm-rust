@@ -66,6 +66,7 @@ from services import description_service
 from services import annotation_service
 from services import annotation_import_service
 from services import annotation_rule_service
+from services.application_detection import mark_manual_application
 
 # Normalization helpers
 EMOJI_PATTERN = re.compile(r"[\U0001F300-\U0001FAFF\U00002600-\U000027BF]")
@@ -275,6 +276,10 @@ class TransactionResponse(BaseModel):
     card_last_4: Optional[str]
     operator_raw: Optional[str]
     application_mapped: Optional[str]
+    # Where «Приложение» came from: manual | import | dict | rule | similar | ai;
+    # null when unknown. The confidence is ordinal trust in an automatic value.
+    application_src: Optional[str] = None
+    application_confidence: Optional[float] = None
     transaction_type: str
     transaction_type_display: str
     # The two inputs the Excel workbook's «Операция» takes from the row itself,
@@ -552,6 +557,10 @@ def build_transaction_response(
         card_last_4=card4,
         operator_raw=operator_raw,
         application_mapped=app_mapped,
+        application_src=getattr(c, "application_src", None),
+        application_confidence=(
+            float(c.application_confidence) if getattr(c, "application_confidence", None) is not None else None
+        ),
         transaction_type=canonical_type,
         transaction_type_display=display,
         stored_transaction_type=getattr(c, "transaction_type", None),
@@ -1354,7 +1363,9 @@ async def bulk_update_transactions(
                 c.operator_raw = fields["operator_raw"]
 
             if "application_mapped" in fields:
-                c.application_mapped = fields["application_mapped"]
+                if (fields["application_mapped"] or None) != (c.application_mapped or None):
+                    c.application_mapped = fields["application_mapped"]
+                    mark_manual_application(c)
 
             if "currency" in fields:
                 c.currency = fields["currency"]
@@ -2589,6 +2600,7 @@ async def create_transaction(
             transaction_date=dt,
             operator_raw=payload.operator,
             application_mapped=payload.app,
+            application_src="manual" if payload.app else None,
             amount=store_amount,
             balance_after=payload.balance,
             card_last_4=payload.card_last4,
@@ -2612,13 +2624,14 @@ async def create_transaction(
         # Auto-map application if not provided
         if not payload.app and txn.operator_raw:
             try:
-                from parsers.operator_mapper import OperatorMapper
-                mapper = OperatorMapper(db)
-                match = mapper.map_operator_details(txn.operator_raw)
-                if match and match.get("application_name"):
-                    txn.application_mapped = match["application_name"]
-                    if match.get("is_p2p") is not None:
-                        txn.is_p2p = match["is_p2p"]
+                from services.application_detection import detector_for, stamp_application
+                detection = detector_for(db).detect(txn.operator_raw)
+                if detection.found:
+                    stamp_application(
+                        txn, detection.application, source=detection.source, confidence=detection.confidence,
+                    )
+                    if detection.is_p2p is not None:
+                        txn.is_p2p = detection.is_p2p
                     db.commit()
                     db.refresh(txn)
             except Exception as e:
@@ -2971,7 +2984,10 @@ async def update_transaction(
             c.operator_raw = update_dict["operator_raw"]
 
         if "application_mapped" in update_dict:
-            c.application_mapped = update_dict["application_mapped"]
+            if (update_dict["application_mapped"] or None) != (c.application_mapped or None):
+                c.application_mapped = update_dict["application_mapped"]
+                # A person typed it (or emptied it): theirs from now on.
+                mark_manual_application(c)
 
         if "currency" in update_dict:
             c.currency = update_dict["currency"]

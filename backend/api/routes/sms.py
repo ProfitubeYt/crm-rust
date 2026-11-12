@@ -504,6 +504,10 @@ async def ingest_sms(
                     card_last_4=card_last4,
                     operator_raw=operator_raw,
                     application_mapped=parsed.get("application_mapped") or parsed.get("application"),
+                    application_src=parsed.get("application_src") if parsed.get("application_mapped") else None,
+                    application_confidence=(
+                        parsed.get("application_confidence") if parsed.get("application_mapped") else None
+                    ),
                     transaction_type=txn_type,
                     balance_after=_normalize_amount(parsed.get("balance_after")),
                     receiver_name=(parsed.get("receiver_name") or None),

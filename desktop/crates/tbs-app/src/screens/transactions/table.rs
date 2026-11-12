@@ -15,19 +15,21 @@ use crate::grid::{Align, CellStyle, GridColumn, GridData, RowTone};
 /// not carry (its notes are «Подробности»). The view panel brings them back.
 pub const QUIET: [Column; 4] = [Column::TransactionDate, Column::Time, Column::Day, Column::Description];
 
-/// A fresh table reads like the customer's ledger, column for column: service,
-/// operation, operator, application, money, card, then the bookkeeping notes,
-/// and the receiver last. People check one against the other side by side.
+/// A fresh table reads like the customer's ledger, column for column: the
+/// operation's time, the same time made unique, service, operation, operator,
+/// application, money, card, p2p, the note; then the bookkeeping codes and the
+/// rest. People check one against the other side by side.
 /// «Тип» is the one column the ledger does not have: the server's word for
-/// the operation, kept beside the bank's own.
+/// the operation. It stands after the ledger's own columns, apart from the
+/// bank's «Операция».
 pub fn default_order() -> Vec<Column> {
     let ledger = [
         Column::RowNumber,
         Column::OperationNumber,
         Column::DateTime,
+        Column::DateTimeDedup,
         Column::SourceType,
         Column::Operation,
-        Column::TransactionType,
         Column::OperatorRaw,
         Column::ApplicationMapped,
         Column::Amount,
@@ -38,6 +40,7 @@ pub fn default_order() -> Vec<Column> {
         Column::AnnotationPersonCode,
         Column::AnnotationPeriod,
         Column::AnnotationArticleCode,
+        Column::TransactionType,
         Column::Currency,
         Column::ReceiverName,
         Column::ReceiverCard,
@@ -48,7 +51,11 @@ pub fn default_order() -> Vec<Column> {
 }
 
 /// Which arrangement of the defaults a saved view was made under.
-pub const LAYOUT: u32 = 3;
+pub const LAYOUT: u32 = 4;
+
+/// Columns that came after the first builds, in the order they came. A view
+/// saved without one of them gets it at the end, where `repair` puts it.
+const LATER: [Column; 2] = [Column::Operation, Column::DateTimeDedup];
 
 /// What a fresh table looked like before it followed the ledger: four columns
 /// that are nearly always empty came first and pushed the notes off the screen.
@@ -69,6 +76,35 @@ fn second_layout() -> (Vec<Column>, [Column; 4]) {
         Column::OperationNumber,
         Column::DateTime,
         Column::SourceType,
+        Column::TransactionType,
+        Column::OperatorRaw,
+        Column::ApplicationMapped,
+        Column::Amount,
+        Column::BalanceAfter,
+        Column::CardLast4,
+        Column::IsP2p,
+        Column::AnnotationDetails,
+        Column::AnnotationPersonCode,
+        Column::AnnotationPeriod,
+        Column::AnnotationArticleCode,
+        Column::Currency,
+        Column::ReceiverName,
+        Column::ReceiverCard,
+    ];
+    let mut order = ledger.to_vec();
+    order.extend(columns::ALL.iter().copied().filter(|c| !ledger.contains(c)));
+    (order, [Column::TransactionDate, Column::Time, Column::Day, Column::Description])
+}
+
+/// The ledger layout of the builds that had «Операция» with «Тип» beside it and
+/// no «(Без дубля)».
+fn third_layout() -> (Vec<Column>, [Column; 4]) {
+    let ledger = [
+        Column::RowNumber,
+        Column::OperationNumber,
+        Column::DateTime,
+        Column::SourceType,
+        Column::Operation,
         Column::TransactionType,
         Column::OperatorRaw,
         Column::ApplicationMapped,
@@ -310,7 +346,7 @@ impl TableView {
             seen.push(*c);
             fresh
         });
-        let knew_operation = self.order.contains(&Column::Operation);
+        let knew: Vec<Column> = LATER.into_iter().filter(|column| self.order.contains(column)).collect();
         for column in columns::ALL {
             if !self.order.contains(&column) {
                 self.order.push(column);
@@ -318,29 +354,41 @@ impl TableView {
         }
         self.hidden.retain(|c| *c != LOCKED);
         self.pinned = self.pinned.min(MAX_PINNED);
-        self.adopt_ledger_layout(knew_operation);
+        self.adopt_ledger_layout(&knew);
     }
 
     /// A view nobody rearranged gets the ledger layout once. One that was
-    /// arranged by hand is the user's own and stays as it is: «Операция», which
-    /// it was saved without, waits hidden at the end, a tick away in the view panel.
-    fn adopt_ledger_layout(&mut self, knew_operation: bool) {
+    /// arranged by hand is the user's own and stays as it is: a column it was
+    /// saved without waits hidden at the end, a tick away in the view panel.
+    fn adopt_ledger_layout(&mut self, knew: &[Column]) {
         if self.layout >= LAYOUT {
             return;
         }
-        let untouched = if self.layout < 2 {
-            let (order, hidden) = first_layout();
-            self.has_layout(&order, &hidden)
-        } else {
-            let (order, hidden) = second_layout();
-            self.has_layout(&order, &hidden)
+        let (order, hidden) = match self.layout {
+            0 | 1 => {
+                let (order, hidden) = first_layout();
+                (order, hidden.to_vec())
+            }
+            2 => {
+                let (order, hidden) = second_layout();
+                (order, hidden.to_vec())
+            }
+            _ => {
+                let (order, hidden) = third_layout();
+                (order, hidden.to_vec())
+            }
         };
+        let untouched = self.has_layout(&order, &hidden);
         self.layout = LAYOUT;
         if untouched {
             self.order = default_order();
             self.hidden = QUIET.to_vec();
-        } else if !knew_operation && !self.hidden.contains(&Column::Operation) {
-            self.hidden.push(Column::Operation);
+        } else {
+            for column in LATER {
+                if !knew.contains(&column) && !self.hidden.contains(&column) {
+                    self.hidden.push(column);
+                }
+            }
         }
     }
 
@@ -431,7 +479,7 @@ impl TableView {
 }
 
 fn date_linked(column: Column) -> bool {
-    matches!(column, Column::OperationNumber | Column::DateTime | Column::TransactionDate | Column::Time | Column::Day)
+    matches!(column, Column::OperationNumber | Column::DateTime | Column::DateTimeDedup | Column::TransactionDate | Column::Time | Column::Day)
 }
 
 /// Number of a row counted through time, whichever way the table is sorted.
@@ -465,8 +513,8 @@ impl GridData for TxGrid<'_> {
             Column::OperationNumber => Cow::Owned(operation_number(&self.table.sort, self.total, self.offset + row).to_string()),
             _ => match self.data.rows[self.rows[row] as usize].cell(column) {
                 // An empty field stays empty: a column of dashes reads as data.
+                // «П2П» is the ledger's flag as it stands there: 1, or nothing.
                 tbs_core::format::EMPTY => Cow::Borrowed(""),
-                "1" if column == Column::IsP2p => Cow::Borrowed("П2П"),
                 value => Cow::Borrowed(value),
             },
         }
@@ -515,16 +563,16 @@ mod tests {
     fn a_fresh_table_reads_like_the_ledger() {
         let view = TableView::default();
         let visible = view.visible();
-        // The workbook's own order: Сервис, Операция, Оператор, Приложение, Сумма,
-        // Остаток, ПК, p2p, Подробности, Лицо, Период, Статья, Валюта, Получатель, Карта.
-        // «Тип» is ours, and stands next to the «Операция» it words.
+        // The workbook's own order: Дата_Время, (Без дубля), Сервис, Операция, Оператор,
+        // Приложение, Сумма, Остаток, ПК, p2p, Подробности, then Лицо, Период, Статья.
+        // «Тип» is ours: it follows the ledger's columns and is not mixed into them.
         let ledger = [
             Column::RowNumber,
             Column::OperationNumber,
             Column::DateTime,
+            Column::DateTimeDedup,
             Column::SourceType,
             Column::Operation,
-            Column::TransactionType,
             Column::OperatorRaw,
             Column::ApplicationMapped,
             Column::Amount,
@@ -535,11 +583,15 @@ mod tests {
             Column::AnnotationPersonCode,
             Column::AnnotationPeriod,
             Column::AnnotationArticleCode,
+            Column::TransactionType,
             Column::Currency,
             Column::ReceiverName,
             Column::ReceiverCard,
         ];
         assert_eq!(visible, ledger);
+        // From the first date through the note, the ledger's sequence without a gap.
+        let through_the_note = ["Дата и время", "(Без дубля)", "Источник", "Операция", "Оператор/Продавец", "Приложение", "Сумма", "Остаток", "ПК", "П2П", "Подробности"];
+        assert_eq!(visible[2..13].iter().map(|c| c.title()).collect::<Vec<_>>(), through_the_note);
         assert_eq!(view.order.len(), columns::ALL.len());
         // Not in the ledger: the split date and the per-operator note.
         for quiet in [Column::TransactionDate, Column::Time, Column::Day, Column::Description] {
@@ -607,20 +659,94 @@ mod tests {
         })
     }
 
+    /// The default view of the builds that had «Операция» beside «Тип» and no «(Без дубля)».
+    fn previous_view_on_disk() -> serde_json::Value {
+        serde_json::json!({
+            "layout": 3,
+            "order": [
+                "row_number", "operation_number", "date_time", "source_type", "operation", "transaction_type", "operator_raw", "application_mapped",
+                "amount", "balance_after", "card_last4", "is_p2p", "annotation_details", "annotation_person_code", "annotation_period",
+                "annotation_article_code", "currency", "receiver_name", "receiver_card", "transaction_date", "time", "day", "description",
+            ],
+            "hidden": ["transaction_date", "time", "day", "description"],
+        })
+    }
+
     fn read(saved: &serde_json::Value) -> TableView {
         serde_json::from_value(saved.clone()).unwrap()
     }
 
     #[test]
     fn the_views_on_disk_are_the_layouts_they_were_saved_under() {
-        let then = |order: Vec<Column>| serde_json::json!(order.into_iter().filter(|c| *c != Column::Operation).collect::<Vec<_>>());
-        assert_eq!(first_view_on_disk()["order"], then(first_layout().0));
+        let without = |order: Vec<Column>, later: &[Column]| serde_json::json!(order.into_iter().filter(|c| !later.contains(c)).collect::<Vec<_>>());
+        assert_eq!(first_view_on_disk()["order"], without(first_layout().0, &LATER));
         assert_eq!(first_view_on_disk()["hidden"], serde_json::json!(first_layout().1));
-        assert_eq!(ledger_view_on_disk()["order"], then(second_layout().0));
+        assert_eq!(ledger_view_on_disk()["order"], without(second_layout().0, &LATER));
         assert_eq!(ledger_view_on_disk()["hidden"], serde_json::json!(second_layout().1));
-        // Each of them ends, once repaired, with the column it was saved without.
-        assert_eq!(first_layout().0.last(), Some(&Column::Operation));
-        assert_eq!(second_layout().0.last(), Some(&Column::Operation));
+        assert_eq!(previous_view_on_disk()["order"], without(third_layout().0, &[Column::DateTimeDedup]));
+        assert_eq!(previous_view_on_disk()["hidden"], serde_json::json!(third_layout().1));
+        // Each of them ends, once repaired, with the columns it was saved without.
+        assert_eq!(first_layout().0[columns::COUNT - 2..], LATER);
+        assert_eq!(second_layout().0[columns::COUNT - 2..], LATER);
+        assert_eq!(third_layout().0.last(), Some(&Column::DateTimeDedup));
+    }
+
+    #[test]
+    fn an_untouched_view_of_the_previous_build_gets_the_second_date_and_the_ledgers_sequence() {
+        let mut saved = previous_view_on_disk();
+        saved["pinned"] = 2.into();
+        saved["widths"] = serde_json::json!({ "amount": 140.0 });
+        saved["sort"] = serde_json::json!({ "column": "operation", "descending": true });
+        let mut view = read(&saved);
+        assert_eq!((view.layout, view.order.len()), (3, columns::COUNT - 1));
+        view.repair();
+        assert_eq!((&view.order, &view.hidden, view.layout), (&default_order(), &QUIET.to_vec(), LAYOUT));
+        // «(Без дубля)» stands after the first date, and «Тип» has left the ledger's run.
+        let visible = view.visible();
+        assert_eq!(visible[2..7], [Column::DateTime, Column::DateTimeDedup, Column::SourceType, Column::Operation, Column::OperatorRaw]);
+        let at = |column| visible.iter().position(|c| *c == column).unwrap();
+        assert!(at(Column::TransactionType) > at(Column::AnnotationArticleCode));
+        // What the user did set survives the move.
+        assert_eq!((view.pinned, view.width(Column::Amount)), (2, 140.0));
+        assert_eq!(view.sort, Sort { column: Column::Operation, descending: true });
+
+        // Saved and opened again, nothing more happens.
+        let mut reopened = read(&serde_json::to_value(&view).unwrap());
+        reopened.repair();
+        assert_eq!(reopened, view);
+        // And it is not done twice: going back to the old arrangement is now a choice.
+        let (order, hidden) = third_layout();
+        let mut chosen = TableView { order: order.clone(), hidden: hidden.to_vec(), ..view };
+        chosen.repair();
+        assert_eq!((chosen.order, chosen.hidden), (order, hidden.to_vec()));
+    }
+
+    #[test]
+    fn a_view_of_the_previous_build_arranged_by_hand_keeps_its_columns() {
+        let mut moved = previous_view_on_disk();
+        moved["order"].as_array_mut().unwrap().swap(6, 7);
+        let mut shown = previous_view_on_disk();
+        shown["hidden"] = serde_json::json!(["transaction_date", "time", "day"]);
+        let mut put_away = previous_view_on_disk();
+        put_away["hidden"].as_array_mut().unwrap().push("operation".into());
+
+        for saved in [moved, shown, put_away] {
+            let before = read(&saved);
+            let mut view = before.clone();
+            view.repair();
+            // Exactly the columns it showed, in the places it showed them.
+            assert_eq!(view.visible(), before.visible(), "{saved}");
+            assert_eq!(view.order[..before.order.len()], before.order[..], "{saved}");
+            // The second date waits at the end, unticked; «Операция», which the view knew, is as it was left.
+            assert_eq!(view.order[before.order.len()..], [Column::DateTimeDedup], "{saved}");
+            assert_eq!(view.hidden, [before.hidden.clone(), vec![Column::DateTimeDedup]].concat(), "{saved}");
+            assert_eq!(view.layout, LAYOUT);
+
+            // «Как в книге Excel» is still one press away.
+            assert!(!view.has_ledger_columns());
+            view.use_ledger_columns();
+            assert_eq!((&view.order, &view.hidden), (&default_order(), &QUIET.to_vec()));
+        }
     }
 
     #[test]
@@ -630,12 +756,12 @@ mod tests {
         saved["widths"] = serde_json::json!({ "amount": 140.0 });
         saved["sort"] = serde_json::json!({ "column": "transaction_type", "descending": true });
         let mut view = read(&saved);
-        assert_eq!((view.layout, view.order.len()), (2, columns::COUNT - 1));
+        assert_eq!((view.layout, view.order.len()), (2, columns::COUNT - 2));
         view.repair();
         assert_eq!(view.order, default_order());
         assert_eq!(view.hidden, QUIET);
-        // «Операция» stands where the ledger has it, shown, with «Тип» after it.
-        assert_eq!(view.visible()[3..6], [Column::SourceType, Column::Operation, Column::TransactionType]);
+        // «Операция» stands where the ledger has it, shown, between «Источник» and the operator.
+        assert_eq!(view.visible()[4..7], [Column::SourceType, Column::Operation, Column::OperatorRaw]);
         // What the user did set survives the move.
         assert_eq!((view.pinned, view.width(Column::Amount)), (2, 140.0));
         assert_eq!(view.sort, Sort { column: Column::TransactionType, descending: true });
@@ -674,9 +800,9 @@ mod tests {
             // Exactly the columns it showed, in the places it showed them.
             assert_eq!(view.visible(), before.visible(), "{saved}");
             assert_eq!(view.order[..before.order.len()], before.order[..], "{saved}");
-            // The new column waits at the end, unticked, for the view panel.
-            assert_eq!(view.order[before.order.len()..], [Column::Operation], "{saved}");
-            assert_eq!(view.hidden, [before.hidden.clone(), vec![Column::Operation]].concat(), "{saved}");
+            // The new columns wait at the end, unticked, for the view panel.
+            assert_eq!(view.order[before.order.len()..], LATER, "{saved}");
+            assert_eq!(view.hidden, [before.hidden.clone(), LATER.to_vec()].concat(), "{saved}");
             assert_eq!(view.layout, LAYOUT);
 
             // Ticked there, it shows after the user's own columns and stays shown.
@@ -694,11 +820,11 @@ mod tests {
         let mut saved = first_view_on_disk();
         saved["density"] = "compact".into();
         let mut view = read(&saved);
-        assert_eq!((view.layout, view.order.len()), (0, columns::COUNT - 1));
+        assert_eq!((view.layout, view.order.len()), (0, columns::COUNT - 2));
         view.repair();
         assert_eq!(view.order, default_order());
         assert_eq!(view.hidden, QUIET);
-        assert!(view.visible().contains(&Column::Operation));
+        assert!(view.visible().contains(&Column::Operation) && view.visible().contains(&Column::DateTimeDedup));
         assert_eq!((view.density, view.layout), (Density::Compact, LAYOUT));
 
         // Arranged by hand, it is the user's own: nothing moves and nothing new shows.
@@ -709,8 +835,8 @@ mod tests {
         view.repair();
         assert_eq!(view.visible(), before.visible());
         assert_eq!(view.order[..before.order.len()], before.order[..]);
-        assert_eq!(view.order[before.order.len()..], [Column::Operation]);
-        assert_eq!(view.hidden, [Column::Time, Column::Operation]);
+        assert_eq!(view.order[before.order.len()..], LATER);
+        assert_eq!(view.hidden, [Column::Time, Column::Operation, Column::DateTimeDedup]);
         assert_eq!(view.layout, LAYOUT);
     }
 
@@ -921,7 +1047,20 @@ mod tests {
                 assert!(style.tone.is_none() && style.color.is_none() && !style.pill, "{:?} in row {row}", columns::ALL[col]);
             }
         }
-        assert_eq!(grid.cell(0, Column::IsP2p.index()), "П2П");
+    }
+
+    #[test]
+    fn the_card_and_p2p_read_as_in_the_ledger() {
+        let tx = |id, card: &str, p2p| tbs_core::model::Transaction { id, card_last_4: Some(card.into()), is_p2p: p2p, ..Default::default() };
+        let data = Dataset::build(vec![tx(1, "0626", true), tx(2, "4483", false)]);
+        let table = TableView::default();
+        let rows = [0u32, 1];
+        let grid = TxGrid { data: &data, rows: &rows, offset: 0, total: 2, columns: &columns::ALL, table: &table, highlight: None };
+        // «ПК» is text: the zero in front is part of the card.
+        assert_eq!(grid.cell(0, Column::CardLast4.index()), "0626");
+        // «П2П» is 1 or an empty cell, never a word.
+        assert_eq!(grid.cell(0, Column::IsP2p.index()), "1");
+        assert_eq!(grid.cell(1, Column::IsP2p.index()), "");
     }
 
     #[test]

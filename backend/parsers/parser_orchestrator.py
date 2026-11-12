@@ -150,67 +150,100 @@ class ParserOrchestrator:
                 self.last_rejection_reason = "; ".join(rejection_reasons)
                 return None
 
-        # Step 4: Resolve application via reference dictionary, then AI fallback
+        # Step 4: Resolve the application from the operator line (dictionary,
+        # explicit brand, values people confirmed), then the optional AI fallback
         if parsed_data and parsed_data.get('operator_raw') and self.operator_mapper:
             operator_raw = parsed_data['operator_raw']
             try:
-                match = self.operator_mapper.map_operator_details(operator_raw)
-                if match and match.get("application_name"):
-                    parsed_data['application_mapped'] = match["application_name"]
-                    if match.get("is_p2p") is not None:
-                        parsed_data['is_p2p'] = match["is_p2p"]
-                    parsed_data["app_resolution"] = {
-                        "method": "DICT",
-                        "match_type": match.get("match_type"),
-                        "reference_id": match.get("reference_id"),
-                    }
+                detection = self._detect_application(operator_raw)
+                if detection.found:
+                    parsed_data['application_mapped'] = detection.application
+                    parsed_data['application_src'] = detection.source
+                    parsed_data['application_confidence'] = detection.confidence
+                    if detection.is_p2p is not None:
+                        parsed_data['is_p2p'] = detection.is_p2p
+                    if detection.source == "dict":
+                        parsed_data["app_resolution"] = {
+                            "method": "DICT",
+                            "match_type": "EXACT" if detection.reason == "dictionary_exact" else "SUBSTRING",
+                            "reference_id": detection.reference_id,
+                            "reason": detection.reason,
+                        }
+                    else:
+                        parsed_data["app_resolution"] = {
+                            "method": "RULE" if detection.source == "rule" else "SIMILAR",
+                            "reason": detection.reason,
+                        }
                     logger.info(
-                        "Operator mapped via dictionary: %s -> %s (%s)",
+                        "Operator mapped (%s): %s -> %s",
+                        detection.reason,
                         operator_raw,
-                        match.get("application_name"),
-                        match.get("match_type"),
+                        detection.application,
                     )
                 else:
-                    # No dictionary hit; try AI resolution if available
-                    if (
+                    # The operator line settles nothing. The optional AI opinion is
+                    # asked only where there is no evidence at all (an ambiguous
+                    # line, a cash machine or a missing operator is not its call)
+                    # and only about a line that is safe to show.
+                    from services.application_detection import ai_may_see, confirmed_vocabulary
+
+                    ai_enabled = bool(
                         self.ai_application_mapping_enabled
                         and self.ai_parser
                         and self.ai_parser.enabled
-                    ):
-                        known_apps = self.operator_mapper.get_existing_applications()
+                    )
+                    ai = None
+                    vocabulary: Dict[str, str] = {}
+                    if ai_enabled and detection.reason == "no_evidence" and ai_may_see(operator_raw):
+                        vocabulary = confirmed_vocabulary(self.operator_mapper)
                         hints = self.operator_mapper.get_candidate_examples(operator_raw, limit=10)
-                        ai = self.ai_parser.resolve_application(operator_raw, raw_text, known_apps, hints)
+                        # The operator line alone: no card, amount, balance or name leaves.
+                        ai = self.ai_parser.resolve_application(
+                            operator_raw, "", sorted(vocabulary.values()), hints,
+                        )
 
-                        if ai and ai.get("application_name") and ai.get("application_name") != "Unknown" and ai.get("confidence", 0) >= 0.75:
-                            parsed_data["application_mapped"] = ai["application_name"]
-                            parsed_data["is_p2p"] = ai.get("is_p2p", parsed_data.get("is_p2p"))
+                    confident = bool(
+                        ai and ai.get("application_name")
+                        and ai.get("application_name") != "Unknown"
+                        and ai.get("confidence", 0) >= 0.75
+                    )
+                    known = vocabulary.get(str(ai["application_name"]).strip().casefold()) if confident else None
+                    if known:
+                        parsed_data["application_mapped"] = known
+                        parsed_data["application_src"] = "ai"
+                        parsed_data["application_confidence"] = ai.get("confidence")
+                        parsed_data["is_p2p"] = ai.get("is_p2p", parsed_data.get("is_p2p"))
+                        parsed_data["app_resolution"] = {
+                            "method": "AI",
+                            "confidence": ai.get("confidence"),
+                            "reasoning": ai.get("reasoning"),
+                            "recommended_operator_name": ai.get("recommended_operator_name"),
+                        }
+                        logger.info(
+                            "Operator mapped via AI: %s -> %s (confidence=%s)",
+                            operator_raw,
+                            known,
+                            ai.get("confidence"),
+                        )
+                    else:
+                        parsed_data["application_mapped"] = None
+                        parsed_data["app_resolution"] = {"method": "HEURISTIC"}
+                        if confident:
+                            # A name the owner never confirmed is not a value. It is
+                            # kept as an inactive dictionary line for them to review.
                             parsed_data["app_resolution"] = {
-                                "method": "AI",
+                                "method": "AI_SUGGESTION",
                                 "confidence": ai.get("confidence"),
-                                "reasoning": ai.get("reasoning"),
-                                "recommended_operator_name": ai.get("recommended_operator_name"),
+                                "suggested_application": ai["application_name"],
                             }
                             parsed_data["operator_reference_suggestion"] = {
                                 "operator_name": ai.get("recommended_operator_name") or operator_raw,
                                 "application_name": ai["application_name"],
                                 "is_p2p": ai.get("is_p2p"),
                             }
-                            logger.info(
-                                "Operator mapped via AI: %s -> %s (confidence=%s)",
-                                operator_raw,
-                                ai.get("application_name"),
-                                ai.get("confidence"),
-                            )
-                        else:
-                            # Heuristic fallback
-                            parsed_data["application_mapped"] = None
+                        if ai_enabled:
                             parsed_data["is_p2p"] = 'P2P' in operator_raw.upper()
-                            parsed_data["app_resolution"] = {"method": "HEURISTIC"}
-                            logger.info("AI could not confidently map operator: %s", operator_raw)
-                    else:
-                        parsed_data["application_mapped"] = None
-                        parsed_data["app_resolution"] = {"method": "HEURISTIC"}
-                        logger.info("No deterministic operator mapping found: %s", operator_raw)
+                        logger.info("No application evidence for operator (%s): %s", detection.reason, operator_raw)
             except Exception as e:
                 logger.warning("Operator mapping error: %s", e)
                 if 'application_mapped' not in parsed_data:
@@ -225,6 +258,15 @@ class ParserOrchestrator:
             self.last_rejection_reason = "; ".join(rejection_reasons)
 
         return parsed_data
+
+    def _detect_application(self, operator_raw: str):
+        """The same evidence tiers the historical pass uses, over this receipt's operator."""
+        # Imported here: the service imports the mapper from this package.
+        from services.application_detection import ApplicationDetector, confirmed_applications
+
+        db = getattr(self.operator_mapper, "db_session", None)
+        confirmed = confirmed_applications(db) if db is not None else {}
+        return ApplicationDetector(self.operator_mapper, confirmed=confirmed).detect(operator_raw)
 
     def process_vision(
         self,

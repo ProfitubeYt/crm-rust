@@ -15,6 +15,7 @@ import httpx
 from celery import Celery
 from dotenv import load_dotenv
 from services.fingerprint import compute_fingerprint_candidates
+from services.application_detection import may_replace_application
 from services.message_utils import is_metadata_only_chat, receipt_min_datetime
 from services import receipt_logger
 from core.logging_config import setup_logging
@@ -1560,6 +1561,9 @@ def process_receipt_task(self, task_data_json: str):
                 "card_last_4": str(card_last4)[-4:] if card_last4 else None,
                 "operator_raw": operator,
                 "application_mapped": app_name,
+                # After the value: assigning the application clears the old stamp.
+                "application_src": parsed_data.get("application_src") if app_name else None,
+                "application_confidence": parsed_data.get("application_confidence") if app_name else None,
                 "receiver_name": parsed_data.get("receiver_name"),
                 "receiver_card": parsed_data.get("receiver_card"),
                 "transaction_type": transaction_type,
@@ -1578,7 +1582,13 @@ def process_receipt_task(self, task_data_json: str):
             )
             if existing_source_transaction is not None:
                 transaction = existing_source_transaction
+                # A forced re-parse refreshes what the parser derives. The
+                # application of a receipt is not the parser's once a person
+                # set it, or once its origin is unknown.
+                keep_application = not may_replace_application(transaction)
                 for key, value in transaction_values.items():
+                    if keep_application and key in ("application_mapped", "application_src", "application_confidence"):
+                        continue
                     setattr(transaction, key, value)
                 force_after_snapshot = {
                     key: str(getattr(transaction, key, None))

@@ -18,6 +18,7 @@ from parsers.pdf_extractor import (
     extract_text_from_image_path,
     extract_text_from_pdf,
 )
+from services.application_detection import may_replace_application
 from services.fingerprint import compute_fingerprint_candidates
 from services.telegram_tdlib_manager import TDLibUnavailableError, TelegramTDLibManager
 from database.connection import SessionLocal
@@ -710,6 +711,9 @@ async def process_tdlib_message(
         transaction_date=transaction_date,
         operator_raw=operator_raw,
         application_mapped=application_mapped,
+        # After the value: assigning the application clears the old stamp.
+        application_src=parsed.get("application_src") if application_mapped else None,
+        application_confidence=parsed.get("application_confidence") if application_mapped else None,
         amount=store_amount,
         balance_after=balance_after,
         card_last_4=card_last4,
@@ -736,7 +740,12 @@ async def process_tdlib_message(
 
     if existing and force:
         before = _transaction_snapshot(existing)
+        # The application of a receipt stops being the parser's once a person
+        # set it, or while its origin is unknown; a re-parse leaves it alone.
+        keep_application = not may_replace_application(existing)
         for field, value in values.items():
+            if keep_application and field in {"application_mapped", "application_src", "application_confidence"}:
+                continue
             # Source identity is immutable during a force reparse.
             if field not in {"source_chat_id", "source_message_id", "source_type"}:
                 setattr(existing, field, value)

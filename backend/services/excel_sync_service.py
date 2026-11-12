@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from database.excel_sync_models import ExcelSyncGrant, ExcelSyncOperation
 from database.models import AccessAuditLog, SyncDeletion, Transaction, TransactionAnnotationEvent
 from services import annotation_service
+from services.application_detection import mark_manual_application
 from services.fingerprint import compute_fingerprint_candidates
 
 
@@ -343,6 +344,8 @@ def _run_operation(db: Session, grant: ExcelSyncGrant, operation: dict,
         for key, value in normalized.items():
             if key not in annotation_service.VALUE_COLUMNS:
                 setattr(tx, key, value)
+        if "application_mapped" in normalized:
+            mark_manual_application(tx)
         authorize(tx, candidate_date=tx.transaction_date, creating=True)
         _refresh_fingerprint(tx)
         db.add(tx)
@@ -426,6 +429,9 @@ def _run_operation(db: Session, grant: ExcelSyncGrant, operation: dict,
     for key, value in normalized.items():
         if key not in annotation_service.VALUE_COLUMNS:
             setattr(tx, key, value)
+    if "application_mapped" in changed:
+        # Typed in the workbook by a person: theirs from now on, emptied or not.
+        mark_manual_application(tx)
     # Changing direction also changes the sign while retaining the CURRENT
     # magnitude, including a concurrently edited magnitude not in this patch.
     if "transaction_type" in normalized and "amount" not in normalized:
