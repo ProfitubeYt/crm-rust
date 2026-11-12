@@ -1355,6 +1355,18 @@ class User(Base):
     access_until = Column(DateTime(timezone=True), nullable=True)
     access_note = Column(String(200), nullable=True)
 
+    # Which Hub workspaces the account may open. A layer above the role and the
+    # data restrictions, not instead of them. The database default keeps every
+    # account that predates workspaces, or is created by code that does, a
+    # Checks account; nobody gets Time without an administrator granting it.
+    checks_access = Column(Boolean, nullable=False, default=True, server_default="true")
+    time_role = Column(String(20), nullable=True)
+
+    # CRM administration: accounts and who may open which workspace. Not a
+    # workspace role and not implied by one, so nobody has it unless it was
+    # given by name; an account created by code that predates it does not.
+    global_admin = Column(Boolean, nullable=False, default=False, server_default="false")
+
     failed_attempts = Column(Integer, nullable=False, default=0, server_default="0")
     locked_until = Column(DateTime(timezone=True), nullable=True)
     last_login_at = Column(DateTime(timezone=True), nullable=True)
@@ -1365,6 +1377,10 @@ class User(Base):
     __table_args__ = (
         CheckConstraint("role IN ('admin', 'operator')", name="check_user_role"),
         CheckConstraint("session_ttl_days >= 1 AND session_ttl_days <= 90", name="check_user_session_ttl_days"),
+        CheckConstraint(
+            "time_role IS NULL OR time_role IN ('employee', 'viewer', 'manager')",
+            name="check_user_time_role",
+        ),
         Index("idx_users_role_active", "role", "is_active"),
     )
 

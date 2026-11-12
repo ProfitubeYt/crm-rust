@@ -289,6 +289,51 @@ async def list_active_sessions(limit: int = 100) -> List[Dict[str, Any]]:
     return rows
 
 
+async def list_user_sessions(user_id: int) -> List[Dict[str, Any]]:
+    """Every live session of one account, however many other sessions exist.
+
+    `list_active_sessions` returns the newest N of everybody; an administrator
+    ending one person's sessions must not miss any because the list was long.
+    """
+    wanted = int(user_id)
+    redis_client = await get_redis()
+    now_ts = int(datetime.utcnow().timestamp())
+    await redis_client.zremrangebyscore(AUTH_SESSION_INDEX_KEY, "-inf", now_ts)
+    ids = await redis_client.zrevrange(AUTH_SESSION_INDEX_KEY, 0, -1)
+    rows: List[Dict[str, Any]] = []
+    for session_id in ids or []:
+        data = await redis_client.hgetall(_session_key(session_id))
+        if not data or _to_int(data.get("user_id")) != wanted:
+            continue
+        if _is_session_revoked(session_id):
+            continue
+        rows.append(
+            {
+                "session_id": data.get("session_id") or session_id,
+                "token_kind": data.get("token_kind") or "",
+                "subject": data.get("subject") or "",
+                "user_id": wanted,
+                "ip_address": data.get("ip_address") or None,
+                "created_at": data.get("created_at"),
+                "last_activity_at": data.get("last_activity_at"),
+                "expires_at": data.get("expires_at"),
+            }
+        )
+    return rows
+
+
+async def revoke_user_sessions(user_id: int, *, except_session_id: Optional[str] = None) -> int:
+    """End every session of one account; returns how many were ended."""
+    ended = 0
+    for row in await list_user_sessions(user_id):
+        session_id = str(row.get("session_id") or "")
+        if not session_id or (except_session_id and session_id == except_session_id):
+            continue
+        ok, _ = await revoke_active_session(session_id, suppress_event=True)
+        ended += int(bool(ok))
+    return ended
+
+
 async def touch_active_session(session_id: Optional[str], *, last_activity: Optional[datetime] = None) -> bool:
     sid = str(session_id or "").strip()
     if not sid:

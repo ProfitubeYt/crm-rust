@@ -101,7 +101,7 @@ def _current_app_admin_id(message: Message) -> Optional[int]:
             db.query(User)
             .filter(
                 User.telegram_id == telegram_id,
-                User.role == "admin",
+                User.global_admin.is_(True),
                 User.is_active.is_(True),
             )
             .first()
@@ -1297,7 +1297,7 @@ async def cmd_codes_off(message: Message) -> None:
                 .filter(
                     User.id == app_admin_id,
                     User.telegram_id == admin_id,
-                    User.role == "admin",
+                    User.global_admin.is_(True),
                     User.is_active.is_(True),
                 )
                 .with_for_update()

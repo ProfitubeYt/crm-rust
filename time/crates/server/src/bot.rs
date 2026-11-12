@@ -18,7 +18,7 @@ use tracing::{debug, info, warn};
 
 use crate::app::AppState;
 use crate::db::NewMessage;
-use crate::service::Engine;
+use crate::hub::{Hub, HubUnavailable, Verdict};
 
 const HELP: &str = "Я веду тайм-лист по сообщениям в рабочей группе.\n\n\
 Что писать в группу:\n\
@@ -30,6 +30,11 @@ const HELP: &str = "Я веду тайм-лист по сообщениям в �
 за прошлый день — «17.09 уход 18:00».\n\n\
 Команды: /me — мои отметки за сегодня и итог месяца, /id — мой Telegram ID.";
 
+/// Дополнение к памятке, когда отметки принимаются только от учётных записей.
+const HELP_ACCOUNTS: &str = "\n\nОтметки принимаются от сотрудников, чей Telegram привязан к учётной записи \
+с доступом к учёту времени. Узнайте свой ID командой /id и передайте его администратору — \
+пароль от приложения боту и в группу не отправляют.";
+
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct BotStatus {
     pub enabled: bool,
@@ -39,6 +44,12 @@ pub struct BotStatus {
     pub last_error: Option<String>,
     /// Группы, из которых приходили сообщения: id → название.
     pub chats: BTreeMap<i64, String>,
+    /// Отметки принимаются только от привязанных учётных записей.
+    pub accounts_required: bool,
+    /// Сколько сообщений не принято: отправитель не подтверждён сервером учётных записей.
+    pub denied: u64,
+    /// Последний отказ: время, отправитель, причина.
+    pub last_denied: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -153,7 +164,10 @@ pub async fn run(state: AppState) {
             state.cfg.telegram_api.trim_end_matches('/')
         ),
     };
-    state.bot_status(|s| s.enabled = true);
+    state.bot_status(|s| {
+        s.enabled = true;
+        s.accounts_required = state.hub.is_some();
+    });
 
     let mut offset: i64 = state
         .db
@@ -163,6 +177,7 @@ pub async fn run(state: AppState) {
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
     let mut backoff = 1;
+    let mut hub_backoff = 1;
     let mut introduced = false;
     loop {
         if !introduced {
@@ -189,23 +204,44 @@ pub async fn run(state: AppState) {
             Ok(updates) => {
                 backoff = 1;
                 let now = state.now().format("%Y-%m-%d %H:%M:%S").to_string();
-                state.bot_status(|s| {
-                    s.last_ok = Some(now);
-                    s.last_error = None;
-                });
+                state.bot_status(|s| s.last_ok = Some(now));
+                let mut waiting_for_hub = None;
                 for update in updates {
-                    offset = offset.max(update.update_id + 1);
-                    let (message, edited) = match (update.message, update.edited_message) {
-                        (Some(m), _) => (m, false),
-                        (None, Some(m)) => (m, true),
-                        (None, None) => continue,
+                    let next = update.update_id + 1;
+                    let incoming = match (update.message, update.edited_message) {
+                        (Some(m), _) => Some((m, false)),
+                        (None, Some(m)) => Some((m, true)),
+                        (None, None) => None,
                     };
-                    if let Err(e) = handle(&state, &api, message, edited).await {
-                        warn!("сообщение Telegram не обработано: {e:#}");
+                    if let Some((message, edited)) = incoming {
+                        if let Err(e) = handle(&state, &api, message, edited).await {
+                            if e.downcast_ref::<HubUnavailable>().is_some() {
+                                // Ни принять, ни отклонить: позиция не двигается, и Telegram
+                                // отдаст это сообщение и следующие за ним ещё раз.
+                                waiting_for_hub = Some(e.to_string());
+                                break;
+                            }
+                            warn!("сообщение Telegram не обработано: {e:#}");
+                        }
+                    }
+                    // Позиция сохраняется после каждого сообщения: перезапуск посреди
+                    // пачки не возвращает бота к уже обработанным.
+                    offset = offset.max(next);
+                    if let Err(e) = state.db.set_setting("tg_offset", &offset.to_string()) {
+                        warn!("не удалось сохранить позицию опроса: {e:#}");
                     }
                 }
-                if let Err(e) = state.db.set_setting("tg_offset", &offset.to_string()) {
-                    warn!("не удалось сохранить позицию опроса: {e:#}");
+                match waiting_for_hub {
+                    Some(reason) => {
+                        warn!("{reason}; сообщение будет прочитано повторно");
+                        state.bot_status(|s| s.last_error = Some(reason));
+                        tokio::time::sleep(StdDuration::from_secs(hub_backoff)).await;
+                        hub_backoff = (hub_backoff * 2).min(30);
+                    }
+                    None => {
+                        hub_backoff = 1;
+                        state.bot_status(|s| s.last_error = None);
+                    }
                 }
             }
             Err(e) => {
@@ -232,6 +268,16 @@ async fn handle(state: &AppState, api: &Api, msg: TgMessage, edited: bool) -> Re
         return Ok(());
     };
     let private = msg.chat.kind == "private";
+    let hub = state.hub.as_deref();
+    // Группа, из которой принимаются отметки. С общими учётными записями пустой
+    // список значит «ни из какой»: бот, добавленный в постороннюю группу, ничего не пишет.
+    let listed = state.cfg.chat_ids();
+    let work_group = !private
+        && if hub.is_some() {
+            listed.contains(&msg.chat.id)
+        } else {
+            listed.is_empty() || listed.contains(&msg.chat.id)
+        };
 
     if text.starts_with('/') {
         let command = text
@@ -243,12 +289,21 @@ async fn handle(state: &AppState, api: &Api, msg: TgMessage, edited: bool) -> Re
             .unwrap_or("")
             .to_lowercase();
         let reply = match command.as_str() {
+            "/start" | "/help" if hub.is_some() => format!("{HELP}{HELP_ACCOUNTS}"),
             "/start" | "/help" => HELP.to_string(),
             "/id" => format!(
                 "Ваш Telegram ID: {}\nID этого чата: {}",
                 from.id, msg.chat.id
             ),
-            "/me" | "/status" => my_report(state, from.id)?,
+            "/me" | "/status" => match hub {
+                // Отчёт — это отметки сотрудника: посторонней группе его не показывают.
+                Some(_) if !private && !work_group => return Ok(()),
+                Some(hub) => match ask(hub, from.id).await? {
+                    Verdict::Allowed => my_report(state, from.id)?,
+                    Verdict::Denied(why) => why.explain(from.id),
+                },
+                None => my_report(state, from.id)?,
+            },
             _ => return Ok(()),
         };
         return api.send(msg.chat.id, &reply, msg.message_id).await;
@@ -258,8 +313,7 @@ async fn handle(state: &AppState, api: &Api, msg: TgMessage, edited: bool) -> Re
             "Отметки принимаются только в рабочей группе. Здесь доступны команды /help, /me и /id.";
         return api.send(msg.chat.id, hint, msg.message_id).await;
     }
-    let allowed = state.cfg.chat_ids();
-    if !allowed.is_empty() && !allowed.contains(&msg.chat.id) {
+    if !work_group {
         debug!(
             chat = msg.chat.id,
             "сообщение из посторонней группы пропущено"
@@ -289,6 +343,27 @@ async fn handle(state: &AppState, api: &Api, msg: TgMessage, edited: bool) -> Re
         s.chats
             .insert(msg.chat.id, msg.chat.title.clone().unwrap_or_default());
     });
+    if let Some(hub) = hub {
+        if let Verdict::Denied(why) = ask(hub, from.id).await? {
+            // Отправитель остаётся в списке «Привязка сотрудников»: по нему видно, чей ID
+            // нужно внести в учётную запись. Само сообщение не сохраняется — ни новое,
+            // ни исправленное — и ничьих отметок не меняет.
+            let at = state.now().format("%Y-%m-%d %H:%M:%S").to_string();
+            let label = why.label();
+            state.bot_status(|s| {
+                s.denied += 1;
+                s.last_denied = Some(format!("{at} · {name} · {label}"));
+            });
+            state.notify();
+            info!(tg_user = from.id, reason = label, "сообщение не принято");
+            if state.cfg.reactions {
+                if let Err(e) = api.react(msg.chat.id, msg.message_id, "🤷").await {
+                    debug!("реакция не поставлена: {e}");
+                }
+            }
+            return Ok(());
+        }
+    }
     let (id, _) = state.db.upsert_message(&NewMessage {
         source: "telegram",
         chat_id: Some(msg.chat.id),
@@ -303,7 +378,7 @@ async fn handle(state: &AppState, api: &Api, msg: TgMessage, edited: bool) -> Re
     debug!(id, edited, "сообщение Telegram сохранено");
 
     if state.cfg.reactions {
-        let engine = Engine::new(&state.db)?;
+        let engine = state.engine()?;
         let Some(stored) = state.db.message(id)? else {
             return Ok(());
         };
@@ -323,9 +398,17 @@ async fn handle(state: &AppState, api: &Api, msg: TgMessage, edited: bool) -> Re
     Ok(())
 }
 
+/// Спрашивает сервер учётных записей об отправителе. Нет ответа — сообщение
+/// остаётся непрочитанным: его нельзя ни принять, ни отклонить.
+async fn ask(hub: &Hub, tg_user_id: i64) -> Result<Verdict> {
+    hub.check(tg_user_id)
+        .await
+        .map_err(|e| HubUnavailable(format!("{e:#}")).into())
+}
+
 /// Ответ на /me: отметки за сегодня и итог месяца.
 fn my_report(state: &AppState, tg_user_id: i64) -> Result<String> {
-    let engine = Engine::new(&state.db)?;
+    let engine = state.engine()?;
     let Some(employee) = engine
         .employees
         .iter()
@@ -511,10 +594,7 @@ mod tests {
         );
 
         // отметка появилась в тайм-листе: приход 9:00 с кодом «К» из «до банк»
-        let view = Engine::new(&state.db)
-            .unwrap()
-            .month(2026, 11, day)
-            .unwrap();
+        let view = state.engine().unwrap().month(2026, 11, day).unwrap();
         let cell = &view.employees.iter().find(|e| e.id == oleg).unwrap().cells[1];
         assert_eq!(
             (cell.m.start, cell.m.start_code.as_deref()),

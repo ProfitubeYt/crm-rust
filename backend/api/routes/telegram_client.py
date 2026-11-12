@@ -60,6 +60,7 @@ from services.auth_bot_service import create_chat_access_token, verify_chat_acce
 from services.auth_bot_service import register_active_session, get_redis, AUTH_EVENT_CHANNEL
 from services.internal_api_key_service import is_internal_request
 from services.user_service import build_permissions_snapshot
+from services.workspace_access import WORKSPACE_CHECKS, checks_access_of, has_workspace
 
 logger = logging.getLogger(__name__)
 
@@ -2591,6 +2592,9 @@ async def websocket_updates(
         await websocket.close(code=4403, reason="User access changed")
         return
     snapshot = build_permissions_snapshot(user_row)
+    if not has_workspace(snapshot, WORKSPACE_CHECKS):
+        await websocket.close(code=4403, reason="Workspace access denied")
+        return
     if str(snapshot.get("role") or "").lower() != "admin" and "userbot" not in {
         str(tab).strip().lower() for tab in snapshot.get("allowed_tabs") or []
     }:
@@ -2613,7 +2617,12 @@ async def websocket_updates(
             await require_session_active(token_payload)
             db.expire(user_row)
             db.refresh(user_row)
-            if not user_row.is_active or int(user_row.permissions_version or 1) != ws_access["permissions_version"]:
+            if (
+                not user_row.is_active
+                or int(user_row.permissions_version or 1) != ws_access["permissions_version"]
+                # Taking Checks away leaves the version alone, so it is asked here.
+                or not checks_access_of(user_row)
+            ):
                 await websocket.close(code=4403, reason="User access changed")
                 return
             state = await manager.get_auth_state()

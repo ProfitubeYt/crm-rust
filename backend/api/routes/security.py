@@ -12,7 +12,14 @@ from aiogram import Bot
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from api.dependencies import get_current_user, get_current_user_optional, get_system_access_context, require_admin_user
+from api.dependencies import (
+    get_current_user,
+    get_current_user_optional,
+    get_system_access_context,
+    hide_account_administration,
+    require_admin_user,
+    require_global_admin,
+)
 from database.connection import get_db_session
 from database.models import AccessAuditLog, AccessScope, AppLaunchConfig, LockedPeriod
 from services.auth_bot_service import (
@@ -1081,7 +1088,7 @@ async def delete_locked_period(
 @router.get("/sessions", response_model=List[ActiveSessionRecord])
 async def get_active_sessions(
     limit: int = Query(200, ge=1, le=2000),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
     _system: Optional[Dict[str, Any]] = Depends(get_system_access_context),
 ) -> List[ActiveSessionRecord]:
     _ = current_user, _system
@@ -1094,7 +1101,7 @@ async def kill_active_session(
     session_id: str,
     request: Request,
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
 ) -> Dict[str, Any]:
     ok, info = await revoke_active_session(session_id)
     if not ok:
@@ -1123,7 +1130,7 @@ async def kill_all_except_current(
     payload: KillAllSessionsRequest,
     request: Request,
     db: Session = Depends(get_db_session),
-    current_user: dict = Depends(require_admin_user),
+    current_user: dict = Depends(require_global_admin),
 ) -> Dict[str, Any]:
     all_sessions = await list_active_sessions(limit=2000)
     killed = 0
@@ -1341,7 +1348,7 @@ async def get_audit_logs(
     _system: Optional[Dict[str, Any]] = Depends(get_system_access_context),
 ) -> List[AuditRecordResponse]:
     _ = current_user, _system
-    query = db.query(AccessAuditLog)
+    query = hide_account_administration(db.query(AccessAuditLog), current_user)
     if action:
         query = query.filter(AccessAuditLog.action == action.strip())
     if user_id is not None:

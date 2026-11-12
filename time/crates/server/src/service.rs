@@ -159,6 +159,8 @@ pub struct Engine<'a> {
     names: Vec<(String, i64, bool)>,
     trip_use_times: bool,
     default_limit: f64,
+    /// Сообщение бота принадлежит сотруднику только по привязанному Telegram ID.
+    strict_tg_identity: bool,
 }
 
 fn edit_distance(a: &str, b: &str) -> usize {
@@ -232,11 +234,19 @@ impl<'a> Engine<'a> {
             by_tg,
             names,
             trip_use_times: settings.get("trip_use_times").is_some_and(|v| v == "1"),
+            strict_tg_identity: false,
             default_limit: settings
                 .get("limit")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1.0),
         })
+    }
+
+    /// С общими учётными записями имя в чате ничего не доказывает: его выбирает сам
+    /// пишущий. Сообщение бота тогда засчитывается только по привязанному Telegram ID.
+    pub fn strict_tg_identity(mut self, on: bool) -> Self {
+        self.strict_tg_identity = on;
+        self
     }
 
     /// Кому принадлежит сообщение: ручная привязка → Telegram ID → имя отправителя.
@@ -246,6 +256,12 @@ impl<'a> Engine<'a> {
         }
         if let Some(id) = m.tg_user_id.and_then(|uid| self.by_tg.get(&uid)) {
             return Some(*id);
+        }
+        // Пока Telegram ID не привязан к сотруднику, сообщение бота ждёт привязки и
+        // ничьих отметок не меняет. Вставленный из буфера чат идентификаторов не
+        // несёт и по-прежнему сопоставляется по имени.
+        if self.strict_tg_identity && m.tg_user_id.is_some() {
+            return None;
         }
         // Сопоставление по имени: для импорта из текста всегда, для бота — только пока
         // у сотрудника не привязан Telegram ID (чужое имя не подменит привязанного).

@@ -79,6 +79,15 @@ pub struct Config {
     /// Каталог со статикой интерфейса вместо встроенной (для доработки UI без пересборки).
     #[arg(long, env = "TIMELIST_ASSETS_DIR", global = true)]
     pub assets_dir: Option<PathBuf>,
+
+    /// Адрес сервера учётных записей (Hub). Вместе с ключом включает режим общих
+    /// учётных записей: вход и доступ — у Hub, бот сверяет с ним каждого отправителя.
+    #[arg(long, env = "TIMELIST_HUB_URL", global = true)]
+    pub hub_url: Option<String>,
+
+    /// Ключ, которым бот представляется серверу учётных записей.
+    #[arg(long, env = "TIMELIST_HUB_KEY", hide_env_values = true, global = true)]
+    pub hub_key: Option<String>,
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -109,7 +118,37 @@ impl Config {
         self.chat_id = clean(self.chat_id);
         self.password = clean(self.password);
         self.api_token = clean(self.api_token);
+        self.hub_url = clean(self.hub_url);
+        self.hub_key = clean(self.hub_key);
         self
+    }
+
+    /// Вход и доступ принадлежат серверу учётных записей.
+    pub fn hub_mode(&self) -> bool {
+        self.hub_url.is_some() && self.hub_key.is_some()
+    }
+
+    /// Настройки, с которыми сервер запускать нельзя: половина режима Hub была бы
+    /// хуже, чем его отсутствие, — интерфейс остался бы открыт или бот без проверки.
+    pub fn check(&self) -> Result<(), String> {
+        match (&self.hub_url, &self.hub_key) {
+            (None, None) => return Ok(()),
+            (Some(_), None) => return Err("задан TIMELIST_HUB_URL, но не задан TIMELIST_HUB_KEY".into()),
+            (None, Some(_)) => return Err("задан TIMELIST_HUB_KEY, но не задан TIMELIST_HUB_URL".into()),
+            (Some(url), Some(key)) => {
+                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    return Err("TIMELIST_HUB_URL должен начинаться с http:// или https://".into());
+                }
+                if key.len() < 24 {
+                    return Err("TIMELIST_HUB_KEY короче 24 символов".into());
+                }
+            }
+        }
+        match &self.api_token {
+            None => Err("в режиме Hub обязателен TIMELIST_API_TOKEN: без него API открыт всем в сети".into()),
+            Some(token) if token.len() < 24 => Err("TIMELIST_API_TOKEN короче 24 символов".into()),
+            Some(_) => Ok(()),
+        }
     }
 
     pub fn chat_ids(&self) -> Vec<i64> {

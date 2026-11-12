@@ -38,7 +38,8 @@ def _rows(connection) -> list:
 
 def test_the_provenance_revision_is_the_only_head_and_follows_workbook_names():
     script = ScriptDirectory(str(ALEMBIC))
-    assert script.get_heads() == ["20261112_0033"]
+    # One head, whichever it is by now: later revisions follow this one.
+    assert len(script.get_heads()) == 1
     assert script.get_revision("20261112_0033").down_revision == "20261111_0032"
 
 

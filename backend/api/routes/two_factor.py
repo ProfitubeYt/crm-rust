@@ -98,7 +98,9 @@ def _audit(
 
 def _required_now(user: User, global_policy_enabled: bool) -> bool:
     role = str(user.role or "operator").lower()
-    return bool(user.force_2fa or (global_policy_enabled and role == "admin"))
+    # The same policy as at sign-in: both kinds of administrator.
+    administrator = role == "admin" or bool(getattr(user, "global_admin", False))
+    return bool(user.force_2fa or (global_policy_enabled and administrator))
 
 
 def _resolve_user_from_context(

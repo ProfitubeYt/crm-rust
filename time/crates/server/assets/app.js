@@ -39,6 +39,38 @@ const codeNorm = (v) => [...String(v || '').trim()].map((ch) => LATIN_CODE[ch.to
 const codeClass = (c) => (c ? ` code-${esc(c[0])}` : '');
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
+// Работа внутри Hub (общие учётные записи). Объект задаёт оболочка до загрузки
+// страницы: { apiBase, native, theme }. Тогда вход, имя для журнала и права приходят
+// от учётной записи, а не от этой страницы. Без него интерфейс работает как раньше.
+const HUB = window.TIMELIST_HUB || null;
+const API_BASE = HUB ? HUB.apiBase : '/api';
+const HUB_ERRORS = {
+  workspace_forbidden: 'Доступ к «Учёту времени» закрыт. Обратитесь к администратору',
+  time_role_forbidden: 'Недостаточно прав: для вашей учётной записи открыт только просмотр',
+  time_workspace_unavailable: 'Учёт времени на сервере не настроен',
+  time_upstream_unavailable: 'Сервис учёта времени не отвечает, попробуйте позже',
+  time_upstream_refused: 'Сервис учёта времени отклонил запрос сервера',
+  time_request_too_large: 'Файл слишком большой',
+  inactive_user: 'Учётная запись отключена',
+  access_expired: 'Срок действия учётной записи истёк',
+};
+/** Ответы, после которых работать дальше нечем: сессии или доступа больше нет. */
+const HUB_LOST = ['workspace_forbidden', 'inactive_user', 'access_expired'];
+
+/** Сообщение оболочке (окну программы), если страница открыта в ней. */
+function hubPost(message) {
+  try {
+    if (window.ipc && window.ipc.postMessage) window.ipc.postMessage(JSON.stringify(message));
+  } catch (_) { /* оболочки нет — страница открыта в браузере */ }
+}
+
+/** Закрывает страницу сообщением: доступа нет или сервер не отвечает. */
+function hubBlock(text, lost) {
+  $('#hub-block-text').textContent = text;
+  $('#hub-block').hidden = false;
+  if (lost) hubPost({ type: 'access-lost' });
+}
+
 const S = {
   meta: {}, ym: '', tab: 'timelist', view: null,
   sel: null, detail: null, detailKey: '', editing: false,
@@ -51,12 +83,14 @@ const S = {
 };
 
 async function api(method, path, body, raw) {
-  const opt = { method, headers: { 'X-Timelist-User': encodeURIComponent(S.user) } };
+  // Имя для журнала изменений в Hub ставит сервер по учётной записи.
+  const opt = { method, headers: HUB ? {} : { 'X-Timelist-User': encodeURIComponent(S.user) } };
   if (body !== undefined) {
     opt.body = raw ? body : JSON.stringify(body);
     opt.headers['Content-Type'] = raw ? 'application/octet-stream' : 'application/json';
   }
-  const res = await fetch('/api' + path, opt);
+  const res = await fetch(API_BASE + path, opt);
+  if (HUB) return hubAnswer(res);
   if (res.status === 401 && path !== '/login') {
     showLogin();
     throw new Error('Требуется вход');
@@ -64,6 +98,20 @@ async function api(method, path, body, raw) {
   const data = (res.headers.get('content-type') || '').includes('json') ? await res.json() : null;
   if (!res.ok) throw new Error((data && data.error) || `Ошибка ${res.status}`);
   return data;
+}
+
+/** Разбор ответа шлюза Hub: его отказы — коды, отказы самого тайм-листа — текст. */
+async function hubAnswer(res) {
+  const data = (res.headers.get('content-type') || '').includes('json') ? await res.json() : null;
+  if (res.ok) return data;
+  const detail = data && data.detail && typeof data.detail === 'object' ? data.detail : {};
+  const code = (data && data.error_code) || detail.error || '';
+  const own = data && typeof data.error === 'string' && data.error !== code ? data.error : '';
+  const text = HUB_ERRORS[code] || own || `Ошибка ${res.status}`;
+  if (res.status === 401 || HUB_LOST.includes(code)) {
+    hubBlock(res.status === 401 ? 'Сессия завершена. Войдите снова' : text, true);
+  }
+  throw new Error(text);
 }
 
 function toast(text, isError) {
@@ -119,7 +167,17 @@ async function loadMonth() {
 }
 
 async function loadMeta() {
-  S.meta = await (await fetch('/api/meta')).json();
+  S.meta = HUB ? await api('GET', '/meta') : await (await fetch('/api/meta')).json();
+  if (HUB) {
+    const who = S.meta.hub || {};
+    S.user = who.display_name || who.username || '';
+    S.readonly = !who.can_edit;
+    document.body.classList.toggle('readonly', S.readonly);
+    // Потока событий через шлюз нет: о переменах говорит счётчик изменений.
+    const changed = S.revision != null && S.meta.revision !== S.revision;
+    S.revision = S.meta.revision;
+    if (changed) scheduleReload();
+  }
   const bot = S.meta.bot || {};
   const el = $('#bot-state');
   el.className = 'bot-state' + (bot.enabled ? (bot.last_error ? ' err' : ' on') : '');
@@ -127,7 +185,8 @@ async function loadMeta() {
     ? 'Бот выключен: не задан TELEGRAM_BOT_TOKEN'
     : bot.last_error
       ? `Ошибка связи с Telegram: ${bot.last_error}`
-      : `Бот @${bot.username || '…'} на связи${bot.last_ok ? ', опрос ' + bot.last_ok.slice(11, 16) : ''}`;
+      : `Бот @${bot.username || '…'} на связи${bot.last_ok ? ', опрос ' + bot.last_ok.slice(11, 16) : ''}`
+        + (bot.denied ? `\nНе принято сообщений: ${bot.denied}. Последнее: ${bot.last_denied || '—'}` : '');
   $('span', el).textContent = bot.enabled ? (bot.username ? '@' + bot.username : 'бот') : 'бот выкл.';
 }
 
@@ -192,7 +251,7 @@ function render(keepScroll) {
   $('#month-input').value = S.ym;
   $('#lock-chip').hidden = !(v && v.lock);
   if (v && v.lock) $('#lock-chip').title = `Закрыт ${v.lock.locked_at}${v.lock.locked_by ? ' · ' + v.lock.locked_by : ''}`;
-  $('#user-btn').textContent = S.user || 'Указать имя';
+  $('#user-btn').textContent = HUB ? (S.user || 'Учётная запись') + (S.readonly ? ' · просмотр' : '') : S.user || 'Указать имя';
   for (const b of $$('#tabs button')) {
     b.classList.toggle('active', b.dataset.tab === S.tab);
     if (b.dataset.tab === 'timelist') b.innerHTML = 'Тайм-лист' + (v && v.issues ? ` <span class="badge">${v.issues}</span>` : '');
@@ -316,7 +375,7 @@ function renderTimelist(main) {
         <span><span class="dot" style="background:var(--err-bg);border:1px solid var(--err-text)"></span>ошибка</span>
       </div>
       <span class="spacer"></span>
-      <a class="btn" href="/api/export/${S.ym}" download>Excel</a>
+      <a class="btn" href="${API_BASE}/export/${S.ym}" download>Excel</a>
       <button class="btn" id="lock-btn">${v.lock ? 'Открыть месяц' : 'Закрыть месяц'}</button>
       <button class="icon-btn" id="side-btn" title="Панель дня">${S.sideOpen ? '⟩' : '⟨'}</button>
     </div>
@@ -1093,7 +1152,7 @@ async function renderRefs(main) {
           <p>Импорт прежней книги <code>TimeList-ГГГГ-М.xlsm</code>: сотрудники, коэффициенты, нормы, отметки месяца и сообщения с листа «Telegram».</p>
           <div class="row"><input type="file" id="xlsx-file" accept=".xlsm,.xlsx" style="flex:1"><button class="btn primary" id="xlsx-import">Импортировать</button></div>
           <p class="hint" style="margin-top:8px">Отметки импортируются как ручные, поэтому цифры месяца совпадут с книгой.</p>
-          <p style="margin-top:14px"><a class="btn" href="/api/export/${S.ym}" download>Выгрузить ${esc(S.view ? S.view.title : S.ym)} в Excel</a></p>
+          <p style="margin-top:14px"><a class="btn" href="${API_BASE}/export/${S.ym}" download>Выгрузить ${esc(S.view ? S.view.title : S.ym)} в Excel</a></p>
         </div>
       </div>
     </div>
@@ -1199,6 +1258,7 @@ function bind() {
     localStorage.setItem('tl_theme', next);
   };
   $('#user-btn').onclick = () => {
+    if (HUB) return;
     const name = prompt('Ваше имя — оно попадёт в журнал изменений:', S.user);
     if (name == null) return;
     S.user = name.trim();
@@ -1212,6 +1272,16 @@ function bind() {
   $('#modal').addEventListener('click', (ev) => {
     if (ev.target.id === 'modal' || ev.target.closest('#modal-close, [data-close]')) closeModal();
   });
+  $('#hub-block-retry').onclick = () => location.reload();
+  if (HUB && HUB.native) {
+    // В окне программы файл сохраняет она сама: у страницы нет ни сессии, ни диска.
+    document.addEventListener('click', (ev) => {
+      const link = ev.target.closest('a[download]');
+      if (!link) return;
+      ev.preventDefault();
+      hubPost({ type: 'export', ym: S.ym });
+    });
+  }
   document.addEventListener('keydown', (ev) => {
     if (ev.key === 'Escape' && !$('#modal').hidden) closeModal();
   });
@@ -1357,6 +1427,11 @@ function bind() {
 }
 
 function connectEvents() {
+  if (HUB) {
+    // Счётчик изменений читается вместе с состоянием бота; сбой опроса не показывается.
+    setInterval(() => loadMeta().catch(() => {}), 5000);
+    return;
+  }
   const es = new EventSource('/api/events');
   es.addEventListener('change', () => scheduleReload());
   es.onerror = () => { /* браузер переподключится сам */ };
@@ -1364,9 +1439,22 @@ function connectEvents() {
 
 async function boot() {
   bind();
-  await loadMeta();
-  if (S.meta.auth_required && !S.meta.authed) return showLogin();
-  $('#logout-btn').hidden = !S.meta.auth_required;
+  if (HUB) {
+    if (HUB.theme) document.documentElement.dataset.theme = HUB.theme;
+    $('#user-btn').title = 'Учётная запись';
+    $('#theme-btn').hidden = !!HUB.native;
+    try {
+      await loadMeta();
+    } catch (e) {
+      // Отказ в доступе уже показан; остальное — сервер не ответил.
+      if ($('#hub-block').hidden) hubBlock(e.message, false);
+      return;
+    }
+  } else {
+    await loadMeta();
+    if (S.meta.auth_required && !S.meta.authed) return showLogin();
+  }
+  $('#logout-btn').hidden = HUB ? true : !S.meta.auth_required;
   const [tab, ym] = location.hash.slice(1).split('/');
   if (['timelist', 'tabel', 'svodka', 'telegram', 'periods', 'refs'].includes(tab)) S.tab = tab;
   S.ym = /^\d{4}-\d{2}$/.test(ym || '') ? ym : S.meta.today.slice(0, 7);
@@ -1377,7 +1465,10 @@ async function boot() {
     if (S.tab === 'timelist' && $('#grid')) $('#grid').focus({ preventScroll: true });
   });
   connectEvents();
-  setInterval(() => run(loadMeta), 60000);
+  if (!HUB) setInterval(() => run(loadMeta), 60000);
 }
+
+// Оболочка меняет тему вместе со своей.
+window.timelistSetTheme = (theme) => { document.documentElement.dataset.theme = theme === 'dark' ? 'dark' : 'light'; };
 
 $('#login-form') && boot();

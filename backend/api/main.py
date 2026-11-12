@@ -739,6 +739,11 @@ async def lifespan(app: FastAPI):
         await close_auth_redis_pool()
     except Exception:
         pass
+    try:
+        from api.routes.time_gateway import close_client as close_time_gateway_client
+        await close_time_gateway_client()
+    except Exception:
+        pass
 
 
 # Update app with lifespan
@@ -1113,6 +1118,7 @@ from api.routes import (
     sync,
     system_settings,
     telegram_client,
+    time_gateway,
     transactions,
     two_factor,
     userbot,
@@ -1144,3 +1150,13 @@ app.include_router(sync.router, tags=["Sync"])
 app.include_router(sms.router, tags=["SMS"])
 app.include_router(feed.router, tags=["Feed"])
 app.include_router(excel_sync.router, tags=["Excel"])
+# The Time workspace: its API behind the same accounts, and the one question
+# its bot asks. The second is outside /api and so outside the public proxy.
+app.include_router(time_gateway.router, tags=["Time"])
+app.include_router(time_gateway.internal_router, tags=["TimeInternal"])
+
+# The CRM administration panel: three static files under /admin/. Its data
+# comes from /api/admin/*, which authorises every call on its own.
+from api import admin_panel  # noqa: E402
+
+app.include_router(admin_panel.router)

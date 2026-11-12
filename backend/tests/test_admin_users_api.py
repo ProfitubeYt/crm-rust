@@ -30,6 +30,9 @@ def _seed_user(db_session, *, username: str, role: str) -> User:
         can_toggle_sources=(role == "admin"),
         permissions_version=1,
         is_active=True,
+        # As migration 0035 leaves an account from before the split: whoever
+        # administered accounts through the Checks role still does.
+        global_admin=(role == "admin"),
     )
     db_session.add(user)
     db_session.commit()
@@ -138,4 +141,4 @@ def test_non_admin_cannot_manage_users(client, db_session):
 
     res = client.get("/api/admin/users", headers={"Authorization": f"Bearer {operator_token}"})
     assert res.status_code == 403
-    assert "admin_only" in res.text
+    assert "global_admin_required" in res.text

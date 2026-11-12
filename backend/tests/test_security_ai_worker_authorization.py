@@ -244,6 +244,11 @@ def test_codes_off_requires_live_app_admin_and_mutation_control(db_session, monk
     monkeypatch.setattr(auth_bot_handler, "SessionLocal", SessionFactory())
     monkeypatch.setattr(auth_bot_handler, "AUTH_ADMIN_IDS", {1400})
 
+    # Switching off every code check is the CRM administrator's to do: the
+    # Checks role, even with an allowlisted Telegram ID, is not enough.
+    assert auth_bot_handler._current_app_admin_id(message) is None
+    db_session.get(User, 14).global_admin = True
+    db_session.commit()
     assert auth_bot_handler._current_app_admin_id(message) == 14
     db_session.get(User, 14).is_active = False
     db_session.commit()

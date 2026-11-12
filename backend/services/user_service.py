@@ -13,6 +13,15 @@ from sqlalchemy.orm import Session
 from database.models import User
 from services.access_control_service import hash_password, verify_password
 from services.root_access_config_service import hash_password_argon2, verify_secret
+from services.workspace_access import (
+    WORKSPACE_CHECKS,
+    WorkspaceError,
+    apply_workspace_role,
+    is_global_admin,
+    normalize_workspace_roles,
+    workspace_roles_of,
+    workspaces_of,
+)
 
 LOGIN_MAX_ATTEMPTS = int(os.getenv("USER_LOGIN_MAX_ATTEMPTS", "5"))
 LOGIN_LOCKOUT_MINUTES = int(os.getenv("USER_LOGIN_LOCKOUT_MINUTES", "15"))
@@ -159,7 +168,53 @@ def build_permissions_snapshot(user: User) -> Dict[str, Any]:
         "access_until": user.access_until.isoformat() if getattr(user, "access_until", None) else None,
         "access_note": getattr(user, "access_note", None),
         "last_login_at": user.last_login_at.isoformat() if user.last_login_at else None,
+        # CRM administration and workspace access. Read from the row on every
+        # request, so a grant or a revocation needs no new token. `workspaces`
+        # is what the Hub lists; `workspace_roles` has every role held.
+        "global_admin": is_global_admin(user),
+        "workspaces": workspaces_of(user),
+        "workspace_roles": workspace_roles_of(user),
     }
+
+
+def ensure_global_admin_remains(
+    db: Session,
+    user: User,
+    *,
+    global_admin: Optional[bool] = None,
+    is_active: Optional[bool] = None,
+) -> None:
+    """Refuse a change that would leave the CRM without an active administrator.
+
+    Accounts are administered only by CRM administrators, so losing the last
+    one closes account management to everybody for good. Asked by every path
+    that can take the right away or disable an account, the bot's commands
+    included. Workspace roles are not part of it: an administrator restores
+    any of them.
+    """
+    if not (is_global_admin(user) and bool(user.is_active)):
+        return
+    stays_admin = is_global_admin(user) if global_admin is None else bool(global_admin)
+    stays_active = bool(user.is_active) if is_active is None else bool(is_active)
+    if stays_admin and stays_active:
+        return
+    # Row-locked, so two administrators removing each other at the same moment
+    # cannot both find the other one still there.
+    others = (
+        db.query(User)
+        .filter(User.global_admin.is_(True), User.is_active.is_(True), User.id != user.id)
+        .with_for_update()
+        .all()
+    )
+    if not others:
+        raise UserServiceError("last_admin")
+
+
+def _requested_workspaces(workspaces: Optional[Dict[str, Any]]) -> Dict[str, Optional[str]]:
+    try:
+        return normalize_workspace_roles(workspaces)
+    except WorkspaceError as exc:
+        raise UserServiceError(str(exc)) from exc
 
 
 def increment_permissions_version(user: User) -> None:
@@ -287,9 +342,25 @@ def create_user(
     is_active: bool = True,
     telegram_id: Optional[int] = None,
     telegram_username: Optional[str] = None,
+    global_admin: bool = False,
+    workspaces: Optional[Dict[str, Any]] = None,
 ) -> User:
+    """Create an account.
+
+    ``workspaces`` is ``{workspace: role}`` and states every grant: a
+    workspace it does not name is not granted. Left out altogether, the
+    account is what every account was before workspaces: a Checks account
+    with ``role``. No other workspace and no CRM administration is implied.
+    """
     username_norm = _validate_username(username)
     role_norm = _validate_role(role)
+    grants = _requested_workspaces(workspaces)
+    checks_granted = True
+    if workspaces is not None:
+        checks_role = grants.get(WORKSPACE_CHECKS)
+        checks_granted = checks_role is not None
+        if checks_role is not None:
+            role_norm = checks_role
 
     if get_user_by_username(db, username_norm):
         raise UserServiceError("username_exists")
@@ -325,7 +396,12 @@ def create_user(
         permissions_version=1,
         telegram_id=telegram_id,
         telegram_username=(telegram_username or "").strip()[:255] or None,
+        checks_access=checks_granted,
+        global_admin=bool(global_admin),
     )
+    for workspace_id, workspace_role in grants.items():
+        if workspace_id != WORKSPACE_CHECKS:
+            apply_workspace_role(user, workspace_id, workspace_role)
     db.add(user)
     db.commit()
     db.refresh(user)
@@ -374,8 +450,29 @@ def update_user(
     access_until: Optional[Any] = None,
     access_note: Optional[str] = None,
     password: Optional[str] = None,
+    global_admin: Optional[bool] = None,
+    workspaces: Optional[Dict[str, Any]] = None,
 ) -> User:
+    """Change an account. ``None`` everywhere means "not mentioned".
+
+    ``workspaces`` is ``{workspace: role or None}``: a role grants or changes
+    it, ``None`` takes the workspace away, a workspace it does not name is left
+    as it is. The Checks role is the ``role`` column, so naming it here is the
+    same as passing ``role``; a Checks role that is taken away is remembered.
+    """
+    grants = _requested_workspaces(workspaces)
+    checks_access: Optional[bool] = None
+    if WORKSPACE_CHECKS in grants:
+        checks_role = grants[WORKSPACE_CHECKS]
+        checks_access = checks_role is not None
+        if checks_role is not None:
+            # Named again unchanged, the role is not a change: a new
+            # permissions version would sign the person out for nothing.
+            current_role = str(user.role or ROLE_OPERATOR).strip().lower()
+            role = checks_role if checks_role != current_role else None
+
     new_role = _validate_role(role) if role is not None else (user.role or ROLE_OPERATOR)
+    ensure_global_admin_remains(db, user, global_admin=global_admin, is_active=is_active)
 
     permissions_changed = False
 
@@ -412,6 +509,21 @@ def update_user(
 
     if access_note is not None:
         user.access_note = (str(access_note).strip()[:200] or None)
+
+    # CRM administration and workspace grants deliberately leave
+    # permissions_version alone. The row is read on every request, so the
+    # change is already in force for a running client, and bumping the version
+    # would sign the person out of the other workspace and cut their Excel
+    # connections for no gain.
+    if global_admin is not None:
+        user.global_admin = bool(global_admin)
+
+    if checks_access is not None:
+        user.checks_access = checks_access
+
+    for workspace_id, workspace_role in grants.items():
+        if workspace_id != WORKSPACE_CHECKS:
+            apply_workspace_role(user, workspace_id, workspace_role)
 
     if any(value is not None for value in (allowed_tabs, role)):
         tabs = _normalize_tabs(allowed_tabs if allowed_tabs is not None else _json_list(user.allowed_tabs), role=new_role)
@@ -465,6 +577,7 @@ def unlock_user(db: Session, user: User) -> User:
 def deactivate_user(db: Session, user: User) -> User:
     if not user.is_active:
         return user
+    ensure_global_admin_remains(db, user, is_active=False)
     user.is_active = False
     increment_permissions_version(user)
     db.commit()
