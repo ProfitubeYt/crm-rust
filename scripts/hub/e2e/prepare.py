@@ -62,6 +62,10 @@ def config():
     (RUN / "Caddyfile").write_text("".join(lines), encoding="utf-8")
     for name in ("root-access.server.json", "Caddyfile"):
         (RUN / name).chmod(0o644)
+    # Where checks.py keeps a session from one step of the rehearsal to the
+    # next; the checks do not run as root.
+    (RUN / "state").mkdir(exist_ok=True)
+    (RUN / "state").chmod(0o777)
     print(f"config: system-access file and Caddyfile written ({address} -> :80, {len(lines)} lines otherwise unchanged)")
 
 

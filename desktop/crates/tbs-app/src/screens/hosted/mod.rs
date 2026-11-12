@@ -44,6 +44,8 @@ pub enum Msg {
     Attached(Owner, Result<(), String>),
     Signal(Signal),
     Tick,
+    /// GTK's turn on Linux; see `host::pump`.
+    Pump,
     Retry,
     /// The workbook, for the opening of the page that asked for it.
     Fetched(Owner, Result<(String, Vec<u8>), String>),
@@ -249,6 +251,7 @@ impl Hosted {
                     self.page = Page::Failed("Страница не ответила".to_owned());
                 }
             }
+            Msg::Pump => host::pump(),
             Msg::Retry => {
                 host::close(self.owner, false);
                 self.page = Page::Absent;
@@ -300,7 +303,8 @@ impl Hosted {
 
     /// The page keeps talking whatever stands in front of it.
     pub fn background(&self) -> Subscription<Msg> {
-        host::signals().map(Msg::Signal)
+        let signals = host::signals().map(Msg::Signal);
+        if cfg!(target_os = "linux") { Subscription::batch([signals, iced::time::every(host::PUMP_EVERY).map(|_| Msg::Pump)]) } else { signals }
     }
 
     fn failed_view<'a>(&'a self, reason: &'a str) -> El<'a, Msg> {

@@ -4,21 +4,27 @@ real backend on PostgreSQL and Redis, the real Time server behind its gateway,
 Caddy with the server's routes, and fake_telegram.py where Telegram would be.
 Run through the `tool` service, on the stack's internal network:
 
-    checks.py            the stack as it would be deployed (run.sh start)
-    checks.py legacy     release 2.0.3's code on whatever schema is there: reads only
-    checks.py legacy-writes   the same, and two accounts created through the 2.0.3 API
+    checks.py                 the stack as it would be deployed (run.sh start)
+    checks.py legacy          release 2.0.3's code on whatever schema is there; --writes also
+                              creates two accounts through the 2.0.3 API
+    checks.py current         the current code between two steps of the rehearsal: sessions only
+
+`--save NAME` keeps the session a step opens and `--use NAME` makes a later
+step prove that it still works, across the migration and across a rollback.
 
 Requests go two ways on purpose: through Caddy, as a client on the internet
 reaches the server, and straight to the backend, as only a neighbour container
 can. Every account, Telegram ID and group here is made up.
 """
 
+import argparse
 import base64
 import json
 import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import httpx
 
@@ -154,16 +160,37 @@ def with_expiry(token, moment):
 
 # ---------------------------------------------------------------- release 2.0.3
 
+# Sessions carried from one step of the rehearsal to the next, to see whether a
+# deployment or a rollback signs anyone out. prepare.py makes the folder.
+STATE = Path("/run/hub-e2e/state")
 
-def legacy(writes):
+
+def keep_session(name, body):
+    (STATE / f"{name}.json").write_text(json.dumps({"token": body["token"], "refresh_token": body["refresh_token"]}))
+
+
+def kept_session(name):
+    path = STATE / f"{name}.json"
+    return json.loads(path.read_text()) if path.exists() else None
+
+
+def legacy(writes, use, save):
     system = client(BACKEND, **{"X-System-Access": SYSTEM_TOKEN})
     report.section("release 2.0.3 code, straight to the backend with the system token")
     health = backend.get("/health")
     report.check("/health answers 200", health.status_code == 200, health.text[:200])
+    carried = kept_session(use) if use else None
+    if use:
+        answer = system.get("/api/auth/me", headers=bearer((carried or {}).get("token", "")))
+        report.check("a session opened under the current code goes on under 2.0.3", answer.status_code == 200 and answer.json().get("username") == "e2e_admin", f"{answer.status_code} {answer.text[:160]}")
+        rotated = system.post("/api/auth/refresh", json={"refresh_token": (carried or {}).get("refresh_token", "")})
+        report.check("and 2.0.3 exchanges its refresh token", rotated.status_code == 200 and bool(rotated.json().get("token")), f"{rotated.status_code} {rotated.text[:160]}")
     signed = sign_in("e2e_admin", via=system)
     body = signed.json() if signed.status_code == 200 else {}
     if not report.check("the administrator signs in", bool(body.get("ok") and body.get("token")), signed.text[:200]):
         return
+    if save:
+        keep_session(save, body)
     auth = bearer(body["token"])
     account = system.get("/api/auth/me", headers=auth)
     fields = account.json() if account.status_code == 200 else {}
@@ -187,6 +214,39 @@ def legacy(writes):
                 continue
             made = system.post("/api/admin/users", headers=auth, json={"username": username, "password": PASSWORD, "role": role})
             report.check(f"2.0.3 creates {username} ({role}) on this schema", made.status_code == 200, f"{made.status_code} {made.text[:200]}")
+
+
+def current(use, save):
+    """The current code between two steps of the rehearsal: sessions only."""
+    system = client(BACKEND, **{"X-System-Access": SYSTEM_TOKEN})
+    report.section("the current code, straight to the backend with the system token")
+    carried = kept_session(use) if use else None
+    if use:
+        answer = system.get("/api/auth/me", headers=bearer((carried or {}).get("token", "")))
+        fields = answer.json() if answer.status_code == 200 else {}
+        report.check(
+            "a session opened under 2.0.3 goes on, and is told it is a CRM administrator with Checks",
+            (fields.get("workspaces"), fields.get("workspace_roles"), fields.get("global_admin")) == (["checks"], {"checks": "admin"}, True),
+            f"{answer.status_code} {answer.text[:200]}",
+        )
+        report.answer("it administers accounts without signing in again", system.get("/api/admin/meta", headers=bearer((carried or {}).get("token", ""))), 200)
+    signed = sign_in("e2e_admin", via=system)
+    body = signed.json() if signed.status_code == 200 else {}
+    if report.check("the administrator signs in under the current code", bool(body.get("ok") and body.get("token")), signed.text[:200]) and save:
+        keep_session(save, body)
+
+
+def carried_over():
+    carried = kept_session("before")
+    if not carried:
+        return
+    report.section("a session opened under release 2.0.3, before the migration")
+    report.check("it goes on through Caddy as a CRM administrator with Checks", hub_fields(carried["token"]) == (["checks"], {"checks": "admin"}, True), str(hub_fields(carried["token"])))
+    rotated = edge.post("/api/auth/refresh", json={"refresh_token": carried["refresh_token"]})
+    renewed = rotated.json() if rotated.status_code == 200 else {}
+    report.check("the current code exchanges its refresh token", bool(renewed.get("token")), f"{rotated.status_code} {rotated.text[:160]}")
+    if renewed.get("token"):
+        report.answer("and the renewed session reads receipts", edge.get("/api/transactions/?page_size=1", headers=bearer(renewed["token"])), 200)
 
 
 # ---------------------------------------------------------------- the edge
@@ -681,11 +741,20 @@ def bot(admin, ids, tokens, employee):
 
 
 def main():
-    mode = sys.argv[1] if len(sys.argv) > 1 else "hub"
-    if mode in ("legacy", "legacy-writes"):
-        legacy(mode == "legacy-writes")
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("mode", nargs="?", default="hub", choices=("hub", "legacy", "current"))
+    parser.add_argument("--writes", action="store_true", help="legacy: create two accounts through the 2.0.3 API")
+    parser.add_argument("--use", help="legacy, current: a session kept by an earlier step, which must still work")
+    parser.add_argument("--save", help="legacy, current: keep the session opened here for a later step")
+    args = parser.parse_args()
+    if args.mode == "legacy":
+        legacy(args.writes, args.use, args.save)
+        report.finish()
+    if args.mode == "current":
+        current(args.use, args.save)
         report.finish()
     edge_and_gates()
+    carried_over()
     found = migrated_accounts()
     if found:
         admin, _ = found

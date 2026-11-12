@@ -27,6 +27,11 @@ png = { version = "0.18", optional = true }
 [target.'cfg(not(windows))'.dependencies]
 rfd = { version = "0.15", default-features = false, features = ["tokio", "xdg-portal"] }
 
+# On Linux wry's web view is WebKitGTK. GTK has to be started and its loop run
+# by whoever hosts the view (screens/hosted/host.rs); winit does neither.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
+
 [features]
 devtools = ["dep:png"]
 

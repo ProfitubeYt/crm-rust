@@ -6,8 +6,9 @@
 #   scripts/hub/e2e/run.sh            everything below in order, then `down`
 #   scripts/hub/e2e/run.sh up         PostgreSQL and Redis, the two config files, the schema of
 #                                     release 2.0.3 with accounts in it
-#   scripts/hub/e2e/run.sh rehearse   prechecks, 2.0.3 on its schema, upgrade, postchecks, 2.0.3 on
-#                                     the new schema, downgrade, 2.0.3 again, upgrade, postchecks
+#   scripts/hub/e2e/run.sh rehearse   prechecks, 2.0.3 on its schema, upgrade, postchecks, the current
+#                                     code and then 2.0.3 on the new schema, downgrade, 2.0.3
+#                                     again, upgrade, postchecks; sessions carried across
 #   scripts/hub/e2e/run.sh start      the stack as it would be deployed: backend, Time, Caddy and
 #                                     the stand-in for Telegram; Caddy on 127.0.0.1:18080
 #   scripts/hub/e2e/run.sh checks     checks.py against it
@@ -77,29 +78,33 @@ up() {
 rehearse() {
     say "1. before: deploy/time-hub/prechecks.sql"
     sql "$root/deploy/time-hub/prechecks.sql"
-    say "2. release 2.0.3 on its own schema"
+    say "2. release 2.0.3 on its own schema; its administrator's session is kept"
     backend_from "$legacy"
-    tool /e2e/checks.py legacy
+    tool /e2e/checks.py legacy --save before
     backend_off
     say "3. alembic upgrade head"
     tool -m alembic upgrade head
     say "4. after: deploy/time-hub/postchecks.sql"
     sql "$root/deploy/time-hub/postchecks.sql"
-    say "5. release 2.0.3 on the new schema (what a rollback of the image alone runs on)"
+    say "5. the current code on the new schema: the session from step 2 goes on, a new one is kept"
+    backend_from "$root/backend"
+    tool /e2e/checks.py current --use before --save current
+    backend_off
+    say "6. release 2.0.3 on the new schema (what a rollback of the image alone runs on)"
     backend_from "$legacy"
-    tool /e2e/checks.py legacy-writes
+    tool /e2e/checks.py legacy --writes --use current
     backend_off
     say "   the accounts now; the administrator 2.0.3 created is not a CRM administrator"
     compose exec -T postgres psql -X -U hub -d hub_e2e -c \
         "SELECT id, username, role, is_active, checks_access, time_role, global_admin FROM users ORDER BY id"
-    say "6. alembic downgrade 20261112_0033, then prechecks.sql again"
+    say "7. alembic downgrade 20261112_0033, then prechecks.sql again"
     tool -m alembic downgrade 20261112_0033
     sql "$root/deploy/time-hub/prechecks.sql"
-    say "7. release 2.0.3 on the downgraded schema"
+    say "8. release 2.0.3 on the downgraded schema"
     backend_from "$legacy"
     tool /e2e/checks.py legacy
     backend_off
-    say "8. alembic upgrade head again, then postchecks.sql"
+    say "9. alembic upgrade head again, then postchecks.sql"
     tool -m alembic upgrade head
     sql "$root/deploy/time-hub/postchecks.sql"
 }
@@ -139,5 +144,5 @@ case "${1:-all}" in
         checks || { echo "checks failed; the stack is left running, '$0 down' removes it" >&2; exit 1; }
         down
         ;;
-    *) sed -n '2,20p' "$0"; exit 2 ;;
+    *) sed -n '2,22p' "$0"; exit 2 ;;
 esac

@@ -8,8 +8,9 @@ Nothing here is deployed; production was not read or changed.
 ## Finish session — 2026-11-12, branch `work/time-hub-admin-finish`
 
 Baseline: `main` at `4e644ebc29ac505b937b30966130e58920a51d07` (everything through `10f7ea8`
-plus the handoff correction). Nothing is deployed. Production was read once more with the
+plus the handoff correction). **Nothing is deployed.** Production was read once more with the
 SELECT-only role and not changed. The sections below this one are earlier sessions' records.
+The plan put to the owner for approval is `docs/handoff/TIME_HUB_ADMIN_DEPLOYMENT.md`.
 
 Sandbox: 2 CPUs, 8 GB, Docker 29.1.3. Rebuilt here: `tbs-linux-dev:pinned`, `timelist:local`
 (about six minutes), the volume `hub-backend-venv`.
@@ -18,12 +19,12 @@ Sandbox: 2 CPUs, 8 GB, Docker 29.1.3. Rebuilt here: `tbs-linux-dev:pinned`, `tim
 
 | Step | Result |
 |---|---|
-| Desktop suite through `scripts/hub/desktop-tests.sh` (first run of the wrapper itself), 13:50 | **348 app tests and 141 core tests passed**, exit 0. `live_backend` and `live_writes` report one passed test each by returning early; they are not coverage |
-| Windows code paths: `scripts/hub/desktop-tests.sh check -p tbs-app --locked --target x86_64-pc-windows-gnu`, 14:00 | `Finished`, exit 0 (first run six minutes forty; its `docker run` lost the daemon's wait stream and reported 125 although the container exited 0, so it was run again: exit 0) |
+| Desktop suite through `scripts/hub/desktop-tests.sh` (the wrapper itself, never run before), 13:50, and again at 14:26 after the changes for the window run | **348 app tests and 141 core tests passed** both times, exit 0. `live_backend` and `live_writes` report one passed test each by returning early; they are not coverage |
+| Windows code paths: `scripts/hub/desktop-tests.sh check -p tbs-app --locked --target x86_64-pc-windows-gnu`, 14:00, and again at 14:26 after the changes | `Finished`, exit 0 both times. (The very first run, six minutes forty, lost the Docker client's wait stream and reported 125 although the container exited 0; it was run again.) |
 | Production pre-checks, `deploy/time-hub/prechecks.sql`, read-only, one connection, 13:30 | unchanged: PostgreSQL 15.16, schema `20261112_0033`, none of the three columns, two active `admin` accounts and one active `operator`, no other role values |
-| Migration rehearsal, `scripts/hub/e2e/run.sh up` + `rehearse`, PostgreSQL 15.19, 13:44 | every step passed; see below |
-| End-to-end checks, `scripts/hub/e2e/run.sh start` + `checks`, 14:00 | **170 checks, 0 failed**; see below |
-| Real window, whole backend suite, deployment document | not done yet at this commit |
+| Whole backend suite, `scripts/hub/backend-tests.sh`, 14:02–14:05, on the tree with the lockout fix; no backend file changed after it | **1349 passed, 1 skipped**, 193 s |
+| Local stack, everything in one command, `scripts/hub/e2e/run.sh`, 14:26–14:30, PostgreSQL 15.19 | migration rehearsal: every step passed (9 + 3 + 13 + 9 checks); end-to-end: **173 checks, 0 failed**; exit 0. Output: `docs/handoff/evidence/time-hub-e2e-run-20261112.txt` (Docker's progress lines removed) |
+| A real window, Linux WebKitGTK under Xvfb, against that stack, 14:08–14:25 | Time and the admin panel opened from the Hub; revocation and deactivation while open; sign-out; three accounts in one run. Two faults of the Linux build found and fixed. See below |
 
 Limits of the Windows result: it is a type check of the `cfg(windows)` code against the
 `x86_64-pc-windows-gnu` target on Linux. Nothing was linked, no `.exe` or installer was made,
@@ -39,21 +40,28 @@ one disabled administrator) and stamped `20261112_0033`. Then, in order:
 
 1. `prechecks.sql`: revision 0033, none of the columns.
 2. Release 2.0.3 on its own schema: sign-in, `/api/auth/me` without any Hub field, receipts,
-   account administration. 9 checks.
+   account administration. 9 checks. The administrator's session is kept for later steps.
 3. `alembic upgrade head`: `0033 -> 0034 -> 0035`.
 4. `postchecks.sql`: three columns with the stated types and defaults, the check constraint,
    nobody without Checks, nobody with Time, CRM administrators exactly the three `admin` rows
    (the disabled one included), one active administrator at least.
-5. Release 2.0.3 on the new schema, which is what a rollback of the image alone runs on: the
-   same 9 checks, and two accounts created through the 2.0.3 API. **The administrator it
+5. The current code on the new schema: **the session opened under 2.0.3 in step 2 goes on
+   working**, is told it is a CRM administrator with Checks and administers accounts without
+   signing in again. A session opened here is kept for the next step.
+6. Release 2.0.3 on the new schema, which is what a rollback of the image alone runs on: the
+   9 checks; **the session opened under the current code goes on and its refresh token is
+   exchanged**; two accounts are created through the 2.0.3 API. **The administrator it
    created has `global_admin = false`**: the old code does not know the column. A demotion
    made by the old code likewise leaves `global_admin = true`. After a rollback and a second
    roll-forward the two have to be compared before anyone is let back in; the deployment
    document carries the query.
-6. `alembic downgrade 20261112_0033`: both steps down, `prechecks.sql` shows 0033 and no column.
-7. Release 2.0.3 on the downgraded schema: 9 checks.
-8. `alembic upgrade head` again, `postchecks.sql`: as in 4, now with four administrators (the
+7. `alembic downgrade 20261112_0033`: both steps down, `prechecks.sql` shows 0033 and no column.
+8. Release 2.0.3 on the downgraded schema: 9 checks.
+9. `alembic upgrade head` again, `postchecks.sql`: as in 4, now with four administrators (the
    one 2.0.3 created has the role, so 0035 marks it).
+
+So neither the deployment nor a rollback of the image signs anyone out: sessions live in
+Redis, which neither touches, and each code reads the other's tokens.
 
 ### End-to-end checks (`run.sh start`, `run.sh checks`)
 
@@ -63,13 +71,15 @@ unchanged, Caddy 2 with `deploy/Caddyfile` (only the site address replaced by `:
 `fake_telegram.py` in place of Telegram. The network is internal; Caddy alone publishes
 `127.0.0.1:18080`. `timelist` reports healthy, so its `HEALTHCHECK` does pass in Hub mode.
 
-What the 170 checks cover, all through the running services:
+What the 173 checks cover, all through the running services:
 
 - Caddy and the gates: `/health`; the system-access gate with and without Caddy; `/admin`
   308, `/admin/` with its policy, nothing but the three files; `/internal/time/telegram/{id}`
   not routed through Caddy, refused without the key, with a wrong key and with a proxy's
   header, answered from inside with the key; Time itself refuses without the gateway's token
   and has its password sign-in switched off.
+- A session opened under 2.0.3 before the migration goes on through Caddy and its refresh
+  token is exchanged.
 - Accounts from before the migration: the administrator is a CRM administrator with Checks,
   the operator is neither an administrator nor in Time, the disabled administrator cannot
   sign in, nobody has Time.
@@ -92,9 +102,12 @@ What the 170 checks cover, all through the running services:
   administrator with no workspace; the limit of ten sign-ins a minute answered 429 twice and
   was waited out.
 
-Not covered by them: the desktop client (unit tests and the window run), a real Telegram, TLS
-(Caddy listens on plain `:80` here), the `frontend` container (absent, so anything Caddy sends
-there answers 502), TDLib and the Celery workers.
+Not covered by them: a real Telegram, TLS (Caddy listens on plain `:80` here), the `frontend`
+container (absent, so anything Caddy sends there answers 502), TDLib and the Celery workers.
+
+Also seen on this stack: Time started without a bot token is healthy and says in its log
+that the bot is off and only the interface works, so Time can go up before the bot exists.
+It held 2 MiB without the bot and 6 MiB with it and the checks' data; its limit is 256 MiB.
 
 ### Found by the end-to-end run and fixed
 
@@ -119,6 +132,88 @@ Two things in the checks themselves were wrong at first and are worth knowing: T
 refuse an absence over a closed month, it freezes the month (by design, `locked_month_is_frozen`);
 and `/api/auth/logout` also ends the session of the refresh cookie the request carries, so one
 HTTP client object standing for several people must not keep cookies.
+
+### A real window (`desktop/tools/window-check.py`)
+
+**This is the Linux build with WebKitGTK on an Xvfb screen, not Windows and not WebView2.**
+The client was built with `cargo build -p tbs-app --locked` in `tbs-linux-dev:pinned` plus
+`xdotool gnome-keyring imagemagick dbus-x11 socat`, and driven with the mouse and keyboard
+against the stack above. The client takes plain `http` only on loopback, so inside its
+container `socat` forwarded `127.0.0.1:18080` to Caddy and `SERVER=http://127.0.0.1:18080`
+(new in `window-check.py`) pointed the client there instead of the stub.
+
+What was seen, in one run of the program with three accounts
+(`docs/handoff/evidence/time-hub-window-20261112/`, cropped to the window):
+
+- Launch and sign-in land on the start window (the Hub); a saved session comes back to it.
+  `e2e_both` (Checks operator, Time manager) is offered «Чеки» and «Учёт времени» and no
+  administration.
+- «Учёт времени» opens the Time page in the work window: the month with the employee and the
+  marks the stand-in bot produced, the bot's name in the header; a click on a day opens its
+  panel with the mark, the calculation and the Telegram messages. So the page's files, its
+  requests through the shell to `/api/time` and its input all work in a real web view.
+- Time taken away while its page was open (`scripts/hub/e2e/grant.py e2e_both time=-`):
+  within 36 seconds the page was closed, the start window was back and listed «Чеки» only;
+  the page's web folder was gone.
+- `e2e_crm`, a CRM administrator with no workspace, is offered «Администрирование CRM» alone;
+  it opens the panel with all fourteen accounts, their access and state, signed in by the
+  shell's session, no sign-in form.
+- CRM administration taken away while the panel was open: the panel was closed and the start
+  window showed «Нет доступных пространств» with «Доступ выдаёт администратор CRM».
+- Sign-out, then `e2e_viewer` (Time viewer): only «Учёт времени»; the page opens. The account
+  disabled while the page was open: page closed, sign-in form.
+- `e2e_both` again: Checks, start window, Time, start window, Time. No page of an earlier
+  account was shown to a later one.
+
+Found and fixed, both in the Linux build only (`cfg(target_os = "linux")`; Windows code is
+the same as before, and the suite and the Windows check were run again after it):
+
+- **Any hosted page ended the program**: `GTK has not been initialized`. wry's Linux web view
+  is WebKitGTK, and winit neither starts GTK nor runs its loop. `hosted/host.rs` now starts
+  GTK before the first view and gives GTK its turn every 30 ms while a hosted page exists
+  (`Msg::Pump`); `gtk` is a Linux-only dependency of `tbs-app` (one line in `Cargo.lock`,
+  the version wry already used). The Telegram section's web view has the same gap on Linux
+  and was not touched.
+- **The second page ended the program** with `BadWindow`: the app swaps the work window for
+  the start window, and GTK took the closed view's X window down only later, after its parent
+  was gone. A view is now let go with GTK's teardown done at once (`release`).
+
+Seen and left as they are:
+
+- **A viewer sees the editing controls.** The Time page sets `body.readonly` for a viewer
+  (`app.js`) and no rule in `app.css` uses it; the only sign is «· просмотр» next to the
+  name. The server refuses every write (403, checked above) and the page then says
+  «Недостаточно прав: … только просмотр», so nothing can be changed; it is a matter of what
+  the page offers. Not changed in this session.
+- At the default 1360-pixel window the Time page's header is wider than the page area with
+  this image's fonts (DejaVu, Noto): the bot's name and the account's name on the right are
+  cut. In a wider window they fit. Not checked with Windows fonts.
+- After one of three closings the page's web folder was there again with WebKitGTK's own
+  bookkeeping in it (`resourcemonitorthrottler`, an empty `storage`), written as the web view
+  shut down; nothing of the page. How WebView2 behaves there is not known from this run.
+- Xvfb's default 100 dots an inch made wry size a page's first frame 4% too large until the
+  window was resized; `window-check.py` now starts Xvfb with `-dpi 96`.
+- Not tried in the window: the Time workbook's save dialog (no desktop portal in the image),
+  the launch password, the settings' accounts and sessions, the Telegram section.
+
+### Still open
+
+- Everything the owner has to supply or decide is in the deployment document, section 2.
+- Not verified anywhere: the client on Windows with WebView2 (hosted pages, their folders,
+  the first sizing), a native Windows build and installer, a real Telegram bot and group, the
+  server's own layout beyond what the repository and the 2.0.3 record say.
+- Known and not changed: the viewer's editing controls and the header width above; the three
+  other naive-against-aware lock comparisons; the items the code review left open (below).
+
+### Sandbox rules met in this session
+
+- `python3 - <<EOF` and `sh -n` on a script written in the session are refused; a script file
+  that is run is not.
+- A long command is not killed here, it goes on in the background; `setsid nohup … &` with a
+  log outside the checkout worked for the builds and suites.
+- `*.log` is ignored by git: evidence is kept as `.txt`.
+- `checks.py` creates its accounts and needs the stack fresh; `run.sh` does everything in
+  order and removes the stack, `run.sh up|rehearse|start|checks|down` do it step by step.
 
 ## Resume session — 2026-11-12, branch `work/time-hub-admin-resume`
 

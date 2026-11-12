@@ -13,6 +13,8 @@ another one, a command line included: `CLIENT="wine …/tbsparcer.exe"` runs the
 Windows build, which keeps its session in Wine's own credential store, so the
 keyring is not needed there; the README says what Wine needs first. `STUB` adds
 options for the stub, `SETTLE` and `PATIENCE` give a slow start more time.
+`SERVER=http://…` points the client at a server that is already running, such
+as the stack of scripts/hub/e2e, and leaves the stub out.
 
     window-check.py up              the screen, the keyring and the stub
     window-check.py start           the client; `stop` ends it, the session stays saved
@@ -44,6 +46,7 @@ ROOM = Path(os.environ.get("ROOM", "/tmp/tbs-window-check"))
 SHOTS = Path(os.environ.get("SHOTS", ROOM / "shots"))
 CLIENT = os.environ.get("CLIENT", os.path.join(os.environ.get("CARGO_TARGET_DIR", "/target"), "debug", "tbsparcer"))
 PORT = os.environ.get("PORT", "8000")
+SERVER = os.environ.get("SERVER", "").rstrip("/")
 TITLE = "^TBS inform CRM$"
 # Wine names the process after its main thread, so the command line is matched,
 # and its end only: a shell that merely mentions the client is left alone.
@@ -78,19 +81,22 @@ def up(_):
     for folder in (ROOM / "data", SHOTS, ROOM / "run", Path.home() / ".cache", keyrings):
         folder.mkdir(parents=True, exist_ok=True)
     (ROOM / "run").chmod(0o700)
-    spawn("xvfb.log", "Xvfb", ENV["DISPLAY"], "-screen", "0", os.environ.get("SCREEN", "1600x1000x24"), "-nolisten", "tcp")
+    # 96 dots an inch, as a desktop has: Xvfb's own 100 makes wry size a page's
+    # first frame by 100/96 until the window is resized.
+    spawn("xvfb.log", "Xvfb", ENV["DISPLAY"], "-screen", "0", os.environ.get("SCREEN", "1600x1000x24"), "-dpi", "96", "-nolisten", "tcp")
     if shutil.which("gnome-keyring-daemon"):
         spawn("dbus.log", "dbus-daemon", "--session", f"--address={ENV['DBUS_SESSION_BUS_ADDRESS']}", "--nofork", "--nopidfile")
         time.sleep(2)
         # The keyring's own password: it guards nothing but this check's session.
         run("gnome-keyring-daemon", "--unlock", "--components=secrets", input="window-check", stdout=subprocess.DEVNULL)
-    stub_options = shlex.split(os.environ.get("STUB", ""))
-    spawn("stub.log", sys.executable, str(HERE / "stub-server.py"), "--port", PORT, "--sessions", str(ROOM / "sessions.json"), *stub_options)
+    if not SERVER:
+        stub_options = shlex.split(os.environ.get("STUB", ""))
+        spawn("stub.log", sys.executable, str(HERE / "stub-server.py"), "--port", PORT, "--sessions", str(ROOM / "sessions.json"), *stub_options)
     time.sleep(1)
 
 
 def start(_):
-    spawn("client.log", *shlex.split(CLIENT), TBS_DATA_DIR=str(ROOM / "data"), TBS_API_BASE_URL=f"http://127.0.0.1:{PORT}")
+    spawn("client.log", *shlex.split(CLIENT), TBS_DATA_DIR=str(ROOM / "data"), TBS_API_BASE_URL=SERVER or f"http://127.0.0.1:{PORT}")
     for _ in range(int(os.environ.get("PATIENCE", "60"))):
         if window():
             break

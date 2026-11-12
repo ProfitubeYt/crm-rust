@@ -47,6 +47,14 @@ screen, a keyring on a private D-Bus keeps the saved session, and xdotool is the
 mouse and the keyboard. The pictures are of that screen, not of the test
 simulator. `window-check.py` lists what it needs installed and every step.
 
+The stub knows nothing of workspaces. To see the Hub, «Учёт времени» and the
+administration panel, point the client at the stack of `scripts/hub/e2e` with
+`SERVER=http://127.0.0.1:<port>`: the client takes plain http on loopback only,
+so from another container forward a local port to the stack's Caddy first
+(`socat TCP-LISTEN:18080,bind=127.0.0.1,fork TCP:caddy:80`). Those pages are
+web views: on Linux that is WebKitGTK, which `screens/hosted/host.rs` starts
+and keeps running, and it is not the WebView2 the Windows build shows them in.
+
 The same steps drive the Windows build under Wine, which stands in for Windows
 without being it. Two things first: the client reads `C:\windows\Fonts` itself
 and a new Wine prefix has none there, so its window comes up without a word;

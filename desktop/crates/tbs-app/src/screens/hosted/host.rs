@@ -23,6 +23,22 @@ use crate::screens::telegram::host::{Area, background, failure, reply_to_page, w
 /// A page has little to tell the shell; anything longer is not its message.
 const MESSAGE_LIMIT: usize = 4096;
 
+/// How often GTK gets its turn on Linux while a page is open; see `pump`.
+pub const PUMP_EVERY: std::time::Duration = std::time::Duration::from_millis(30);
+
+/// GTK's turn. On Linux the web view is WebKitGTK, whose toolkit winit neither
+/// starts nor runs: `create` starts it and the screen's clock calls this, or
+/// the page would never load, draw or hear its answers. Elsewhere the web view
+/// needs nobody's help and this does nothing.
+pub fn pump() {
+    #[cfg(target_os = "linux")]
+    if gtk::is_initialized() {
+        while gtk::events_pending() {
+            gtk::main_iteration_do(false);
+        }
+    }
+}
+
 /// One opening of a page. Its web view and whatever that view reports carry
 /// the number, so news from a page that was closed, or opened again, while it
 /// was on its way is nobody's.
@@ -79,8 +95,26 @@ thread_local! {
 pub fn claim() -> Owner {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let owner = NEXT.fetch_add(1, Ordering::Relaxed);
-    HOST.with(|host| *host.borrow_mut() = Host { owner, view: None });
+    let before = HOST.with(|host| std::mem::replace(&mut *host.borrow_mut(), Host { owner, view: None }));
+    release(before.view);
     owner
+}
+
+/// Lets a view go. On Linux GTK takes the view's window down in its own time,
+/// and if the app's window, its parent, is gone by then, GTK ends the program
+/// over the X error; so GTK does it here and now, while the parent stands.
+fn release(view: Option<WebView>) {
+    if view.is_none() {
+        return;
+    }
+    drop(view);
+    #[cfg(target_os = "linux")]
+    {
+        pump();
+        if let Some(display) = gtk::gdk::Display::default() {
+            display.sync();
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -156,6 +190,8 @@ pub fn create(window: &dyn Window, spec: Spec, runtime: Handle) -> Result<(), St
         return Ok(());
     }
     let (kind, owner) = (spec.kind, spec.owner);
+    #[cfg(target_os = "linux")]
+    gtk::init().map_err(|error| error.to_string())?;
     let entry = format!("{}/{}", kind.origin(), kind.entry());
     let home = entry.clone();
     let mut context = WebContext::new(Some(spec.dir));
@@ -234,19 +270,21 @@ pub fn reload(owner: Owner) {
 /// made for it is not put up. `forget` also empties what the web view kept,
 /// for an account that signed out or lost the access.
 pub fn close(owner: Owner, forget: bool) {
-    HOST.with(|host| {
+    let view = HOST.with(|host| {
         let mut host = host.borrow_mut();
         if host.owner != owner {
-            return;
+            return None;
         }
         host.owner = 0;
-        if let Some(view) = host.view.take()
-            && forget
-            && let Err(error) = view.clear_all_browsing_data()
-        {
-            tracing::warn!("what a page kept was not emptied: {error}");
-        }
+        host.view.take()
     });
+    if let Some(view) = &view
+        && forget
+        && let Err(error) = view.clear_all_browsing_data()
+    {
+        tracing::warn!("what a page kept was not emptied: {error}");
+    }
+    release(view);
 }
 
 #[cfg(test)]
