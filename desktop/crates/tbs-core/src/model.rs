@@ -380,6 +380,24 @@ mod tests {
     }
 
     #[test]
+    fn a_grant_in_a_shape_this_build_does_not_read_does_not_stop_the_sign_in() {
+        for odd in [
+            r#","workspaces":"checks","workspace_roles":["time"],"global_admin":"yes""#,
+            r#","workspaces":{"checks":true},"workspace_roles":7,"global_admin":1"#,
+            r#","workspaces":["checks",5],"workspace_roles":{"time":{"role":"manager"}}"#,
+        ] {
+            let user = me(odd);
+            assert_eq!((user.workspaces.clone(), user.workspace_roles.clone(), user.global_admin), (None, None, None), "{odd}");
+            // As on a server from before workspaces: Checks, and nothing granted by guessing.
+            assert!(user.has_workspace(WORKSPACE_CHECKS) && !user.has_workspace(WORKSPACE_TIME) && !user.manages_accounts(), "{odd}");
+        }
+        // One odd field does not take the readable ones with it.
+        let user = me(r#","workspaces":["time"],"workspace_roles":"?","global_admin":true"#);
+        assert!(user.has_workspace(WORKSPACE_TIME) && !user.has_workspace(WORKSPACE_CHECKS) && user.manages_accounts());
+        assert_eq!(user.workspace_roles, None);
+    }
+
+    #[test]
     fn the_account_round_trips_with_and_without_the_new_fields() {
         for user in [serde_json::from_str::<UserInfo>(ME_BEFORE_WORKSPACES).unwrap(), me(r#","workspaces":["time"],"workspace_roles":{"time":"manager"},"global_admin":true"#)] {
             assert_eq!(serde_json::from_value::<UserInfo>(serde_json::to_value(&user).unwrap()).unwrap(), user);

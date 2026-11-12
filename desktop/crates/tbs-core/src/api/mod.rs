@@ -844,4 +844,157 @@ mod tests {
         let ApiError::Http { code, .. } = error_from_body(403, br#"{"detail":{"error":"workspace_forbidden","workspace":"time"}}"#) else { panic!() };
         assert_eq!(code.as_deref(), Some("workspace_forbidden"));
     }
+
+    /// A server of canned answers: for a path, how long it thinks and what it says.
+    async fn canned(answer: fn(&str) -> (u64, u16, &'static str)) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut seen = Vec::new();
+                    let mut chunk = [0u8; 2048];
+                    let head = loop {
+                        if let Some(at) = seen.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break at + 4;
+                        }
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => seen.extend_from_slice(&chunk[..n]),
+                        }
+                    };
+                    let text = String::from_utf8_lossy(&seen[..head]).to_lowercase();
+                    let length = text.lines().find_map(|line| line.strip_prefix("content-length:")).and_then(|value| value.trim().parse::<usize>().ok()).unwrap_or(0);
+                    while seen.len() < head + length {
+                        match socket.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => seen.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let target = String::from_utf8_lossy(&seen[..head]).split_whitespace().nth(1).unwrap_or("/").to_owned();
+                    let (thinks, status, body) = answer(target.split('?').next().unwrap_or("/"));
+                    tokio::time::sleep(std::time::Duration::from_millis(thinks)).await;
+                    let reply = format!("HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+                    let _ = socket.write_all(reply.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        base
+    }
+
+    fn signs_in(api: &Api, who: &str) {
+        assert!(api.begin_session(api.epoch(), Some(format!("access-{who}")), Some(format!("refresh-{who}-0123456789")), None));
+    }
+
+    fn told(events: &mut broadcast::Receiver<ApiEvent>) -> Vec<ApiEvent> {
+        let mut told = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            told.push(event);
+        }
+        told
+    }
+
+    async fn a_moment(millis: u64) {
+        tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
+    }
+
+    #[tokio::test]
+    async fn late_news_of_a_session_that_ended_is_not_news_of_the_next() {
+        let base = canned(|path| match path {
+            "/api/time/meta" => (200, 403, r#"{"detail":{"error":"workspace_forbidden","workspace":"time"}}"#),
+            "/api/transactions" => (200, 401, r#"{"detail":"Not authenticated"}"#),
+            "/api/admin/users" => (200, 403, r#"{"detail":"inactive_user"}"#),
+            // Nothing else is to be asked: a refresh here would be on the wrong session.
+            _ => (0, 500, "{}"),
+        })
+        .await;
+        let api = Api::new(base, None, Arc::new(MemoryStore::default()));
+        signs_in(&api, "anna");
+        let mut events = api.subscribe();
+        let asked: Vec<_> = ["/api/time/meta", "/api/transactions", "/api/admin/users"]
+            .into_iter()
+            .map(|path| {
+                let api = api.clone();
+                tokio::spawn(async move { api.execute(&Call::new(Method::GET, path)).await })
+            })
+            .collect();
+        a_moment(60).await;
+        // Anna signs out and Boris signs in while her three requests are on their way.
+        api.clear_session();
+        signs_in(&api, "boris");
+        let mut statuses = Vec::new();
+        for answer in asked {
+            statuses.push(answer.await.unwrap().expect("asked again, on the session of the next account").status);
+        }
+        assert_eq!(statuses, [403, 401, 403]);
+        assert_eq!(told(&mut events), [], "the next account was told of the last one's refusals");
+        assert_eq!(api.refresh_token().as_deref(), Some("refresh-boris-0123456789"), "the next account's session was ended by the last one's answers");
+        assert!(api.has_auth_token());
+    }
+
+    #[tokio::test]
+    async fn the_same_news_in_time_is_still_told() {
+        let base = canned(|path| match path {
+            "/api/time/meta" => (0, 403, r#"{"detail":{"error":"workspace_forbidden","workspace":"time"}}"#),
+            "/api/auth/refresh" => (0, 401, r#"{"ok":false,"error":"revoked"}"#),
+            _ => (0, 401, r#"{"detail":"Not authenticated"}"#),
+        })
+        .await;
+        let api = Api::new(base, None, Arc::new(MemoryStore::default()));
+        signs_in(&api, "anna");
+        let mut events = api.subscribe();
+        assert_eq!(api.execute(&Call::new(Method::GET, "/api/time/meta")).await.unwrap().status, 403);
+        assert_eq!(told(&mut events), [ApiEvent::WorkspaceRevoked("time".into())]);
+        assert!(api.has_refresh_token());
+        assert_eq!(api.execute(&Call::new(Method::GET, "/api/transactions")).await.unwrap().status, 401);
+        assert_eq!(told(&mut events), [ApiEvent::SessionRevoked]);
+        assert!(!api.has_auth_token() && !api.has_refresh_token());
+    }
+
+    #[tokio::test]
+    async fn tokens_renewed_for_a_session_that_ended_meanwhile_are_not_kept() {
+        let base = canned(|path| match path {
+            "/api/auth/refresh" => (200, 200, r#"{"ok":true,"token":"access-renewed","refresh_token":"refresh-renewed-0123456789"}"#),
+            _ => (0, 401, r#"{"detail":"Not authenticated"}"#),
+        })
+        .await;
+        let vault = Arc::new(MemoryStore::default());
+        let api = Api::new(base.clone(), None, vault.clone());
+        signs_in(&api, "anna");
+        let mut events = api.subscribe();
+        let asking = api.clone();
+        let asked = tokio::spawn(async move { asking.execute(&Call::new(Method::GET, "/api/transactions")).await });
+        a_moment(80).await;
+        // Signed out while the renewal was on its way.
+        api.clear_session();
+        assert_eq!(asked.await.unwrap().unwrap().status, 401);
+        assert!(!api.has_auth_token() && !api.has_refresh_token());
+        assert_eq!(vault.get(&format!("refresh:{base}")), None, "the renewed session went into the keyring after the sign-out");
+        assert_eq!(told(&mut events), []);
+    }
+
+    #[tokio::test]
+    async fn a_sign_in_overtaken_by_another_is_not_a_sign_in() {
+        let base = canned(|path| match path {
+            "/api/auth/login" => (200, 200, r#"{"ok":true,"token":"access-anna","refresh_token":"refresh-anna-0123456789","user":{"id":1,"username":"anna"}}"#),
+            _ => (0, 500, "{}"),
+        })
+        .await;
+        let api = Api::new(base, None, Arc::new(MemoryStore::default()));
+        let slow = api.clone();
+        let first = tokio::spawn(async move { slow.login("anna", "secret").await });
+        a_moment(60).await;
+        // Somebody else's sign-in, by QR say, finishes first.
+        signs_in(&api, "boris");
+        let answer = first.await.unwrap();
+        assert!(matches!(&answer, Err(ApiError::Http { code: Some(code), .. }) if code == "sign_in_overtaken"), "{answer:?}");
+        assert_eq!(api.refresh_token().as_deref(), Some("refresh-boris-0123456789"));
+
+        // Nobody in the way: the same answer signs Anna in.
+        api.clear_session();
+        let answer = api.login("anna", "secret").await.unwrap();
+        assert!(answer.ok && api.refresh_token().as_deref() == Some("refresh-anna-0123456789"));
+    }
 }
