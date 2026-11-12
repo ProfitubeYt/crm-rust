@@ -4,6 +4,27 @@
   "researched_on": "2026-11-12",
   "receipts_at_research": 1934,
   "distinct_operator_lines_at_research": 268,
+  "sources_rechecked": "2026-11-12: every source of the verified section was fetched again from its page and the recorded quote was found there.",
+  "owner_decisions": [
+    {
+      "date": "2026-11-12",
+      "question": "Which value should «Приложение» carry for the GOOGLE * lines, which Google documents as Google Play purchases?",
+      "answer": "Google Play",
+      "effect": "verified / google-play"
+    },
+    {
+      "date": "2026-11-12",
+      "question": "How should mappings that have evidence but no official proof reach the owner?",
+      "answer": "Report only",
+      "effect": "needs_owner_review is reported and never imported"
+    },
+    {
+      "date": "2026-11-12",
+      "question": "Optional: which application stands behind the largest lines that name only a bank or a card-to-card operation?",
+      "answer": "ok (no application was named)",
+      "effect": "not_an_application stays empty"
+    }
+  ],
   "field_meaning": "«Приложение» is the application or online service that the receipt's own operator line identifies: the payment app whose gateway processed the operation, or the online service that was paid. It does not assert which app was open on the cardholder's phone. A shop, terminal, ATM, bank office or generic processing line names no application and stays empty.",
   "method": "Focused web searches followed by fetching the real pages (official company / bank / application sites, official app-store listings, government and Central Bank pages). Search snippets were not used as evidence. Only public organisation and service names were searched: no receipt, card number, phone number or personal name. Counts are receipts per operator line on the research date.",
   "verified_rule": "A line is 'verified' when (1) it carries the brand name of an application or online service itself, (2) an official source confirms that brand is such a service with the function the line shows, (3) no other entity plausibly produces the same line, and (4) it does not contradict an entry the owner typed or a value a person set. Everything else is kept apart under needs_owner_review or not_an_application and is never imported.",

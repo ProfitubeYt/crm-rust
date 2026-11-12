@@ -8,7 +8,8 @@ container or any host that reaches the database. It deploys nothing and restarts
     python apply_change_manifest.py verify   --manifest M.json
     python apply_change_manifest.py apply    --manifest M.json --journal J.json --i-have-a-verified-backup
     python apply_change_manifest.py rollback --journal J.json
-    (add  --only dictionary,applications,details  to any of them to take a part)
+    (add  --only dictionary,applications,details  to any of them to take a part; the application
+     fills lean on the manifest's dictionary lines and are refused until those are in)
 
 The manifest comes from ``python -m scripts.build_change_manifest`` and lists every
 change with the value it replaces. This tool adds nothing of its own:
@@ -216,6 +217,16 @@ def apply(engine, manifest: Dict[str, Any], parts: Sequence[str], journal_path: 
     with engine.begin() as connection:
         store = Store(connection)
         classified = _classify(manifest, store, parts)
+        if "applications" in parts:
+            # The fills were computed with the manifest's dictionary lines in place: without
+            # them the application's own pass would call the written values stale.
+            lines = _classify(manifest, store, ("dictionary",))["dictionary"]
+            absent = len(lines.get("changed", [])) + (0 if "dictionary" in parts else len(lines.get("ready", [])))
+            if absent:
+                raise SystemExit(
+                    f"{absent} dictionary line(s) of this manifest are not active in the database and the «Приложение» "
+                    "fills were computed with them: apply the dictionary part first or together, or rebuild the manifest"
+                )
         journal["skipped"] = {
             part: {state: [item.get("id", item.get("operator_name")) for item in items] for state, items in buckets.items() if state != "ready"}
             for part, buckets in classified.items()

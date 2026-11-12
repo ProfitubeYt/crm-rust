@@ -279,9 +279,19 @@ def test_a_part_of_the_manifest_can_be_run_alone_and_the_tool_stands_by_itself(d
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(json.dumps(builder.build_manifest(db, RESEARCH, batch_id="batch-2"), ensure_ascii=False, default=str), encoding="utf-8")
     journal_path = tmp_path / "journal.json"
-    assert tool.main(["apply", "--manifest", str(manifest_path), "--journal", str(journal_path), "--only", "dictionary", "--i-have-a-verified-backup", "--database-url", url]) == 0
+    part = lambda name, journal: tool.main([  # noqa: E731
+        "apply", "--manifest", str(manifest_path), "--journal", str(journal), "--only", name, "--i-have-a-verified-backup", "--database-url", url])
+    # The fills lean on the manifest's dictionary lines: they are refused until those are in.
+    early = tmp_path / "early.json"
+    with pytest.raises(SystemExit):
+        part("applications", early)
+    assert not early.exists() and _state(db, 1) == (None, None, None, None) and _state(db, 5) == (None, None, None, None)
+
+    assert part("dictionary", journal_path) == 0
     assert db.query(OperatorReference).count() == 3
     assert _state(db, 1) == (None, None, None, None) and _state(db, 20) == (None, None, None, None)
+    assert part("applications", tmp_path / "journal-applications.json") == 0
+    assert _state(db, 1) == ("NovaPay", "dict", None, None) and _state(db, 20) == (None, None, None, None)
     with pytest.raises(SystemExit):
         tool.main(["verify", "--manifest", str(manifest_path), "--only", "everything", "--database-url", url])
     with pytest.raises(SystemExit):

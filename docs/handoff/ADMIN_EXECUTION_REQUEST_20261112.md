@@ -9,7 +9,9 @@ deployment, no migration and no restart, and it does not widen the read-only acc
 
 ## 1. What would be written
 
-Measured read-only on live production on 2026-11-12 (1 938 receipts, schema `20261112_0033`):
+Measured read-only on live production on 2026-11-12 at 10:09 UTC (1 939 receipts, highest id
+10532, schema `20261112_0033`). The counts and the digest were the same at 1 934 and at 1 938
+receipts earlier that day.
 
 | Part | Rows | What |
 |---|---|---|
@@ -25,6 +27,15 @@ Content digest of the reviewed plan: `720660a287af0bc93266c8105b137763b582b3bc14
 It covers the three lists above and nothing else. The same data gives the same digest whoever
 builds the manifest; new receipts that add a fill change it, and then the printed counts say by
 how much.
+
+The owner should know two things before approving:
+
+- **«Подробности» are confident, not certain.** Replayed in date order over the 1 064 confirmed
+  notes, the unchanged thresholds of 2.0.2 predicted 79 notes and 75 of them matched what the person
+  wrote (94.9 %). About three of the 59 fills may therefore differ from what a person would write.
+  They are marked `rule`, are never learned from, and the batch can be taken back.
+- **One label is the owner's own decision.** `GOOGLE` → «Google Play» (48 receipts) follows the
+  owner's answer of 2026-11-12; Google documents these lines as Google Play purchases.
 
 ## 2. Why a manifest and not the existing `--apply` scripts
 
@@ -48,8 +59,9 @@ a root-only directory such as `/opt/parcer-backups/<batch>/`, never in git, a ti
 
 ## 4. Procedure
 
-Names of the compose project, network and image are the server's; the account that prepared this
-cannot see them. `<…>` marks what the administrator fills in.
+`uzbek_parser_db`, `uzbek_parser_backend` and the service name `backend` are those of the
+repository's `docker-compose.yml`. The account that prepared this cannot see the server: check the
+names there. `<…>` marks what the administrator fills in.
 
 ```bash
 BATCH=dict-details-$(date -u +%Y%m%d)
@@ -57,33 +69,58 @@ B=/opt/parcer-backups/$BATCH
 install -d -m 700 "$B"
 
 # 1. Fresh backup, then prove it can be read (a restore into a scratch database is better still).
-docker exec <postgres container> pg_dump -U <user> -Fc <database> > "$B/pre.dump"
-docker exec -i <postgres container> pg_restore --list < "$B/pre.dump" | wc -l
+docker exec uzbek_parser_db pg_dump -U <user> -Fc <database> > "$B/pre.dump"
+docker exec -i uzbek_parser_db pg_restore --list < "$B/pre.dump" | wc -l
 sha256sum "$B/pre.dump" > "$B/pre.dump.sha256"
 
 # 2. The reviewed sources, beside the backup and not over /opt/receipt-parser.
 git clone --depth 1 --branch work/dictionary-and-details https://github.com/borianahameldoluno24-debug/fix.git "$B/src"
 git -C "$B/src" rev-parse HEAD            # must be the SHA named in the final report
 
-# 3. Build the manifest: a one-off container of the live image, the branch's backend read-only.
-run() { docker run --rm --network <compose network> --env-file /opt/receipt-parser/.env \
-          -v "$B/src/backend:/work:ro" -v "$B:/out" -w /work <live backend image> "$@"; }
+# 3. A one-off container of the live backend service: its image, network and environment, with
+#    the branch's backend mounted read-only. The running containers are not touched.
+cd /opt/receipt-parser                    # and the same -f files as the 2.0.2 rollout, if it used any
+run() { docker compose run --rm --no-deps -T --name "$BATCH-tool" \
+          -v "$B/src/backend:/work:ro" -v "$B:/out" -w /work backend "$@"; }
 run python -m scripts.build_change_manifest --out /out/manifest.json --batch-id "$BATCH"
-#    Compare the printed counts and digest with section 1.
+#    Reads only. Compare the printed counts and digest with section 1.
 
 # 4. Check, apply, check again.
-run python scripts/apply_change_manifest.py verify --manifest /out/manifest.json
+run python scripts/apply_change_manifest.py verify --manifest /out/manifest.json   # every part: ready
 run python scripts/apply_change_manifest.py apply  --manifest /out/manifest.json \
       --journal /out/journal.json --i-have-a-verified-backup
 run python scripts/apply_change_manifest.py verify --manifest /out/manifest.json   # every part: done
 
 # 5. After two minutes (the workers' dictionary cache), the live code must agree:
-docker exec <backend container> python -m scripts.backfill_applications   # filled from evidence: 0
-docker exec <backend container> python -m scripts.enrich_details          # would be filled: 0
+docker exec uzbek_parser_backend python -m scripts.backfill_applications   # filled from evidence: 0
+docker exec uzbek_parser_backend python -m scripts.enrich_details          # would be filled: 0
+```
+
+**Stop and write nothing** if the build fails, if it prints other counts than section 1 and newer
+receipts do not explain the difference, or if the first `verify` shows anything but `ready`.
+Every step before `apply` only reads, so a wrong environment shows itself before anything changes.
+
+If `docker compose run` cannot be used on the server, take the image, the network and the already
+expanded environment from the running container instead. Do not pass `.env` to a plain
+`docker run --env-file`: it does not expand the `${…}` references that the repository's
+`.env.example` uses in `DATABASE_URL`.
+
+```bash
+IMAGE=$(docker inspect -f '{{.Config.Image}}' uzbek_parser_backend)
+NET=$(docker inspect -f '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{end}}' uzbek_parser_backend)
+( umask 077; docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' uzbek_parser_backend > "$B/run.env" )
+run() { docker run --rm --network "$NET" --env-file "$B/run.env" \
+          -v "$B/src/backend:/work:ro" -v "$B:/out" -w /work "$IMAGE" "$@"; }
+# ... the same steps 3 to 5, then:  shred -u "$B/run.env"   (it holds the application's credentials)
 ```
 
 `apply` may be run in parts: `--only dictionary`, then `--only applications`, then `--only details`,
-each with its own journal file. A journal file is never written over.
+each with its own journal file. A journal file is never written over. The application fills are
+refused until the manifest's dictionary lines are in, because they were computed with them.
+
+One of the 17 lines (`UB VISAUZUM TO HUMO>` → UzumBank) has an inactive twin that the optional AI
+left under a slightly different spelling. The import adds the verified line beside it and does not
+touch the inactive one; the owner may delete that one in the reference screen.
 
 ### 4.1 Turning the note rules on for new receipts (one more decision)
 
@@ -91,7 +128,9 @@ The fills above do not create the rules that give **new** receipts their notes. 
 the script the live backend already has:
 
 ```bash
-docker exec <backend container> python -m scripts.enrich_details --apply
+docker exec uzbek_parser_db psql -U <user> -d <database> \
+  -c "\copy annotation_rules to stdout csv header" > "$B/annotation_rules.before.csv"
+docker exec uzbek_parser_backend python -m scripts.enrich_details --apply
 # expected: rules created 11, updated 0, disabled 14; receipts changed 0
 ```
 
@@ -102,10 +141,15 @@ already in place it changes no receipt. From then on the existing five-minute ba
 `--revalidate` would also take back 6 notes the earlier operator-only rules wrote; that is not part
 of this plan and is the owner's call.
 
+This step is not part of the batch: `rollback` (section 5) does not undo it, it only switches off
+the rules behind the notes it takes back. The CSV above is the before-state of the rules should the
+owner want the 14 earlier rules back.
+
 ### 4.2 What to look at afterwards
 
 - `operator_reference`: 87 active lines (70 + 17), 95 inactive untouched.
-- «Приложение» empty on about 1 004 receipts instead of 1 660; «Подробности» empty on about 679.
+- «Приложение» empty on about 1 005 receipts instead of 1 661; «Подробности» empty on about 680
+  instead of 739.
 - A receipt that arrives with one of the new operators carries its application at once.
 - Desktop and workbook show the values after their next synchronisation (`updated_at` is bumped).
 
@@ -132,18 +176,30 @@ run python scripts/apply_change_manifest.py rollback --journal /out/journal.json
 
 ## 6. Evidence that the procedure works
 
-Rehearsed on 2026-11-12 on a private PostgreSQL 15.19 copy with the repository's schema and the
-production values of the affected columns (no receipt text):
+Rehearsed on 2026-11-12, last with the final tool, on a private PostgreSQL 15.19 copy: the
+repository's schema plus the one constraint production has beyond it (below), and the production
+values of the affected columns of 1 934 receipts (no receipt text):
 
 - the manifest built there has the same digest as the one built from live production;
 - `verify` → ready 17 / 656 / 59; `apply` refused without the backup flag, then wrote 17 / 656 / 59;
-- afterwards the live scripts found nothing to fill and nothing stale; `enrich_details --apply`
-  created 11 rules, switched 14 off and changed no receipt;
+- afterwards the branch's copies of the live scripts found nothing to fill and nothing stale;
+  `enrich_details --apply` created 11 rules, switched 14 off and changed no receipt;
 - a second `apply` wrote nothing;
 - `rollback` took back 17 / 656 / 59 and the affected columns of all 1 934 receipts and the
   dictionary were byte-for-byte what they were before.
 
-`verify` was also run against live production through the read-only role: ready 17 / 656 / 59.
+Checked against live production through the read-only role:
+
+- `verify` → ready 17 / 656 / 59;
+- the columns, defaults, constraints and triggers of the tables the tool writes
+  (`operator_reference`, `transactions`, `transaction_annotation_events`, `annotation_rules`) and
+  reads (`locked_periods`). Every column the tool leaves out has a default or is nullable, there are
+  no triggers, the server's time zone is UTC. Production has one constraint the models do not
+  declare, a unique index on `operator_reference (operator_name, application_name)`: the tool looks
+  for exactly that pair before it inserts, and a violation would abort the whole transaction.
+
+Not checked, because the account cannot see the server: the container, service and network names,
+the exact `docker compose` invocation, and a run of the tool inside the live 2.0.2 image.
 
 ## 7. Separate proposal: deploying the branch
 
