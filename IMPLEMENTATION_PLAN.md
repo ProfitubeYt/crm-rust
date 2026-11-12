@@ -203,3 +203,8 @@ Backend b6419c6 and Rust UI 83f5bdd were merged without conflicts at b5bbc0d. Ba
 ## Release 2.0.2 — 12 November 2026
 
 Hub/separators 44e2f98 and enrichment/column-order 6eaa51c merged at d16c1c9. Windows checks: 120 core and 302 app unit tests passed; release executable and private installer 2.0.2 built. Isolated backend: 1226 passed, 1 optional VBA inspection skipped. Production migrated to 0033 and application image updated with fresh backups; workers and HTTPS health verified. Historical fills were dry-run only (457 application and 59 details proposals). See docs/handoff/DEPLOYMENT_2_0_2_20261112.md for evidence, rollback and remaining runtime/Excel verification limits.
+
+
+## Release 2.0.3 — 12 November 2026
+
+Dictionary/details branch 36ffa0d deployed; reviewed batch applied exactly: 17 dictionary lines, 656 Application fills and 59 Details fills; suggestions/conflicts untouched. Daily confirmed-rule refresh enabled at 24 hours with separate rule snapshots. Source-archive manifest guard and concurrent SQLite test fixture corrected. Fresh tests: 121 Windows core + 306 app; backend 1245 pass, 1 optional inspection skipped. Private installer 2.0.3 built. See docs/handoff/DEPLOYMENT_2_0_3_20261112.md for backup/journal paths, rollback boundaries and runtime/Excel limitations.
