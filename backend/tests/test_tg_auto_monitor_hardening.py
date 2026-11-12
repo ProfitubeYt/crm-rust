@@ -1,9 +1,10 @@
 import asyncio
 
 import pytest
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from database.models import MonitoredBotChat, ReceiptProcessingTask
+from database.models import Base, MonitoredBotChat, ReceiptProcessingTask
 from services.tg_auto_monitor_service import TgAutoMonitorService
 
 
@@ -139,8 +140,16 @@ async def test_stale_redis_lease_does_not_suppress_database_retry(db_session, mo
 
 
 @pytest.mark.asyncio
-async def test_concurrent_realtime_delivery_shares_one_local_enqueue(db_session, monkeypatch):
-    factory = _session_factory(db_session)
+async def test_concurrent_realtime_delivery_shares_one_local_enqueue(tmp_path, monkeypatch):
+    # Worker threads need independent connections, as they have in PostgreSQL.
+    # The shared in-memory fixture uses one connection, so one session can
+    # roll back another session's transaction while the worker is committing.
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'concurrent-delivery.sqlite'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine)
     service = TgAutoMonitorService(FakeManager(), factory)
     processed = []
 
