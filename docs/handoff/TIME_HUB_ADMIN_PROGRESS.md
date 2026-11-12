@@ -5,10 +5,125 @@
 Branch `work/time-hub-admin` from `main` `45d7e5d`. Plan: `docs/handoff/TIME_HUB_ADMIN_PLAN.md`.
 Nothing here is deployed; production was not read or changed.
 
+## Finish session — 2026-11-12, branch `work/time-hub-admin-finish`
+
+Baseline: `main` at `4e644ebc29ac505b937b30966130e58920a51d07` (everything through `10f7ea8`
+plus the handoff correction). Nothing is deployed. Production was read once more with the
+SELECT-only role and not changed. The sections below this one are earlier sessions' records.
+
+Sandbox: 2 CPUs, 8 GB, Docker 29.1.3. Rebuilt here: `tbs-linux-dev:pinned`, `timelist:local`
+(about six minutes), the volume `hub-backend-venv`.
+
+### What was run, and what came out (UTC)
+
+| Step | Result |
+|---|---|
+| Desktop suite through `scripts/hub/desktop-tests.sh` (first run of the wrapper itself), 13:50 | **348 app tests and 141 core tests passed**, exit 0. `live_backend` and `live_writes` report one passed test each by returning early; they are not coverage |
+| Windows code paths: `scripts/hub/desktop-tests.sh check -p tbs-app --locked --target x86_64-pc-windows-gnu`, 14:00 | `Finished`, exit 0 (first run six minutes forty; its `docker run` lost the daemon's wait stream and reported 125 although the container exited 0, so it was run again: exit 0) |
+| Production pre-checks, `deploy/time-hub/prechecks.sql`, read-only, one connection, 13:30 | unchanged: PostgreSQL 15.16, schema `20261112_0033`, none of the three columns, two active `admin` accounts and one active `operator`, no other role values |
+| Migration rehearsal, `scripts/hub/e2e/run.sh up` + `rehearse`, PostgreSQL 15.19, 13:44 | every step passed; see below |
+| End-to-end checks, `scripts/hub/e2e/run.sh start` + `checks`, 14:00 | **170 checks, 0 failed**; see below |
+| Real window, whole backend suite, deployment document | not done yet at this commit |
+
+Limits of the Windows result: it is a type check of the `cfg(windows)` code against the
+`x86_64-pc-windows-gnu` target on Linux. Nothing was linked, no `.exe` or installer was made,
+nothing ran on Windows or with WebView2. `build.rs` calls `windres` under its Windows name,
+which the Linux image does not have, so the icon and version resource were skipped with the
+warning `windres failed, the executable has no icon`.
+
+### Migration rehearsal (`run.sh rehearse`)
+
+The database is built by the code of `f5eede4` (`git archive`, `create_all`, `pg_trgm`) with
+four made-up accounts shaped like the server's (two active administrators, one operator, plus
+one disabled administrator) and stamped `20261112_0033`. Then, in order:
+
+1. `prechecks.sql`: revision 0033, none of the columns.
+2. Release 2.0.3 on its own schema: sign-in, `/api/auth/me` without any Hub field, receipts,
+   account administration. 9 checks.
+3. `alembic upgrade head`: `0033 -> 0034 -> 0035`.
+4. `postchecks.sql`: three columns with the stated types and defaults, the check constraint,
+   nobody without Checks, nobody with Time, CRM administrators exactly the three `admin` rows
+   (the disabled one included), one active administrator at least.
+5. Release 2.0.3 on the new schema, which is what a rollback of the image alone runs on: the
+   same 9 checks, and two accounts created through the 2.0.3 API. **The administrator it
+   created has `global_admin = false`**: the old code does not know the column. A demotion
+   made by the old code likewise leaves `global_admin = true`. After a rollback and a second
+   roll-forward the two have to be compared before anyone is let back in; the deployment
+   document carries the query.
+6. `alembic downgrade 20261112_0033`: both steps down, `prechecks.sql` shows 0033 and no column.
+7. Release 2.0.3 on the downgraded schema: 9 checks.
+8. `alembic upgrade head` again, `postchecks.sql`: as in 4, now with four administrators (the
+   one 2.0.3 created has the role, so 0035 marks it).
+
+### End-to-end checks (`run.sh start`, `run.sh checks`)
+
+The stack: the current backend from the pinned Python image on PostgreSQL 15 and Redis 7, the
+real Time server from `timelist:local` under `deploy/time-hub/docker-compose.time.yml`
+unchanged, Caddy 2 with `deploy/Caddyfile` (only the site address replaced by `:80`), and
+`fake_telegram.py` in place of Telegram. The network is internal; Caddy alone publishes
+`127.0.0.1:18080`. `timelist` reports healthy, so its `HEALTHCHECK` does pass in Hub mode.
+
+What the 170 checks cover, all through the running services:
+
+- Caddy and the gates: `/health`; the system-access gate with and without Caddy; `/admin`
+  308, `/admin/` with its policy, nothing but the three files; `/internal/time/telegram/{id}`
+  not routed through Caddy, refused without the key, with a wrong key and with a proxy's
+  header, answered from inside with the key; Time itself refuses without the gateway's token
+  and has its password sign-in switched off.
+- Accounts from before the migration: the administrator is a CRM administrator with Checks,
+  the operator is neither an administrator nor in Time, the disabled administrator cannot
+  sign in, nobody has Time.
+- Eight accounts created through `/api/admin/users` (Checks only, Time viewer, Time manager,
+  both, neither, CRM administrator without a workspace, Time employee, disabled): the
+  `/api/auth/me` fields of each, and for each the answers of the Checks list, the Checks
+  export, the Excel grants, Time's page data, a Time edit, the Time workbook and CRM
+  administration.
+- Time through the gateway: the journal names the account and not what the client claimed;
+  a closed month refuses edits (409) and stays as it was when an absence is entered over it.
+- Revocation and grant on a live token, for Time, Checks and CRM administration; an
+  administrator cannot demote or disable themselves.
+- Sessions: listing, refresh exchange, a used refresh token refused, an expired and a forged
+  access token, sign-out, an administrator ending an account's sessions, deactivation.
+- The bot, with synthetic senders and groups: an employee account's message is kept (🤷 until
+  the sender is bound, ✍ after); an unknown sender, an account that lost Time and a disabled
+  account get 🤷 and nothing is kept; another group is ignored; `/id` and `/me` answer.
+- Sign-in protection: lockout after five wrong passwords and unlock; a second factor set up,
+  confirmed and required; the administrators' second-factor policy reaches a CRM
+  administrator with no workspace; the limit of ten sign-ins a minute answered 429 twice and
+  was waited out.
+
+Not covered by them: the desktop client (unit tests and the window run), a real Telegram, TLS
+(Caddy listens on plain `:80` here), the `frontend` container (absent, so anything Caddy sends
+there answers 502), TDLib and the Celery workers.
+
+### Found by the end-to-end run and fixed
+
+**A locked account answered 500 at its next sign-in.** `users.locked_until` is a timestamp
+with a time zone on PostgreSQL, `services/user_service.authenticate` compared it with a naive
+`utcnow()`, and Python refuses that comparison. On SQLite, where the unit tests run, the value
+comes back naive and the comparison works. The code is the same in `f5eede4`, and the
+server's column was created `timezone=True` by migration `20260216_0004`, so release 2.0.3 as
+deployed should have it too: after five wrong passwords an account answers 500 to every
+sign-in, right password or not, lock run out or not, until an administrator unlocks it (or
+the column is cleared in the database). That was not tried against production. Fixed in
+`backend/services/user_service.py` (the stored value is read as naive UTC before comparing),
+with `backend/tests/test_login_lockout.py`, whose first test fails without the fix; the
+end-to-end check then passed.
+
+The same kind of comparison, a naive `utcnow()` against a column declared `timezone=True`, is
+in `api/dependencies.py:811` and `api/routes/security.py` (launch password lock) and in
+`api/routes/telegram_client.py` (chat password lock). They are outside this work, were not
+run here and were not changed.
+
+Two things in the checks themselves were wrong at first and are worth knowing: Time does not
+refuse an absence over a closed month, it freezes the month (by design, `locked_month_is_frozen`);
+and `/api/auth/logout` also ends the session of the refresh cookie the request carries, so one
+HTTP client object standing for several people must not keep cookies.
+
 ## Resume session — 2026-11-12, branch `work/time-hub-admin-resume`
 
-Where the next session picks up: `docs/tasks/CONTINUE_TIME_HUB_ADMIN_PROMPT.md`. Everything
-below this section is the previous session's record and is historical.
+Historical from here down. At the time, the next session was to pick up from
+`docs/tasks/CONTINUE_TIME_HUB_ADMIN_PROMPT.md`.
 
 **Baseline.** `main` at `7c4e4f48a12791c9beddcb07fdf164048db6955b`: release 2.0.3 (`f5eede4`)
 and the Time work (`22b8417`) merged. Nothing is deployed. Production was read once with the

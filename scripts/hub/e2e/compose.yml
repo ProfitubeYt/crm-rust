@@ -30,11 +30,9 @@ x-backend: &backend
     ROOT_ACCESS_SERVER_CONFIG_PATH: /run/hub-e2e/root-access.server.json
     SYSTEM_ACCESS_ENFORCED: "true"
     SCOPES_MANAGED_BY_CONFIG: "false"
-    SYSTEM_ACCESS_TOKEN: ${SYSTEM_ACCESS_TOKEN}
     TIMELIST_INTERNAL_URL: http://timelist:8080
     TIMELIST_API_TOKEN: ${TIMELIST_API_TOKEN}
     TIME_HUB_KEY: ${TIME_HUB_KEY}
-    TIME_BOT_CHAT_ID: ${TIME_BOT_CHAT_ID}
   volumes:
     - ${E2E_BACKEND_DIR:-./backend}:/app:ro
     - ./scripts/hub/e2e:/e2e:ro
@@ -66,6 +64,13 @@ services:
     <<: *backend
     profiles: ["tool"]
     entrypoint: ["/venv/bin/python"]
+    environment:
+      <<: *backend-env
+      # What only the checks hold: the system token Caddy adds for clients, the
+      # work group the bot listens to and the password of the made-up accounts.
+      SYSTEM_ACCESS_TOKEN: ${SYSTEM_ACCESS_TOKEN}
+      TIME_BOT_CHAT_ID: ${TIME_BOT_CHAT_ID}
+      E2E_PASSWORD: ${E2E_PASSWORD}
 
   backend:
     <<: *backend

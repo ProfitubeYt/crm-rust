@@ -47,6 +47,17 @@ def _utcnow() -> datetime:
     return datetime.utcnow()
 
 
+def _naive_utc(moment: datetime) -> datetime:
+    """A stored time stamp as naive UTC, the form `_utcnow()` has.
+
+    PostgreSQL returns `locked_until` with a time zone and SQLite without one;
+    Python refuses to compare the two kinds.
+    """
+    if moment.tzinfo is None:
+        return moment
+    return moment.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def _json_list(raw: Optional[str], *, default: Optional[List[Any]] = None) -> List[Any]:
     if not raw:
         return list(default or [])
@@ -279,8 +290,9 @@ def authenticate(db: Session, username: str, password: str) -> Tuple[Optional[Us
         return None, {"error": "inactive_user"}
 
     now = _utcnow()
-    if user.locked_until and user.locked_until > now:
-        locked_seconds = max(1, int((user.locked_until - now).total_seconds()))
+    locked_until = _naive_utc(user.locked_until) if user.locked_until else None
+    if locked_until and locked_until > now:
+        locked_seconds = max(1, int((locked_until - now).total_seconds()))
         return None, {"error": "locked", "locked_seconds": locked_seconds}
 
     if not _verify_user_password(user, password_raw):
