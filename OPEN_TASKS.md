@@ -4,15 +4,15 @@ This is a source/handoff review, not a fresh production audit. Preserved Time co
 
 ## Priority 1: finish Time and global administration
 
-State on 14 November 2026, branch `vorflux/time-release`, pull request https://github.com/asintiko/crm-rust/pull/1 . Every result below is from a Linux sandbox; nothing ran on Windows and nothing is deployed. Figures and limits: docs/handoff/TIME_HUB_ADMIN_PROGRESS.md, "Release session".
+State on 14 November 2026, branch `vorflux/time-release`, pull request https://github.com/asintiko/crm-rust/pull/1 . The results below are from a Linux sandbox, and one run of GitHub Actions on Windows Server 2022; nothing is deployed. Figures and limits: docs/handoff/TIME_HUB_ADMIN_PROGRESS.md, "Release session".
 
 - [x] The desktop shell's slim top bar, no left column or hamburger for Time and CRM administration; Checks navigation unchanged; the Time page not rewritten.
 - [x] Manager/viewer, both themes, narrow viewport, closed-month and standalone pictures of the Time page regenerated (74 Chromium checks) and looked at.
 - [x] Core/app/Time/backend tests and the local end-to-end/migration stack rerun after the UI change: 351 app/141 core, Time 46, backend 1349 pass/1 skipped, 173 e2e checks.
 - [x] The client's real window on Linux (Xvfb, WebKitGTK) against the stack: Time as manager and viewer, CRM administration, both themes, 1360 and 1024 wide, sign-out, user switch, revocation while open. Pictures: docs/handoff/evidence/time-hub-window-20261114/.
 - [ ] Time image: rebuilt and healthy in Hub mode in the stack. Persistent SQLite storage across a restart is still to verify.
-- [ ] Windows client 2.1.0. Done: version bump; an executable cross-linked on Linux with embedded pages/Telegram assets, WebView2 loader and icon/version resources; a setup compiled under Wine without client-access.json. Not done: a build on Windows, and any test on real Windows of start-up, navigation, sessions and WebView2. Do not publish the cross-built setup to the update channel.
-- [ ] Run `.github/workflows/windows-client.yml` (hand-started; available once it is on main; uses paid Actions minutes) or build on the owner's Windows machine.
+- [x] Windows client 2.1.0 built on Windows by the workflow `.github/workflows/windows-client.yml` (https://github.com/asintiko/crm-rust/actions/runs/43598951623): 351 app/139 core tests, release executable, setup without client-access.json (SHA-256 234848f6…0bbb2b, kept as a run artifact until 21 November 2026), silent install, first start to the sign-in window. Evidence: docs/handoff/evidence/time-hub-windows-run-20261114.txt.
+- [ ] Windows client 2.1.0 on a real Windows desktop with a server: sign in, open Time and CRM administration in WebView2, the bar, hints, sign-out, user switch, the update from 2.0.3. Not done anywhere. Do not publish a setup to the update channel before it.
 - [ ] Check on Windows: a click on «Открыть» in the start window also lands in the page that opens (seen on WebKitGTK with xdotool).
 - [x] Remaining low-severity review findings: each is recorded with its reason for deferral in the progress record. One is closed by the new layout (header width).
 - [ ] Correct the naive-against-aware lock comparisons of the launch password and the chat password (backend/api/dependencies.py, api/routes/security.py, api/routes/telegram_client.py) with tests on PostgreSQL.

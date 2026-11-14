@@ -41,6 +41,7 @@ account, sign-out) and no rail for the two hosted pages, «Учёт времен
 | 21 | Checks, rail unfolded, no bar |
 | 22, 23 | `grant.py e2e_both time=-` while Time was open: five seconds later the start window with the toast «Доступ к разделу «Учёт времени» закрыт администратором», only Checks offered |
 | 24 | click on «Открыть» in the start window also lands in the Time page (see below) |
+| W1 | **Windows**, not this run: the setup built by GitHub Actions on Windows Server 2022, installed there and started once. Sign-in window, «Версия 2.1.0», «Сервер недоступен». Nobody signed in, no page was opened (`../time-hub-windows-run-20261114.txt`) |
 | B1..B8 | Chromium: manager 1024 light and dark, viewer 1024, closed month (manager, viewer), standalone 1024 light and dark, viewer 1360 dark |
 
 ## Limitations

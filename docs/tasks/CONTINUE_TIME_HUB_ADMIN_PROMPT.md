@@ -58,7 +58,7 @@ Done and pushed (detail in the progress record):
   program, on the committed files. Not a desktop window, not Windows.
 
 Done on 2026-11-14 on `vorflux/time-release` (figures in the progress record, "Release
-session"; all on Linux, none on Windows):
+session"; all on Linux, but for the one run of GitHub Actions on Windows):
 
 - The pictures of the Chromium run were looked at (74 checks, 0 failed, run again).
 - The program's slim top bar is written: no rail and no hamburger on «Учёт времени» and
@@ -68,21 +68,22 @@ session"; all on Linux, none on Windows):
   (173 checks).
 - The real window under Xvfb with WebKitGTK against the stack: pictures in
   `docs/handoff/evidence/time-hub-window-20261114/`.
-- Client version 2.1.0. A Windows executable cross-linked in the sandbox and a setup compiled
-  by Inno Setup under Wine, without `client-access.json`: **never started on Windows**, not
-  committed, not published.
+- Client version 2.1.0, built on Windows Server 2022 by the workflow
+  `.github/workflows/windows-client.yml` (one run, from this branch): tests, release
+  executable, setup without `client-access.json`, silent install, first start to the sign-in
+  window. **Nobody signed in there and no page was opened in WebView2.** Not published.
 - The deployment document carries the owner's decisions, the bot and the 2FA steps.
 
 Not done, in the order to do it:
 
-1. **Windows.** Build and try the client on a real Windows machine with WebView2:
-   `pwsh desktop/tools/build-installer.ps1` there, or the workflow
-   `.github/workflows/windows-client.yml` (hand-started; GitHub offers it only once the file
-   is on `main`; a Windows runner uses paid minutes, so ask the owner). Try: the bar on both
-   pages, the first sizing, the hints over the web view, sign-out and user switch, the update
-   from 2.0.3, and whether the click on «Открыть» also lands in the page that opens (seen on
-   WebKitGTK with `xdotool`). Only then publish to `asintiko/parcer20-updates`, with the
-   owner's word.
+1. **Windows.** Try client 2.1.0 on a real Windows desktop against a server: sign in, open
+   both pages, the bar, the first sizing, the hints over the web view, sign-out and user
+   switch, the update from 2.0.3, and whether the click on «Открыть» also lands in the page
+   that opens (seen on WebKitGTK with `xdotool`). A setup with `client-access.json` comes
+   from `pwsh desktop/tools/build-installer.ps1` on the owner's machine; the workflow gives
+   one without it (hand-started, offered by GitHub once the file is on `main`; a run took 43
+   minutes of a Windows runner, which the account pays double). Only then publish to
+   `asintiko/parcer20-updates`, with the owner's word.
 2. **Deployment.** An authorised administrator runs
    `docs/handoff/TIME_HUB_ADMIN_DEPLOYMENT.md` from its section 2 on: the live read-only
    pre-check, the backups read back, the migration, the checks of section 6. This sandbox
@@ -112,7 +113,7 @@ Not done, in the order to do it:
 - `TIME_BOT_TOKEN`, reissued, provisioned to that executor only.
 - Privacy mode disabled, then `TIME_BOT_CHAT_ID`: a verified negative group ID.
 - Whether both administrators have 2FA (the read-only role cannot read it).
-- A Windows machine with WebView2 to build and try client 2.1.0, and
+- A Windows desktop with WebView2 and a server to try client 2.1.0 on, and
   `frontend/client-access.json` on it for a setup that can do a first installation.
 - The read-only SSH key is not in git: a new sandbox needs it again, outside the checkout,
   mode 600 (`docs/handoff/SHARED_SSH_ACCESS.md`; key and role expire 2026-11-25 00:00 UTC).

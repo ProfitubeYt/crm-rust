@@ -14,8 +14,9 @@ last production read is still the read-only pre-check of 2026-11-12 13:30 UTC.
 
 Platform of everything below: a Linux sandbox (x86-64, Docker 29.1.4, Compose v5.0.1), the
 image `tbs-linux-dev:pinned` (Rust 1.99.1, MinGW) for the client, `timelist:local` rebuilt
-from `time/`, Playwright 1.49.1 with Chromium 131 for the page. **No step ran on Windows and
-none used WebView2.**
+from `time/`, Playwright 1.49.1 with Chromium 131 for the page. One thing ran on Windows: the
+build, the tests and a first start on a hosted runner of GitHub Actions (below). **Nothing
+opened a hosted page in WebView2.**
 
 ### Commits
 
@@ -24,7 +25,8 @@ none used WebView2.**
 | `0efe423` | The program's slim top bar for «Учёт времени» and «Администрирование CRM», no rail there; Checks keeps its rail. `build.rs` embeds resources only for a Windows target and finds the cross `windres`. The e2e run's output as evidence. |
 | `e6d3940` | The same code with what the rail no longer needs taken out (no behaviour change). |
 | `a29f2ac` | Client version 2.0.3 → 2.1.0 (`desktop/Cargo.toml`, `Cargo.lock`). |
-| `9861953` | `.github/workflows/windows-client.yml`: build, test, setup, silent install and first start on a hosted Windows runner. Started by hand only. **Not run**: GitHub lists a hand-started workflow only once its file is on the default branch. |
+| `9861953` | `.github/workflows/windows-client.yml`: build, test, setup, silent install and first start on a hosted Windows runner. Started by hand only, and offered by GitHub only once the file is on the default branch. |
+| `887214b`, then removed | A temporary push trigger, with the owner's word, to run that workflow once from this branch. |
 | `6624799` | The deployment document reworked: the owner's decisions, readable backups, both administrators, the bot. |
 | after it | This record, `OPEN_TASKS.md`, the continuation prompt, `desktop/README.md`, the window pictures. |
 
@@ -75,29 +77,42 @@ Time on a volume, and nothing restarted the container to read the file back.
 
 ### The Windows build: what exists and what it is not
 
-Built in the sandbox from `6624799`, not committed and not published:
+**Built and started on Windows by GitHub Actions.** Run <https://github.com/asintiko/crm-rust/actions/runs/43598951623>, commit `887214b` (the
+sources of `081e9e4`), hosted runner `windows-2022` image 20261112.366.7: Windows Server 2022
+Datacenter 10.0.20348, WebView2 runtime 131.0.2903.86, rustc 1.99.1 with host
+`x86_64-pc-windows-gnu`, MinGW in `C:\mingw64`. 43 minutes, every step passed. Lines of its
+log: `docs/handoff/evidence/time-hub-windows-run-20261114.txt`.
 
-| File | Bytes | SHA-256 |
-|---|---|---|
-| `tbsparcer.exe` (PE32+ GUI, x86-64) | 28173312 | `ff6246203b68fb34d676f7e282b5efe4857da55ce0f7a56f03a56d9f5a9d39c7` |
-| `WebView2Loader.dll` | 160880 | `86545b66cdb0603bc26b626fb9ad610cb6e71f28d468f5ea66df23b03dda96d5` |
-| `TBSparcer-Native-Setup-2.1.0.exe` | 9881272 | `5387fe322b7e713aedb1de88b652ac3ba3d721fba05f40dda0db9b8751e93044` |
+| Step | Result |
+|---|---|
+| `cargo test --workspace --locked` | 351 app + 139 core + 1 + 1 passed, 0 failed. Two core tests fewer than on Linux: `secret::tests` is compiled `not(windows)` |
+| `cargo build -p tbs-app --release --locked` | 14m 59s. `tbsparcer.exe` 28297728 bytes, product «TBS inform CRM», file and product version 2.1.0; `WebView2Loader.dll` 160880 bytes |
+| Setup by Inno Setup 6, without `client-access.json` | `TBSparcer-Native-Setup-2.1.0.exe`, 9797338 bytes, SHA-256 `234848f697dc59c6aa7a02895fb435cd7bb39d224d37b3c3880e91d2990bbb2b` |
+| Silent install for the current user to `C:\tbs-installed` | `tbsparcer.exe`, `WebView2Loader.dll`, the uninstaller; no `security` folder |
+| One start of the installed program | alive after 25 seconds, window «TBS inform CRM». Picture `W1-windows-runner-first-start-2.1.0.png`: the sign-in window, «Версия 2.1.0», «Сервер недоступен» |
 
-- The executable carries the icon and version resources (`.rsrc`; version 2.1.0, «TBS inform
-  CRM»), the Telegram page built by `npm run build:telegram` and the admin and Time page
-  files; it imports system libraries and `WebView2Loader.dll` only.
-- The setup was compiled **without `frontend/client-access.json`**, which the sandbox does not
-  have and must not be sent through a chat. It can update an installed client, which keeps
-  its own file; it is not enough for a first installation.
-- **It was never started on Windows.** A cross-linked executable and a setup compiled under
-  Wine are not a native build. What is still unknown: start-up, WebView2 with the hosted
-  pages and their data folders, the first sizing under the bar, the hints over a WebView2
-  view, sign-out and user switch, the update from 2.0.3.
-- Do not publish it to `asintiko/parcer20-updates`: every installed client would be offered
-  it. Publish only a setup built and tried on Windows, with the owner's word.
-- To build it on Windows: `pwsh desktop/tools/build-installer.ps1` on the owner's machine, or
-  the workflow `windows-client.yml` once it is on `main` (it uses paid minutes of the
-  account: a Windows runner counts double).
+What that run does **not** show:
+
+- Nobody signed in, so **no hosted page was opened and WebView2 did not run**: the bar over
+  Time and CRM administration, the first sizing, the hints over a WebView2 view, sign-out and
+  user switch, the click on «Открыть» are all still unseen on Windows.
+- «Сервер недоступен» was not looked into: the setup has no `client-access.json` and the
+  runner is not in the office's network.
+- An update over an installed 2.0.3 was not tried: the runner had no client.
+- Windows Server 2022 on a hosted runner is not a staff desktop with Windows 10 or 11.
+
+The setup is kept by GitHub as the artifact `windows-client` of that run until 2026-11-21. It
+is not committed and **not published** to `asintiko/parcer20-updates`: every installed client
+would be offered it. It has no `client-access.json` (the sandbox and the runner do not have
+it, and it must not go through a chat), so it can update an installed client, which keeps its
+own file, and is not enough for a first installation. Publish only after somebody has signed
+in with it on a Windows desktop and opened both pages, with the owner's word. For a setup
+with the file: `pwsh desktop/tools/build-installer.ps1` on the owner's machine.
+
+Before that run the same sources were cross-linked in the sandbox (`cargo build -p tbs-app
+--release --locked --target x86_64-pc-windows-gnu`, then `amake/innosetup` under Wine):
+`tbsparcer.exe` 28173312 bytes, a setup of 9881272 bytes with SHA-256
+`5387fe32…e93044`. Those files were never started and are replaced by the run above.
 
 ### Seen and not changed
 
@@ -132,7 +147,8 @@ back with `pg_restore`, the comparison after the migration) were tried on the lo
 PostgreSQL 15 only. Still missing before anyone may start: an executor with a root shell and
 a window; the live read-only pre-check and the backups on the server; the 2FA state of
 `admin` and `stlee`; a reissued bot token, privacy mode off and the group's verified negative
-ID (the bot may stay off for the first rollout); a client built and tried on Windows.
+ID (the bot may stay off for the first rollout); a sign-in and both pages tried in the client on
+a Windows desktop.
 
 ## UI and release session — 2026-11-12, second part of the work on `work/time-hub-admin-finish`, cut short by credits
 

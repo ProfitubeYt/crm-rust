@@ -93,7 +93,8 @@ has its icon and version. A setup made without `frontend/client-access.json`
 only updates an installed client. Neither file has run on Windows by being
 built: do not publish such a setup. `.github/workflows/windows-client.yml`
 builds, tests, installs and starts the client on a hosted Windows runner when
-started by hand, and keeps the setup and a picture of the first start.
+started by hand, and keeps the setup and a picture of the first start. It does
+not sign in, so it shows nothing of the pages in WebView2.
 
 The client looks for updates in `asintiko/parcer20-updates` and takes only an
 asset named `TBSparcer-Native-Setup-*.exe`, so the Electron releases there do not
