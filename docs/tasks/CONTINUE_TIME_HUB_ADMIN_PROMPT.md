@@ -1,8 +1,10 @@
 # Continue: Time / Hub / global CRM administration
 
-Repository: https://github.com/josukekleinjewite51-ui/fix . Work on branch
-`work/time-hub-admin-finish` (created from `main` at `4e644eb`; `main` is unchanged). Start
-from the branch's head; do not replay earlier commits or start from an older baseline.
+Repository: https://github.com/josukekleinjewite51-ui/crm-rust . Current main includes
+the full preserved history through 04101ae3b30a1fc26ba290d862cdc8ea2219a6ef plus
+repository handoff documents. Create work/time-release from current main. Do not
+restart from an older account/repository or replay existing commits. Read
+docs/handoff/CRM_RUST_STATUS.md for the consolidated status and verification limits.
 
 **Nothing is deployed. Production is release 2.0.3 at schema `20261112_0033`, untouched.**
 
@@ -105,7 +107,7 @@ Not done, in the order to do it:
 
 ## Setup in a fresh sandbox (Docker with compose)
 
-    git fetch origin work/time-hub-admin-finish && git checkout work/time-hub-admin-finish
+    git fetch origin main && git switch -c work/time-release origin/main
     scripts/hub/desktop-tests.sh             # was 348 app + 141 core tests, before fa69c1b
     scripts/hub/desktop-tests.sh check -p tbs-app --locked --target x86_64-pc-windows-gnu
     scripts/hub/backend-tests.sh             # was 1349 passed, 1 skipped, before fa69c1b
