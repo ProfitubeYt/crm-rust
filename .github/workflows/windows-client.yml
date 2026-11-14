@@ -1,0 +1,111 @@
+# The native client on a real Windows machine: tests, the release executable, the
+# setup without the system-access file, and a first start of what the setup installs.
+#
+# Started by hand only (Actions -> Windows client -> Run workflow): a run takes
+# Windows runner minutes of the repository's account. Nothing is published and no
+# secret is read. The setup it keeps for seven days has no client-access.json in
+# it, so it updates an installed client and is not enough for a first install.
+name: Windows client
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      RUST_TOOLCHAIN: 1.99.1-x86_64-pc-windows-gnu
+      CARGO_TARGET_DIR: C:\tbs-target
+      OUTPUT_DIR: C:\tbs-installer
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: The machine
+        shell: pwsh
+        run: |
+          Get-ComputerInfo -Property OsName, OsVersion, OsBuildNumber | Format-List
+          $runtime = 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          "WebView2 runtime: " + (Get-ItemProperty $runtime -ErrorAction SilentlyContinue).pv
+          Get-Command gcc, windres | Format-Table Name, Source
+
+      - name: Rust for the GNU target
+        shell: pwsh
+        run: |
+          rustup toolchain install $env:RUST_TOOLCHAIN --profile minimal --no-self-update
+          rustup default $env:RUST_TOOLCHAIN
+          rustc -vV
+
+      - name: The Telegram page
+        working-directory: frontend
+        shell: pwsh
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build:telegram
+
+      - name: Tests
+        working-directory: desktop
+        shell: pwsh
+        run: cargo test --workspace --locked
+
+      - name: The release executable
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          cargo build -p tbs-app --release --locked
+          Get-Item "$env:CARGO_TARGET_DIR\release\tbsparcer.exe", "$env:CARGO_TARGET_DIR\release\WebView2Loader.dll" |
+            Format-Table Name, Length
+          (Get-Item "$env:CARGO_TARGET_DIR\release\tbsparcer.exe").VersionInfo | Format-List ProductName, FileVersion, ProductVersion
+
+      - name: The setup, without the system-access file
+        shell: pwsh
+        run: |
+          if (Test-Path frontend\client-access.json) { throw "client-access.json must not be here" }
+          if ((Get-Content desktop\Cargo.toml -Raw) -notmatch '(?m)^version = "([^"]+)"') { throw "no workspace version" }
+          $version = $Matches[1]
+          New-Item -ItemType Directory -Force $env:OUTPUT_DIR | Out-Null
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" "/DBuildDir=$env:CARGO_TARGET_DIR\release" "/DOutputDirectory=$env:OUTPUT_DIR" desktop\installer\tbsparcer.iss
+          if ($LASTEXITCODE -ne 0) { throw "the setup did not build" }
+          $setup = Join-Path $env:OUTPUT_DIR "TBSparcer-Native-Setup-$version.exe"
+          $line = "{0}  {1:N1} MB  sha256 {2}" -f (Split-Path $setup -Leaf), ((Get-Item $setup).Length / 1MB), (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
+          $line
+          $line | Set-Content (Join-Path $env:OUTPUT_DIR "SHA256.txt")
+          "SETUP=$setup" | Add-Content $env:GITHUB_ENV
+
+      - name: Install it and start the program once
+        shell: pwsh
+        run: |
+          $where = "C:\tbs-installed"
+          $run = Start-Process $env:SETUP -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=$where" -Wait -PassThru
+          if ($run.ExitCode -ne 0) { throw "the setup ended with $($run.ExitCode)" }
+          Get-ChildItem $where -Recurse | Format-Table FullName, Length
+          if (Test-Path "$where\security\client-access.json") { throw "the setup carries the system-access file" }
+          $program = Start-Process "$where\tbsparcer.exe" -PassThru
+          Start-Sleep -Seconds 25
+          $program.Refresh()
+          if ($program.HasExited) { throw "the program ended by itself with $($program.ExitCode)" }
+          "window: '" + $program.MainWindowTitle + "'"
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+          $picture = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+          [System.Drawing.Graphics]::FromImage($picture).CopyFromScreen($screen.Left, $screen.Top, 0, 0, $picture.Size)
+          $picture.Save((Join-Path $env:OUTPUT_DIR "first-start.png"))
+          Stop-Process -Id $program.Id -Force
+          if ($program.MainWindowTitle -ne "TBS inform CRM") { throw "the program has no window of its own" }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-client
+          path: C:\tbs-installer
+          retention-days: 7
+          if-no-files-found: warn
