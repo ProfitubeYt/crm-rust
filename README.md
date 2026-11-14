@@ -1,5 +1,7 @@
 # Uzbek Receipt Parser
 
+Development handoff: read [START_HERE.md](START_HERE.md) and [OPEN_TASKS.md](OPEN_TASKS.md) before continuing. The repository includes unfinished Time/Hub/global-admin work as well as the existing Checks application; historical test reports are not a current release guarantee.
+
 High-load financial transaction parsing system for Uzbek banking receipts (Uzcard/Humo).
 
 ## Architecture Overview
