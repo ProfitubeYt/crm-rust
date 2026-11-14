@@ -9,6 +9,10 @@ name: Windows client
 
 on:
   workflow_dispatch:
+  # Temporary, for the first run before the file is on main. Remove after it.
+  push:
+    branches: [vorflux/time-release]
+    paths: [.github/workflows/windows-client.yml]
 
 permissions:
   contents: read
@@ -16,7 +20,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-2022
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       RUST_TOOLCHAIN: 1.99.1-x86_64-pc-windows-gnu
       CARGO_TARGET_DIR: C:\tbs-target
