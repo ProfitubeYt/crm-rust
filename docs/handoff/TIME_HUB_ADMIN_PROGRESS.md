@@ -2,12 +2,142 @@
 
 # CRM Hub: accounts, global administration, workspaces, Time bot — progress
 
-Branch `work/time-hub-admin` from `main` `45d7e5d`. Plan: `docs/handoff/TIME_HUB_ADMIN_PLAN.md`.
-Nothing here is deployed; production was not read or changed.
+First branch `work/time-hub-admin` from `main` `45d7e5d`; plan: `docs/handoff/TIME_HUB_ADMIN_PLAN.md`.
+The newest session is first. Nothing here is deployed.
+
+## Release session — 2026-11-14, branch `vorflux/time-release` from `main` `21b3ebf`
+
+The newest section; everything under it is history. Pull request:
+<https://github.com/asintiko/crm-rust/pull/1> (draft). **Nothing is deployed. Production was
+neither read nor changed in this session**: the sandbox has no key for the server, so the
+last production read is still the read-only pre-check of 2026-11-12 13:30 UTC.
+
+Platform of everything below: a Linux sandbox (x86-64, Docker 29.1.4, Compose v5.0.1), the
+image `tbs-linux-dev:pinned` (Rust 1.99.1, MinGW) for the client, `timelist:local` rebuilt
+from `time/`, Playwright 1.49.1 with Chromium 131 for the page. **No step ran on Windows and
+none used WebView2.**
+
+### Commits
+
+| Commit | What |
+|---|---|
+| `0efe423` | The program's slim top bar for «Учёт времени» and «Администрирование CRM», no rail there; Checks keeps its rail. `build.rs` embeds resources only for a Windows target and finds the cross `windres`. The e2e run's output as evidence. |
+| `e6d3940` | The same code with what the rail no longer needs taken out (no behaviour change). |
+| `a29f2ac` | Client version 2.0.3 → 2.1.0 (`desktop/Cargo.toml`, `Cargo.lock`). |
+| `9861953` | `.github/workflows/windows-client.yml`: build, test, setup, silent install and first start on a hosted Windows runner. Started by hand only. **Not run**: GitHub lists a hand-started workflow only once its file is on the default branch. |
+| `6624799` | The deployment document reworked: the owner's decisions, readable backups, both administrators, the bot. |
+| after it | This record, `OPEN_TASKS.md`, the continuation prompt, `desktop/README.md`, the window pictures. |
+
+### The top bar
+
+`desktop/crates/tbs-app/src/app.rs`: `App::lay_out` gives a page `ctx.rail = 0` and
+`ctx.bar = BAR` (40 px and a 1 px rule), and Checks its rail and `ctx.bar = 0`; `App::bar()`
+is the home button «Главный экран», the workspace's name, the connection mark, the account
+and «Выйти»; `view()` puts the bar over a page and the rail beside Checks.
+`screens/hosted/mod.rs` gives the web view what the shell leaves: `x = ctx.rail`,
+`y = ctx.bar`. The Time page was not changed: it had no hamburger of its own.
+
+### Verified, with the actual output
+
+| Check | Tree | Result |
+|---|---|---|
+| `scripts/hub/desktop-tests.sh test --workspace --locked` | `e6d3940` + 2.1.0 | 351 app + 141 core + 1 + 1 passed, 0 failed, exit 0 |
+| `… check -p tbs-app --locked --target x86_64-pc-windows-gnu` | same | no error, no warning, exit 0. A type check, not a build |
+| `cargo test --workspace --locked` in `time/` | `0efe423` (`time/` as on `main`) | 17 + 28 + 1 passed, exit 0 |
+| `scripts/hub/backend-tests.sh` | same (`backend/` as on `main`) | 1349 passed, 1 skipped, exit 0 |
+| `scripts/hub/e2e/run.sh` (rebuilt `timelist:local` healthy in Hub mode, rehearsal of 0034/0035, downgrade, upgrade, release 2.0.3 on the new schema) | same | 173 checks, 0 failed, exit 0. Output: `docs/handoff/evidence/time-hub-e2e-run-20261114.txt` |
+| `run.sh page` (`page_shots.py`, Chromium 131 headless through the stand-in for the program) | same | 74 checks, 0 failed |
+| The pictures of that run | same | looked at: manager 1024 light and dark, viewer 1024, viewer 1360 dark, closed month for both, standalone 1024 light and dark. No overlap, no cut text, no missing control |
+| The client's real window: debug build 2.1.0, Xvfb, WebKitGTK, against the e2e stack | `0efe423` + the edits later committed as `e6d3940`, `a29f2ac` | all seven checks below passed |
+| Windows release build, cross-linked: `cargo build -p tbs-app --release --locked --target x86_64-pc-windows-gnu` | `6624799` | exit 0 |
+| Setup compiled by Inno Setup 6 under Wine (`amake/innosetup`) | `6624799` | "Successful compile" |
+
+The window run (pictures and their list: `docs/handoff/evidence/time-hub-window-20261114/`):
+
+1. Time as manager and as viewer, light and dark, 1360 and 1024 × 640: the bar, no rail and no
+   hamburger, the page fills the width under the bar and nothing of it is under the bar.
+2. CRM administration as an administrator: the same bar, the list of 8 made-up accounts.
+3. The home button returns to the start window with the session kept. Checks has its rail and
+   no bar; a folded rail is still folded after Hub → Time → Hub → Checks.
+4. «Выйти» in the bar returns to sign-in; the next account sees only its own entries and page.
+5. `grant.py e2e_both time=-` while Time was open: within five seconds the start window with
+   «Доступ к разделу «Учёт времени» закрыт администратором», only Checks offered.
+6. The hints of the home button and of the connection mark open sideways inside the bar and
+   are not covered by the web view (on WebKitGTK).
+7. Resizing 1360 → 1024 × 640 → 1200 × 760 with the page open: the web view follows.
+
+Not covered by the window run: the bar's offline state, a long account name, a page that is
+loading or failed, revocation of CRM administration, light manager and dark viewer at 1024.
+The bar's heading is drawn with a stand-in for Segoe UI Semibold on Linux.
+
+The persistent SQLite storage of the Time image was not checked separately: the stack runs
+Time on a volume, and nothing restarted the container to read the file back.
+
+### The Windows build: what exists and what it is not
+
+Built in the sandbox from `6624799`, not committed and not published:
+
+| File | Bytes | SHA-256 |
+|---|---|---|
+| `tbsparcer.exe` (PE32+ GUI, x86-64) | 28173312 | `ff6246203b68fb34d676f7e282b5efe4857da55ce0f7a56f03a56d9f5a9d39c7` |
+| `WebView2Loader.dll` | 160880 | `86545b66cdb0603bc26b626fb9ad610cb6e71f28d468f5ea66df23b03dda96d5` |
+| `TBSparcer-Native-Setup-2.1.0.exe` | 9881272 | `5387fe322b7e713aedb1de88b652ac3ba3d721fba05f40dda0db9b8751e93044` |
+
+- The executable carries the icon and version resources (`.rsrc`; version 2.1.0, «TBS inform
+  CRM»), the Telegram page built by `npm run build:telegram` and the admin and Time page
+  files; it imports system libraries and `WebView2Loader.dll` only.
+- The setup was compiled **without `frontend/client-access.json`**, which the sandbox does not
+  have and must not be sent through a chat. It can update an installed client, which keeps
+  its own file; it is not enough for a first installation.
+- **It was never started on Windows.** A cross-linked executable and a setup compiled under
+  Wine are not a native build. What is still unknown: start-up, WebView2 with the hosted
+  pages and their data folders, the first sizing under the bar, the hints over a WebView2
+  view, sign-out and user switch, the update from 2.0.3.
+- Do not publish it to `asintiko/parcer20-updates`: every installed client would be offered
+  it. Publish only a setup built and tried on Windows, with the owner's word.
+- To build it on Windows: `pwsh desktop/tools/build-installer.ps1` on the owner's machine, or
+  the workflow `windows-client.yml` once it is on `main` (it uses paid minutes of the
+  account: a Windows runner counts double).
+
+### Seen and not changed
+
+- **A click that opens a page also lands in the page** (pictures 17 and 24). A click on
+  «Открыть» in the start window selects the cell, or opens the drawer of the account, under
+  the same point of the page that opens. Seen with `xdotool` on WebKitGTK; not known for a
+  real mouse or for WebView2, and not compared with an earlier commit. It selects, it does
+  not write. To check on Windows first.
+- In a closed month the empty day panel still says «Enter или ввод с клавиатуры — правка,
+  Delete — очистить» (picture B4). Whether the cells refuse an edit there was not tried.
+- The CRM administration page shows the account's name in its own header as well as in the
+  bar (picture 18). The page is unchanged.
+
+### The review findings left open: what was done with each
+
+| Finding | State |
+|---|---|
+| Time page header wider than the page at 1360 with Linux fonts | Gone with the rail: at 1360 and at 1024 the header fits (pictures 01, 08, 14). Windows fonts not checked |
+| Three other comparisons of a naive `utcnow()` with a `timezone=True` lock column (`api/dependencies.py:811`, `api/routes/security.py:892, 943`, `api/routes/telegram_client.py:448, 1245`: the launch password and a chat's password) | Deferred. The same code runs in production as 2.0.3 and is outside this change; while a lock holds, the answer may be 500 instead of "locked", and access stays closed. To be corrected with its own tests on PostgreSQL |
+| The page's message handler does not check the sender's address | Deferred: it can only be verified on WebView2. Navigation is held to one document and the page's CSP blocks frames |
+| The sign-in form does not number its attempts | Deferred: same person and same credentials; the cross-account case is closed in the API client |
+| The Time page does not post `access-lost` for the plain-text `inactive_user` | Deferred: the shell handles that refusal itself; a change of the page would need the page run again |
+| Proxied bodies are buffered whole without a size cap | Deferred: the gateway serves signed-in staff only and Time's own answers are small. To do before Time takes uploads |
+| With `LAUNCH_GATE_ENABLED`, `/api/auth/refresh` is not exempt from the gate | Deferred: older behaviour of 2.0.3, the gate is a deployment setting; not part of this change |
+| `RATE_LIMIT_PER_MINUTE` against a page reading `/api/time/meta` every 5 seconds | Deferred as a deployment check: 12 requests a minute for each open page; count the users behind one office address against the server's limit before the rollout |
+
+### Deployment: where it stands
+
+`docs/handoff/TIME_HUB_ADMIN_DEPLOYMENT.md` is the plan to hand to the executor. Its new
+commands (the administrators' list with a fingerprint of the sign-in data, the backup read
+back with `pg_restore`, the comparison after the migration) were tried on the local stack's
+PostgreSQL 15 only. Still missing before anyone may start: an executor with a root shell and
+a window; the live read-only pre-check and the backups on the server; the 2FA state of
+`admin` and `stlee`; a reissued bot token, privacy mode off and the group's verified negative
+ID (the bot may stay off for the first rollout); a client built and tried on Windows.
 
 ## UI and release session — 2026-11-12, second part of the work on `work/time-hub-admin-finish`, cut short by credits
 
-Where the next session picks up: `docs/tasks/CONTINUE_TIME_HUB_ADMIN_PROMPT.md`.
+Historical: its "Not done" list and its design sketch are answered by the Release session
+above. The owner's decisions in it stand.
 **Nothing is deployed. No production write, migration or deployment has been made at any
 time.** The last production read is the read-only pre-check of 13:30 UTC in the Finish
 session's table below. Commits of this part: `fa69c1b` (the Time page, WIP) and the handoff

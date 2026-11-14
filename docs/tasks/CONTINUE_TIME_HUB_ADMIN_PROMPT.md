@@ -2,7 +2,9 @@
 
 Repository: https://github.com/asintiko/crm-rust . Current main includes
 the full preserved history through 04101ae3b30a1fc26ba290d862cdc8ea2219a6ef plus
-repository handoff documents. Create work/time-release from current main. Do not
+repository handoff documents. The work of 2026-11-14 is on the branch
+`vorflux/time-release`, pull request https://github.com/asintiko/crm-rust/pull/1 :
+continue on that branch, or from `main` once it is merged. Do not
 restart from an older account/repository or replay existing commits. Read
 docs/handoff/CRM_RUST_STATUS.md for the consolidated status and verification limits.
 
@@ -10,9 +12,9 @@ docs/handoff/CRM_RUST_STATUS.md for the consolidated status and verification lim
 
 Read first, in this order:
 
-1. `docs/handoff/TIME_HUB_ADMIN_PROGRESS.md`, the top section "UI and release session": the
-   owner's latest decisions, what was done and what was not verified. Then "Finish session"
-   for the tests, the rehearsal and the window run before it.
+1. `docs/handoff/TIME_HUB_ADMIN_PROGRESS.md`, the top section "Release session": what was
+   built, run and seen on 2026-11-14 and what was not. Then "UI and release session" for the
+   owner's decisions, and "Finish session" for the rehearsal and the method of the window run.
 2. `docs/handoff/TIME_HUB_ADMIN_DEPLOYMENT.md`: the plan the owner approved, with conditions.
 3. `docs/tasks/RESUME_TIME_HUB_ADMIN_PROMPT.md`: the original task and its limits.
 
@@ -53,33 +55,43 @@ Done and pushed (detail in the progress record):
   (`time/crates/server/assets/`): no name or account of its own there, one 44 px header line
   of labelled tabs, a viewer gets no edit controls and the page sends no edits. Final check
   run: **74 checks, 0 failed**, headless Chromium 131 on Linux through a stand-in for the
-  program, on the committed files. Not a desktop window, not Windows. The pictures of that
-  run were not looked at.
+  program, on the committed files. Not a desktop window, not Windows.
+
+Done on 2026-11-14 on `vorflux/time-release` (figures in the progress record, "Release
+session"; all on Linux, none on Windows):
+
+- The pictures of the Chromium run were looked at (74 checks, 0 failed, run again).
+- The program's slim top bar is written: no rail and no hamburger on «Учёт времени» and
+  «Администрирование CRM», Checks keeps its rail.
+- Rerun: the desktop suite (351 app + 141 core), the Windows type check, Time's tests (46), a
+  rebuilt Time image, the backend suite (1349 passed, 1 skipped), `scripts/hub/e2e/run.sh`
+  (173 checks).
+- The real window under Xvfb with WebKitGTK against the stack: pictures in
+  `docs/handoff/evidence/time-hub-window-20261114/`.
+- Client version 2.1.0. A Windows executable cross-linked in the sandbox and a setup compiled
+  by Inno Setup under Wine, without `client-access.json`: **never started on Windows**, not
+  committed, not published.
+- The deployment document carries the owner's decisions, the bot and the 2FA steps.
 
 Not done, in the order to do it:
 
-1. **Look at the pictures** of the Chromium run (regenerate them with the commands below):
-   manager and viewer at 1024 px, the closed month, both themes, standalone.
-2. **The program's slim top bar** in `desktop/crates/tbs-app/src/` (`app.rs`, `ctx.rs`,
-   `screens/hosted/mod.rs`). Not started. This is what removes the hamburger: the Time page
-   has none of its own; the one on the Time screen is the program's rail toggle. The design
-   and the tests to change are in the progress record.
-3. **Rerun what the page and the shell touch**: `scripts/hub/desktop-tests.sh` (its
-   `screens/hosted/assets.rs` tests read the page's files), the Windows type check, Time's
-   own tests (`cargo test` in `time/`; no wrapper script), a rebuilt Time image,
-   `scripts/hub/backend-tests.sh`, `scripts/hub/e2e/run.sh`.
-4. **A real window**: the rebuilt client under Xvfb (Linux WebKitGTK) against the stack, as
-   manager and viewer, both themes, Time and the panel; the method is in `desktop/README.md`,
-   "A window without Windows", and in the Finish session's record. Pictures go under
-   `docs/handoff/evidence/`. Say that it is not WebView2.
-5. **Windows**: a native build and installer on an authorised Windows machine, with a version
-   bump for a new client (`desktop/Cargo.toml` is at 2.0.3; `desktop/tools/build-installer.ps1`).
-   Only a GNU-target type check has passed so far.
-6. **Deployment hand-over**: work the owner's decisions into the deployment document (its
-   sections 1–9 predate the approval), add the bot and 2FA steps, rerun the read-only
-   preflight (`deploy/time-hub/prechecks.sql`; the 2FA query for an administrator is in its
-   header). An administrator executes; this sandbox cannot.
-7. After the rollout: the health checks of the document's section 6.
+1. **Windows.** Build and try the client on a real Windows machine with WebView2:
+   `pwsh desktop/tools/build-installer.ps1` there, or the workflow
+   `.github/workflows/windows-client.yml` (hand-started; GitHub offers it only once the file
+   is on `main`; a Windows runner uses paid minutes, so ask the owner). Try: the bar on both
+   pages, the first sizing, the hints over the web view, sign-out and user switch, the update
+   from 2.0.3, and whether the click on «Открыть» also lands in the page that opens (seen on
+   WebKitGTK with `xdotool`). Only then publish to `asintiko/parcer20-updates`, with the
+   owner's word.
+2. **Deployment.** An authorised administrator runs
+   `docs/handoff/TIME_HUB_ADMIN_DEPLOYMENT.md` from its section 2 on: the live read-only
+   pre-check, the backups read back, the migration, the checks of section 6. This sandbox
+   cannot: it has no key and the shared access is read-only.
+3. **The bot**, section 7 of that document: a reissued token, privacy mode off, the group's
+   verified negative ID. Polling stays off until then.
+4. After the rollout: the health checks of section 6 and the access matrix on the server.
+5. The deferred review findings in the progress record's table, the naive-against-aware lock
+   comparisons first.
 
 ## Production: status and rollback
 
@@ -100,7 +112,8 @@ Not done, in the order to do it:
 - `TIME_BOT_TOKEN`, reissued, provisioned to that executor only.
 - Privacy mode disabled, then `TIME_BOT_CHAT_ID`: a verified negative group ID.
 - Whether both administrators have 2FA (the read-only role cannot read it).
-- A Windows machine for the native build and installer.
+- A Windows machine with WebView2 to build and try client 2.1.0, and
+  `frontend/client-access.json` on it for a setup that can do a first installation.
 - The read-only SSH key is not in git: a new sandbox needs it again, outside the checkout,
   mode 600 (`docs/handoff/SHARED_SSH_ACCESS.md`; key and role expire 2026-11-25 00:00 UTC).
   `.hoplite/` is **not** ignored by git: never `git add -A`.

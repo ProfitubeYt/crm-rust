@@ -6,7 +6,10 @@ time. The Electron client in `frontend/` stays until the switch.
 
 The program is called TBS inform CRM wherever a person reads its name: on its
 window, on the start window every launch opens with, in the setup. A workspace
-opened from the start window goes by its own name in its rail, «Чеки» for now.
+opened from the start window goes by its own name: «Чеки» in its rail; «Учёт
+времени» and «Администрирование CRM», which are pages, in one slim bar over the
+page, with the way back to the start window, the connection mark, the account
+and the sign-out. A page has no rail.
 The executable, the data folder, the keyring entry and the setup's file name keep
 `tbsparcer`: installed clients find their settings and their updates by them.
 
@@ -76,6 +79,21 @@ The result is `C:\Dev\tmp\tbs-installer\TBSparcer-Native-Setup-<version>.exe`. I
 installs per user, without elevation, which an update started from inside the
 program relies on. It contains `frontend/client-access.json` with the system
 access token, so it must be handled like the Electron setup and never committed.
+
+Without Windows the same two files can be made on Linux, for a look at the result
+and nothing more:
+
+    cargo build -p tbs-app --release --locked --target x86_64-pc-windows-gnu
+    docker run --rm -v "$PWD/..":/work:ro -v <dir with tbsparcer.exe and WebView2Loader.dll>:/build:ro \
+        -v <output dir>:/out amake/innosetup /DAppVersion=<version> '/DBuildDir=Z:\build' \
+        '/DOutputDirectory=Z:\out' 'Z:\work\desktop\installer\tbsparcer.iss'
+
+`build.rs` finds MinGW's `x86_64-w64-mingw32-windres` there, so the executable
+has its icon and version. A setup made without `frontend/client-access.json`
+only updates an installed client. Neither file has run on Windows by being
+built: do not publish such a setup. `.github/workflows/windows-client.yml`
+builds, tests, installs and starts the client on a hosted Windows runner when
+started by hand, and keeps the setup and a picture of the first start.
 
 The client looks for updates in `asintiko/parcer20-updates` and takes only an
 asset named `TBSparcer-Native-Setup-*.exe`, so the Electron releases there do not

@@ -1,17 +1,24 @@
 # Remaining development work — 14 November 2026
 
-This is a source/handoff review, not a fresh production audit. Latest preserved Time code: 04101ae. Complete source history and task context were consolidated at a486e47. Production last confirmed as release 2.0.3/schema 0033; no Time rollout has been performed by this handoff.
+This is a source/handoff review, not a fresh production audit. Preserved Time code: 04101ae; the work after it is on `vorflux/time-release`. Complete source history and task context were consolidated at a486e47. Production last confirmed as release 2.0.3/schema 0033; no Time rollout has been performed by this handoff.
 
 ## Priority 1: finish Time and global administration
 
-- [ ] Implement the desktop SHELL's slim top bar, without the left column/hamburger for Time and CRM administration. Keep Checks navigation unchanged. Do not remove a nonexistent inner Time hamburger or rewrite the compact Time page unnecessarily.
-- [ ] Regenerate and visually inspect manager/viewer, both themes, narrow viewport, closed-month and standalone screenshots of the latest Time page.
-- [ ] Rerun affected core/app/Time/backend tests and the local end-to-end/migration stack after final UI changes. Prior evidence: 348 app/141 core, backend 1349 pass/1 skipped, 173 e2e checks; final page alone 74 Chromium checks. These are historical, not fresh verification of a future release.
-- [ ] Rebuild Time image, verify its healthcheck in Hub mode and persistent SQLite storage.
-- [ ] Build a complete native Windows executable/installer with embedded pages/Telegram assets, WebView2 loader and icon/version resources; test real Windows navigation, sessions and WebView2. Prior GNU target check is type-check only.
-- [ ] Resolve remaining low-severity review findings recorded in the progress document, or explicitly document why deferred.
-- [ ] Update and execute the conditionally approved deployment plan after fresh preflight/backups, preserving existing accounts and current Checks/Excel/data behavior. Rehearse migrations 0034/0035 and rollback, keep both approved global admins, verify 2FA/enrollment/recovery without lockout. Do not expose credentials in issues.
-- [ ] Configure the real Telegram bot securely: valid token from protected configuration, privacy disabled, verified negative group ID, membership/rights and explicit account linkage. No arbitrary groups; report blocked bot separately from a running Time service.
+State on 14 November 2026, branch `vorflux/time-release`, pull request https://github.com/asintiko/crm-rust/pull/1 . Every result below is from a Linux sandbox; nothing ran on Windows and nothing is deployed. Figures and limits: docs/handoff/TIME_HUB_ADMIN_PROGRESS.md, "Release session".
+
+- [x] The desktop shell's slim top bar, no left column or hamburger for Time and CRM administration; Checks navigation unchanged; the Time page not rewritten.
+- [x] Manager/viewer, both themes, narrow viewport, closed-month and standalone pictures of the Time page regenerated (74 Chromium checks) and looked at.
+- [x] Core/app/Time/backend tests and the local end-to-end/migration stack rerun after the UI change: 351 app/141 core, Time 46, backend 1349 pass/1 skipped, 173 e2e checks.
+- [x] The client's real window on Linux (Xvfb, WebKitGTK) against the stack: Time as manager and viewer, CRM administration, both themes, 1360 and 1024 wide, sign-out, user switch, revocation while open. Pictures: docs/handoff/evidence/time-hub-window-20261114/.
+- [ ] Time image: rebuilt and healthy in Hub mode in the stack. Persistent SQLite storage across a restart is still to verify.
+- [ ] Windows client 2.1.0. Done: version bump; an executable cross-linked on Linux with embedded pages/Telegram assets, WebView2 loader and icon/version resources; a setup compiled under Wine without client-access.json. Not done: a build on Windows, and any test on real Windows of start-up, navigation, sessions and WebView2. Do not publish the cross-built setup to the update channel.
+- [ ] Run `.github/workflows/windows-client.yml` (hand-started; available once it is on main; uses paid Actions minutes) or build on the owner's Windows machine.
+- [ ] Check on Windows: a click on «Открыть» in the start window also lands in the page that opens (seen on WebKitGTK with xdotool).
+- [x] Remaining low-severity review findings: each is recorded with its reason for deferral in the progress record. One is closed by the new layout (header width).
+- [ ] Correct the naive-against-aware lock comparisons of the launch password and the chat password (backend/api/dependencies.py, api/routes/security.py, api/routes/telegram_client.py) with tests on PostgreSQL.
+- [x] Deployment plan updated with the owner's decisions, both administrators, readable backups, the bot and the 2FA steps; its new commands tried on the local stack only.
+- [ ] Execute the conditionally approved deployment through an authorised administrator: fresh live preflight, verified backups, migrations 0034/0035, both approved global admins kept, 2FA/enrollment/recovery without lockout. Blocked: no executor with a root shell, no key in the sandbox. Do not expose credentials in issues.
+- [ ] Configure the real Telegram bot securely: reissued token from protected configuration, privacy disabled, verified negative group ID, membership/rights and explicit account linkage. No arbitrary groups; report a blocked bot separately from a running Time service.
 - [ ] After rollout verify access matrix, revocation while pages are open, sign-out/user switch, sessions, Time gateway, attendance and admin panel. Preserve unrelated Caddy services/volumes and 24-hour Details rule refresh.
 
 Reference: docs/tasks/CONTINUE_TIME_HUB_ADMIN_PROMPT.md and docs/handoff/TIME_HUB_ADMIN_DEPLOYMENT.md.
