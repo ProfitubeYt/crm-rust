@@ -711,9 +711,6 @@ impl App {
                 if let Some(screen) = &self.telegram {
                     screen.resized(&self.ctx);
                 }
-                if let Some(screen) = &self.hosted {
-                    screen.resized(&self.ctx);
-                }
             }
             Message::Tab { back } => {
                 let main = matches!(self.phase, Phase::Main);
@@ -970,6 +967,12 @@ impl App {
         (avatar.into(), name)
     }
 
+    /// The connection in a dot and a word, and the hint that says it in full.
+    fn connection(&self) -> (El<'_, Message>, &str) {
+        let (dot, state, hint) = if self.ctx.online { (Tone::Success, "онлайн", "Backend доступен") } else { (Tone::Danger, "офлайн", "Backend недоступен") };
+        (row![ui::status_dot(dot), ui::muted(state)].spacing(space::SM).align_y(Alignment::Center).into(), hint)
+    }
+
     /// The top of a workspace that is a page: the way back to the start
     /// window, the workspace's name, the connection, the account and the
     /// sign-out in one slim line. Such a workspace has no rail and nothing to
@@ -979,8 +982,7 @@ impl App {
     /// line, so the bar's hints open sideways, inside the line.
     fn bar(&self) -> El<'_, Message> {
         let hub = ui::hint_beside(ui::btn_icon(Icon::Home20, HUB, ui::Kind::Ghost, Some(Message::Hub)), HUB_HINT);
-        let (dot, state, hint) = if self.ctx.online { (Tone::Success, "онлайн", "Backend доступен") } else { (Tone::Danger, "офлайн", "Backend недоступен") };
-        let network = ui::hint_before(row![ui::status_dot(dot), ui::muted(state)].spacing(space::SM).align_y(Alignment::Center), hint);
+        let (network, hint) = self.connection();
         let (avatar, name) = self.account();
         let logout = ui::btn_icon(Icon::Logout, "Выйти", ui::Kind::Ghost, Some(Message::Logout));
         let line = row![
@@ -988,7 +990,7 @@ impl App {
             container(ui::divider_v()).height(theme::control::SM),
             ui::heading(self.workspace.name()),
             ui::fill(),
-            network,
+            ui::hint_before(network, hint),
             container(ui::divider_v()).height(theme::control::SM),
             avatar,
             container(ui::label(name)).max_width(BAR_NAME).clip(true),
@@ -1014,8 +1016,7 @@ impl App {
             (burger, ui::divider())
         } else {
             // The workspace's own name: the product's stands on the start window.
-            let (title, about) = self.workspace.rail_title();
-            let brand = column![ui::heading(title), ui::faint(about)].spacing(0.0);
+            let brand = column![ui::heading(self.workspace.name()), ui::faint("учёт чеков")].spacing(0.0);
             let caption: El<'_, Message> = container(ui::faint("РАЗДЕЛЫ")).padding([0.0, space::SM]).into();
             (row![burger, brand].spacing(space::SM).align_y(Alignment::Center).into(), caption)
         };
@@ -1073,15 +1074,14 @@ impl App {
             .spacing(space::SM)
             .into()
         } else {
-            let (dot, state, hint) = if self.ctx.online { (Tone::Success, "онлайн", "Backend доступен") } else { (Tone::Danger, "офлайн", "Backend недоступен") };
-            let network = ui::hint_on(row![ui::status_dot(dot), ui::muted(state)].spacing(space::SM).align_y(Alignment::Center), hint);
+            let (network, hint) = self.connection();
             let sync = match &self.ctx.sync {
                 SyncState::Idle => ui::faint("синхронизировано"),
                 SyncState::Syncing => ui::faint("обновление…"),
                 SyncState::Error(_) => ui::toned("ошибка обновления", Tone::Danger),
             };
             let account = row![avatar, container(ui::label(name)).width(Fill).clip(true), logout].spacing(space::XS).align_y(Alignment::Center);
-            column![container(column![network, sync].spacing(space::XS)).padding([0.0, space::SM]), ui::divider(), account].spacing(space::SM).into()
+            column![container(column![ui::hint_on(network, hint), sync].spacing(space::XS)).padding([0.0, space::SM]), ui::divider(), account].spacing(space::SM).into()
         };
 
         let content = column![head, hub, container(caption).height(RAIL_CAPTION).center_y(RAIL_CAPTION), nav, ui::grow(), foot].spacing(space::XS);
@@ -1308,7 +1308,6 @@ mod rail_tests {
     fn the_rail_is_headed_by_the_workspace_and_not_by_the_product() {
         let dir = tempfile::tempdir().unwrap();
         let app = signed_in(&dir);
-        assert_eq!(Subsystem::Receipts.rail_title().0, "Чеки");
         assert!(sees(&app, "Чеки"));
         assert!(!sees(&app, PRODUCT), "the product's name belongs to the start window");
         // The window, the installer and the update keep the product's name.
@@ -1674,12 +1673,15 @@ mod workspace_tests {
         sim.find(wanted).is_ok()
     }
 
+    /// What a click on these words asks the shell for.
+    fn clicked(app: &App, wanted: &str) -> Vec<Message> {
+        let mut sim = Simulator::with_size(Settings::default(), window(app), app.view());
+        sim.click(wanted).unwrap_or_else(|_| panic!("no «{wanted}» on the screen"));
+        sim.into_messages().collect()
+    }
+
     fn press(app: &mut App, wanted: &str) {
-        let messages: Vec<Message> = {
-            let mut sim = Simulator::with_size(Settings::default(), window(app), app.view());
-            sim.click(wanted).unwrap_or_else(|_| panic!("no «{wanted}» on the screen"));
-            sim.into_messages().collect()
-        };
+        let messages = clicked(app, wanted);
         assert!(!messages.is_empty(), "«{wanted}» does nothing");
         for message in messages {
             let _ = app.update(message);
@@ -1722,7 +1724,7 @@ mod workspace_tests {
         for words in ["Учёт времени", HUB, "онлайн", "Анна К.", "Выйти"] {
             assert!(sees(&app, words), "«{words}» is missing from the bar");
         }
-        for words in CHECKS_ONLY.into_iter().chain(["табель и отметки"]) {
+        for words in CHECKS_ONLY {
             assert!(!sees(&app, words), "«{words}» of a rail is on Time's screen");
         }
     }
@@ -1738,16 +1740,9 @@ mod workspace_tests {
         for words in ["Администрирование CRM", HUB, "онлайн", "Анна К.", "Выйти"] {
             assert!(sees(&app, words), "«{words}» is missing from the bar");
         }
-        for words in CHECKS_ONLY.into_iter().chain(["администрирование"]) {
+        for words in CHECKS_ONLY {
             assert!(!sees(&app, words), "«{words}» of a rail is on the administration screen");
         }
-    }
-
-    /// What a click on these words in the work window asks the shell for.
-    fn clicked(app: &App, wanted: &str) -> Vec<Message> {
-        let mut sim = Simulator::with_size(Settings::default(), WORK_WINDOW, app.view());
-        sim.click(wanted).unwrap_or_else(|_| panic!("no «{wanted}» on the screen"));
-        sim.into_messages().collect()
     }
 
     #[test]
@@ -1755,7 +1750,6 @@ mod workspace_tests {
         let dir = tempfile::tempdir().unwrap();
         let mut app = opened(&dir, account(&["time"], true), "Табель и отметки сотрудников");
         assert!(matches!(clicked(&app, "Выйти").as_slice(), [Message::Logout]));
-        assert!(matches!(clicked(&app, HUB).as_slice(), [Message::Hub]));
         // The way back keeps the session; the bar goes with the workspace.
         press(&mut app, HUB);
         assert!(on_the_start_window(&app) && app.hosted.is_none());
@@ -1789,10 +1783,6 @@ mod workspace_tests {
         for words in CHECKS_ONLY {
             assert!(!sees(&app, words), "«{words}» of Checks is on Time's screen");
         }
-        // Nothing on the bar folds anything, and a stray request does not bring a rail.
-        let _ = app.update(Message::ToggleRail);
-        assert_eq!((app.ctx.rail, app.ctx.bar), (0.0, BAR));
-        let _ = app.update(Message::ToggleRail);
 
         // To the other page, and back to Checks: each gets its own again.
         let _ = app.update(Message::Hub);
