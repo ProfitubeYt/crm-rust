@@ -33,7 +33,8 @@ use crate::theme::{self, Tone, size, space};
 use crate::ui::{self, El, Icon};
 
 /// What the program calls itself: the window title and its dialogs. A
-/// workspace opened from the start window goes by its own name in its rail.
+/// workspace opened from the start window goes by its own name: Checks in
+/// its rail, a workspace that is a page in its bar.
 pub const PRODUCT: &str = "TBS inform CRM";
 /// The way from a workspace back to the start window, session kept.
 const HUB: &str = "Главный экран";
@@ -48,6 +49,13 @@ const RAIL_PAD: f32 = 10.0;
 const RAIL_FOLDED: f32 = RAIL_ITEM + 2.0 * RAIL_PAD;
 /// The line under the rail's head: «РАЗДЕЛЫ», or a rule once folded.
 const RAIL_CAPTION: f32 = 24.0;
+/// The one line a workspace that is a page has instead of the rail, and the
+/// rule `ui::divider` draws under it. The page starts below both.
+const BAR_HEIGHT: f32 = 40.0;
+const BAR_RULE: f32 = 1.0;
+pub const BAR: f32 = BAR_HEIGHT + BAR_RULE;
+/// The most of the bar an account's name may take.
+const BAR_NAME: f32 = 240.0;
 const TOAST_MIN: f32 = 160.0;
 const TOAST_MAX: f32 = 420.0;
 /// The Excel sheet, which sets how far from the right a toast has to end.
@@ -275,6 +283,7 @@ impl App {
             user: None,
             store: None,
             rail: rail_width(prefs.rail_collapsed),
+            bar: 0.0,
             prefs,
             data_dir,
             dark: false,
@@ -376,8 +385,15 @@ impl App {
         Task::perform(check_entitlement(api, dir), Message::Entitled)
     }
 
+    /// Checks has the rail on the left and no bar. A workspace that is a page
+    /// has no rail: one slim bar at the top, and the page gets the rest.
+    fn lay_out(&mut self) {
+        (self.ctx.rail, self.ctx.bar) = if self.workspace == Subsystem::Receipts { (rail_width(self.ctx.prefs.rail_collapsed), 0.0) } else { (0.0, BAR) };
+    }
+
     fn enter_main(&mut self) -> Task<Message> {
         self.phase = Phase::Main;
+        self.lay_out();
         let Some(user) = self.ctx.user.clone() else { return Task::none() };
         let page = match self.workspace {
             Subsystem::Receipts => return self.enter_receipts(&user),
@@ -689,7 +705,7 @@ impl App {
             }
             Message::ToggleRail => {
                 self.ctx.prefs.rail_collapsed = !self.ctx.prefs.rail_collapsed;
-                self.ctx.rail = rail_width(self.ctx.prefs.rail_collapsed);
+                self.lay_out();
                 self.ctx.save_prefs();
                 // A page floats above the app, from the rail's edge.
                 if let Some(screen) = &self.telegram {
@@ -941,13 +957,54 @@ impl App {
         Task::batch(tasks)
     }
 
-    /// The navigation on the left. Folded, it keeps its icons and says the rest
-    /// in hints, so the table gets the width.
+    /// The account's initials in a round mark, and the name they stand for.
+    fn account(&self) -> (El<'_, Message>, &str) {
+        let name = self.ctx.user.as_ref().map(UserInfo::title).unwrap_or_default();
+        let initials: String = name.split_whitespace().filter_map(|w| w.chars().next()).take(2).flat_map(char::to_uppercase).collect();
+        let avatar = container(text(initials).size(size::SM).font(theme::FONT_BOLD))
+            .width(28.0)
+            .height(28.0)
+            .center_x(28.0)
+            .center_y(28.0)
+            .style(theme::pill(Tone::Accent));
+        (avatar.into(), name)
+    }
+
+    /// The top of a workspace that is a page: the way back to the start
+    /// window, the workspace's name, the connection, the account and the
+    /// sign-out in one slim line. Such a workspace has no rail and nothing to
+    /// fold: its sections are inside the page.
+    ///
+    /// The page's web view floats above everything the app draws below this
+    /// line, so the bar's hints open sideways, inside the line.
+    fn bar(&self) -> El<'_, Message> {
+        let hub = ui::hint_beside(ui::btn_icon(Icon::Home20, HUB, ui::Kind::Ghost, Some(Message::Hub)), HUB_HINT);
+        let (dot, state, hint) = if self.ctx.online { (Tone::Success, "онлайн", "Backend доступен") } else { (Tone::Danger, "офлайн", "Backend недоступен") };
+        let network = ui::hint_before(row![ui::status_dot(dot), ui::muted(state)].spacing(space::SM).align_y(Alignment::Center), hint);
+        let (avatar, name) = self.account();
+        let logout = ui::btn_icon(Icon::Logout, "Выйти", ui::Kind::Ghost, Some(Message::Logout));
+        let line = row![
+            hub,
+            container(ui::divider_v()).height(theme::control::SM),
+            ui::heading(self.workspace.name()),
+            ui::fill(),
+            network,
+            container(ui::divider_v()).height(theme::control::SM),
+            avatar,
+            container(ui::label(name)).max_width(BAR_NAME).clip(true),
+            logout,
+        ]
+        .spacing(space::MD)
+        .align_y(Alignment::Center);
+        let bar = container(line).width(Fill).height(BAR_HEIGHT).center_y(BAR_HEIGHT).padding([0.0, space::MD]).style(theme::rail);
+        column![bar, ui::divider()].into()
+    }
+
+    /// The navigation of Checks on the left. Folded, it keeps its icons and
+    /// says the rest in hints, so the table gets the width.
     fn rail(&self) -> El<'_, Message> {
         let folded = self.ctx.prefs.rail_collapsed;
         let user = self.ctx.user.as_ref();
-        // Checks has sections of its own; a workspace that is a page brings its own inside it.
-        let sections = self.workspace == Subsystem::Receipts;
 
         let burger = ui::hint_beside(
             button(container(ui::icon(Icon::Menu, 20.0)).center(RAIL_ITEM)).padding(0).style(theme::btn_ghost).on_press(Message::ToggleRail),
@@ -959,7 +1016,7 @@ impl App {
             // The workspace's own name: the product's stands on the start window.
             let (title, about) = self.workspace.rail_title();
             let brand = column![ui::heading(title), ui::faint(about)].spacing(0.0);
-            let caption: El<'_, Message> = if sections { container(ui::faint("РАЗДЕЛЫ")).padding([0.0, space::SM]).into() } else { ui::divider() };
+            let caption: El<'_, Message> = container(ui::faint("РАЗДЕЛЫ")).padding([0.0, space::SM]).into();
             (row![burger, brand].spacing(space::SM).align_y(Alignment::Center).into(), caption)
         };
 
@@ -989,7 +1046,7 @@ impl App {
 
         let mut nav = column![].spacing(space::XXS);
         for route in Route::ALL {
-            if !sections || !user.is_some_and(|u| route.open_to(u)) {
+            if !user.is_some_and(|u| route.open_to(u)) {
                 continue;
             }
             let open = self.route == route;
@@ -997,17 +1054,9 @@ impl App {
             nav = nav.push(line(glyph.into(), route.title(), None, open, Message::Nav(route)));
         }
 
-        let name = user.map(UserInfo::title).unwrap_or_default();
-        let initials: String = name.split_whitespace().filter_map(|w| w.chars().next()).take(2).flat_map(char::to_uppercase).collect();
-        let avatar = container(text(initials).size(size::SM).font(theme::FONT_BOLD))
-            .width(28.0)
-            .height(28.0)
-            .center_x(28.0)
-            .center_y(28.0)
-            .style(theme::pill(Tone::Accent));
+        let (avatar, name) = self.account();
         let logout = ui::icon_btn(Icon::Logout, "Выйти", Some(Message::Logout));
-        // The table's own state; a page keeps none here.
-        let failed = sections && matches!(self.ctx.sync, SyncState::Error(_));
+        let failed = matches!(self.ctx.sync, SyncState::Error(_));
         let foot: El<'_, Message> = if folded {
             // One dot for both lines of the open rail: the worse of the two.
             let (dot, hint) = match (self.ctx.online, failed) {
@@ -1027,7 +1076,6 @@ impl App {
             let (dot, state, hint) = if self.ctx.online { (Tone::Success, "онлайн", "Backend доступен") } else { (Tone::Danger, "офлайн", "Backend недоступен") };
             let network = ui::hint_on(row![ui::status_dot(dot), ui::muted(state)].spacing(space::SM).align_y(Alignment::Center), hint);
             let sync = match &self.ctx.sync {
-                _ if !sections => ui::faint(""),
                 SyncState::Idle => ui::faint("синхронизировано"),
                 SyncState::Syncing => ui::faint("обновление…"),
                 SyncState::Error(_) => ui::toned("ошибка обновления", Tone::Danger),
@@ -1098,7 +1146,8 @@ impl App {
             Phase::Login(screen) => screen.view(&self.ctx).map(Message::Login),
             Phase::Blocked { expired_at, busy } => gate::blocked(expired_at.as_deref(), Message::RetryEntitlement, *busy),
             Phase::Launch(screen) => screen.view().map(Message::Launch),
-            Phase::Main => row![self.rail(), self.page()].into(),
+            Phase::Main if self.workspace == Subsystem::Receipts => row![self.rail(), self.page()].into(),
+            Phase::Main => column![self.bar(), self.page()].into(),
         };
         let mut layers: Vec<El<'_, Message>> = vec![container(base).id(focus::BASE).width(Fill).height(Fill).into()];
         if matches!(self.phase, Phase::Main)
@@ -1667,12 +1716,14 @@ mod workspace_tests {
         // Nobody was asked to sign in again.
         assert_eq!(app.ctx.user.as_ref().map(|user| user.id), Some(7));
         assert!(app.ctx.api.has_refresh_token());
-        // The rail is Time's: its name, the way back, the account; none of Checks' sections.
-        for words in ["Учёт времени", "табель и отметки", HUB, "онлайн", "Анна К."] {
-            assert!(sees(&app, words), "«{words}» is missing from the rail");
+        // No rail and nothing to fold: one bar with Time's name, the way back,
+        // the connection, the account and the sign-out; none of Checks' sections.
+        assert_eq!((app.ctx.rail, app.ctx.bar), (0.0, BAR));
+        for words in ["Учёт времени", HUB, "онлайн", "Анна К.", "Выйти"] {
+            assert!(sees(&app, words), "«{words}» is missing from the bar");
         }
-        for words in CHECKS_ONLY {
-            assert!(!sees(&app, words), "«{words}» of Checks is on Time's rail");
+        for words in CHECKS_ONLY.into_iter().chain(["табель и отметки"]) {
+            assert!(!sees(&app, words), "«{words}» of a rail is on Time's screen");
         }
     }
 
@@ -1683,10 +1734,78 @@ mod workspace_tests {
         assert_eq!(app.workspace, Subsystem::Admin);
         assert!(app.hosted.as_ref().is_some_and(Hosted::started));
         assert!(app.tx.is_none() && app.ctx.store.is_none());
-        assert!(sees(&app, "администрирование") && sees(&app, HUB));
-        for words in CHECKS_ONLY {
-            assert!(!sees(&app, words), "«{words}» of Checks is on the administration rail");
+        assert_eq!((app.ctx.rail, app.ctx.bar), (0.0, BAR));
+        for words in ["Администрирование CRM", HUB, "онлайн", "Анна К.", "Выйти"] {
+            assert!(sees(&app, words), "«{words}» is missing from the bar");
         }
+        for words in CHECKS_ONLY.into_iter().chain(["администрирование"]) {
+            assert!(!sees(&app, words), "«{words}» of a rail is on the administration screen");
+        }
+    }
+
+    /// What a click on these words in the work window asks the shell for.
+    fn clicked(app: &App, wanted: &str) -> Vec<Message> {
+        let mut sim = Simulator::with_size(Settings::default(), WORK_WINDOW, app.view());
+        sim.click(wanted).unwrap_or_else(|_| panic!("no «{wanted}» on the screen"));
+        sim.into_messages().collect()
+    }
+
+    #[test]
+    fn the_bar_leads_back_to_the_start_window_and_signs_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = opened(&dir, account(&["time"], true), "Табель и отметки сотрудников");
+        assert!(matches!(clicked(&app, "Выйти").as_slice(), [Message::Logout]));
+        assert!(matches!(clicked(&app, HUB).as_slice(), [Message::Hub]));
+        // The way back keeps the session; the bar goes with the workspace.
+        press(&mut app, HUB);
+        assert!(on_the_start_window(&app) && app.hosted.is_none());
+        assert_eq!(app.ctx.user.as_ref().map(|user| user.id), Some(7));
+        assert!(app.ctx.api.has_refresh_token());
+        assert!(sees(&app, "Табель и отметки сотрудников") && sees(&app, "Учётные записи и доступ"));
+        // The line says when the server cannot be reached.
+        let mut app = opened(&dir, account(&["time"], false), "Открыть Учёт времени");
+        app.ctx.online = false;
+        assert!(sees(&app, "офлайн") && !sees(&app, "онлайн"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn checks_keeps_its_rail_and_a_page_never_gets_one() {
+        let dir = tempfile::tempdir().unwrap();
+        // Checks: the rail as it was, folded or not, and no bar.
+        let mut app = opened(&dir, account(&["checks", "time"], true), "Транзакции и учёт чеков");
+        assert_eq!((app.ctx.rail, app.ctx.bar), (RAIL_WIDTH, 0.0));
+        for words in ["Чеки", "РАЗДЕЛЫ", "синхронизировано", HUB] {
+            assert!(sees(&app, words), "«{words}» is missing from the rail of Checks");
+        }
+        let _ = app.update(Message::ToggleRail);
+        assert_eq!((app.ctx.rail, app.ctx.bar), (RAIL_FOLDED, 0.0));
+
+        // From Checks to a page on the same session: the rail goes, folded or not.
+        let _ = app.update(Message::Hub);
+        press(&mut app, "Табель и отметки сотрудников");
+        let _ = app.update(Message::Entitled(Entitled::Allowed));
+        assert_eq!(app.workspace, Subsystem::Time);
+        assert_eq!((app.ctx.rail, app.ctx.bar), (0.0, BAR));
+        for words in CHECKS_ONLY {
+            assert!(!sees(&app, words), "«{words}» of Checks is on Time's screen");
+        }
+        // Nothing on the bar folds anything, and a stray request does not bring a rail.
+        let _ = app.update(Message::ToggleRail);
+        assert_eq!((app.ctx.rail, app.ctx.bar), (0.0, BAR));
+        let _ = app.update(Message::ToggleRail);
+
+        // To the other page, and back to Checks: each gets its own again.
+        let _ = app.update(Message::Hub);
+        press(&mut app, "Учётные записи и доступ");
+        let _ = app.update(Message::Entitled(Entitled::Allowed));
+        assert_eq!(app.workspace, Subsystem::Admin);
+        assert_eq!((app.ctx.rail, app.ctx.bar), (0.0, BAR));
+        let _ = app.update(Message::Hub);
+        press(&mut app, "Транзакции и учёт чеков");
+        let _ = app.update(Message::Entitled(Entitled::Allowed));
+        assert_eq!(app.workspace, Subsystem::Receipts);
+        assert_eq!((app.ctx.rail, app.ctx.bar), (RAIL_FOLDED, 0.0));
+        assert!(app.ctx.prefs.rail_collapsed, "the fold of Checks was lost on the way through the pages");
     }
 
     #[test]

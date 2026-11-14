@@ -49,8 +49,13 @@ fn embed_hosted_pages(out: &Path) {
 }
 
 /// Without windres the program still builds and runs, just with a blank icon in
-/// Explorer, so that is a warning and not a failure.
+/// Explorer, so that is a warning and not a failure. Only a Windows executable
+/// has resources; a build for it on another system has the tool under the
+/// name of its target.
 fn embed_resources(out: &Path) {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
     let icon = manifest.join("assets").join("app.ico");
     println!("cargo:rerun-if-changed={}", icon.display());
@@ -90,8 +95,11 @@ END
     if fs::write(&source, script).is_err() {
         return;
     }
-    let built = Command::new("windres").arg("--input").arg(&source).arg("--output").arg(&object).args(["--output-format=coff"]).status();
-    if built.is_ok_and(|status| status.success()) {
+    let built = ["windres", "x86_64-w64-mingw32-windres"].into_iter().any(|tool| {
+        let made = Command::new(tool).arg("--input").arg(&source).arg("--output").arg(&object).args(["--output-format=coff"]).status();
+        made.is_ok_and(|status| status.success())
+    });
+    if built {
         println!("cargo:rustc-link-arg-bins={}", object.display());
     } else {
         println!("cargo:warning=windres failed, the executable has no icon");

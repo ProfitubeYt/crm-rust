@@ -78,8 +78,9 @@ pub struct Hosted {
     forget: bool,
 }
 
+/// What the shell leaves of the work window: all of it under the bar.
 fn page_area(ctx: &Ctx) -> Area {
-    Area { x: ctx.rail, y: 0.0, width: ctx.window.width - ctx.rail, height: ctx.window.height }
+    Area { x: ctx.rail, y: ctx.bar, width: ctx.window.width - ctx.rail, height: ctx.window.height - ctx.bar }
 }
 
 /// A folder of the web view per page, account and server: what one account's
@@ -167,7 +168,7 @@ impl Hosted {
         }
     }
 
-    /// The window or the rail changed size: the page keeps to what both leave.
+    /// The window changed size: the page keeps to what the shell leaves of it.
     pub fn resized(&self, ctx: &Ctx) {
         host::place(self.owner, page_area(ctx));
     }
@@ -369,6 +370,19 @@ mod tests {
     fn sees(screen: &Hosted, ctx: &Ctx, wanted: &str) -> bool {
         let mut sim = Simulator::with_size(Settings::default(), iced::Size::new(1100.0, 700.0), screen.view(ctx));
         sim.find(wanted).is_ok()
+    }
+
+    #[test]
+    fn the_page_takes_what_the_shell_leaves_of_the_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = ctx(&dir, 7);
+        ctx.window = iced::Size::new(1024.0, 640.0);
+        // A workspace that is a page: no rail, the program's bar above it.
+        (ctx.rail, ctx.bar) = (0.0, crate::app::BAR);
+        assert_eq!(page_area(&ctx), Area { x: 0.0, y: crate::app::BAR, width: 1024.0, height: 640.0 - crate::app::BAR });
+        // Whatever the shell keeps for itself on either side is left to it.
+        (ctx.rail, ctx.bar) = (crate::app::RAIL_WIDTH, 0.0);
+        assert_eq!(page_area(&ctx), Area { x: crate::app::RAIL_WIDTH, y: 0.0, width: 1024.0 - crate::app::RAIL_WIDTH, height: 640.0 });
     }
 
     #[test]

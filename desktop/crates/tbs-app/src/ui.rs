@@ -181,6 +181,11 @@ pub fn hint_beside<'a, M: 'a>(content: impl Into<El<'a, M>>, hint: &'a str) -> E
     hint_at(content, hint, tooltip::Position::Right)
 }
 
+/// The same hint to the left, for what stands at the window's right edge.
+pub fn hint_before<'a, M: 'a>(content: impl Into<El<'a, M>>, hint: &'a str) -> El<'a, M> {
+    hint_at(content, hint, tooltip::Position::Left)
+}
+
 fn hint_at<'a, M: 'a>(content: impl Into<El<'a, M>>, hint: &'a str, position: tooltip::Position) -> El<'a, M> {
     tooltip(content, container(text(hint).size(size::SM)).padding([gap::XS, gap::SM]).style(theme::popover), position).gap(4).into()
 }

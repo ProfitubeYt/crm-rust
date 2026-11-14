@@ -50,8 +50,12 @@ pub struct Ctx {
     pub requests: Vec<Request>,
     /// Keeps menus drawn at a pointer inside the window.
     pub window: Size,
-    /// The width the navigation rail takes on the left of the work window.
+    /// The width the navigation rail takes on the left of the work window:
+    /// nothing in a workspace that is a page, which has a bar instead.
     pub rail: f32,
+    /// The height the bar of such a workspace takes at the top of the work
+    /// window: nothing in Checks, which has the rail.
+    pub bar: f32,
 }
 
 impl Ctx {
@@ -71,6 +75,7 @@ impl Ctx {
             requests: Vec::new(),
             window: Size::new(1360.0, 860.0),
             rail: crate::app::RAIL_WIDTH,
+            bar: 0.0,
         }
     }
 

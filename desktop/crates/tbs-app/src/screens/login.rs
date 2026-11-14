@@ -63,7 +63,8 @@ impl Subsystem {
         }
     }
 
-    /// The head of its rail: a name short enough for it, and what it is.
+    /// The head of a rail: a name short enough for it, and what it is. Only
+    /// Checks has a rail; a workspace that is a page goes by [`Self::name`] in its bar.
     pub fn rail_title(self) -> (&'static str, &'static str) {
         match self {
             Subsystem::Receipts => ("Чеки", "учёт чеков"),
