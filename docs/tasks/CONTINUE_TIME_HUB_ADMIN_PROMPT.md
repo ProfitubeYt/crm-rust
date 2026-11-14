@@ -1,6 +1,6 @@
 # Continue: Time / Hub / global CRM administration
 
-Repository: https://github.com/josukekleinjewite51-ui/crm-rust . Current main includes
+Repository: https://github.com/asintiko/crm-rust . Current main includes
 the full preserved history through 04101ae3b30a1fc26ba290d862cdc8ea2219a6ef plus
 repository handoff documents. Create work/time-release from current main. Do not
 restart from an older account/repository or replay existing commits. Read

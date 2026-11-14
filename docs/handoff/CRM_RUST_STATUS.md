@@ -1,6 +1,6 @@
 # crm-rust: consolidated handoff — 14 November 2026
 
-Repository: https://github.com/josukekleinjewite51-ui/crm-rust . This is the complete preserved project and reachable source history through Time WIP 04101ae3b30a1fc26ba290d862cdc8ea2219a6ef, plus current handoff documents. It is NOT a claim that Time is released or production was checked today. Runtime secrets, private SSH keys, database dumps, private journals, local dependencies and credential-bearing installers are deliberately outside Git.
+Repository: https://github.com/asintiko/crm-rust . This is the complete preserved project and reachable source history through Time WIP 04101ae3b30a1fc26ba290d862cdc8ea2219a6ef, plus current handoff documents. It is NOT a claim that Time is released or production was checked today. Runtime secrets, private SSH keys, database dumps, private journals, local dependencies and credential-bearing installers are deliberately outside Git.
 
 ## Latest confirmed production work
 
