@@ -3,7 +3,15 @@
 **Approved by the owner on 2026-11-12 on conditions (section 10). Nothing in it has been run on the server.** Production is
 release 2.0.3 at schema `20261112_0033` (`DEPLOYMENT_2_0_3_20261112.md`); it was last read,
 read-only, on 2026-11-12 at 13:30 UTC. What was tested and how is in
-`TIME_HUB_ADMIN_PROGRESS.md`, section "Finish session".
+`TIME_HUB_ADMIN_PROGRESS.md`: section "Release session" for the runs of 2026-11-14 on the
+code to deploy, section "Finish session" for the earlier ones.
+
+Brought up to the owner's decisions on 2026-11-14: section 2 carries the answers, step B the
+read of the second factor, step C the proof that the backups can be read, section 6 the
+check that the administrators' sign-in was not touched, section 7 the bot's steps. The
+session that wrote this had no access to the server of any kind: the pre-checks of step B
+were **not** rerun on production on 2026-11-14 and are the first thing the person who
+carries the plan out does.
 
 The person who carries this out needs a root shell on `64.188.106.221`. The shared read-only
 key (`SHARED_SSH_ACCESS.md`) cannot do any of it.
@@ -33,22 +41,40 @@ client, which this plan does not roll out (section 7).
 Also in the new image: a fix for the sign-in of a locked account (500 instead of «locked»
 until an administrator unlocks it; progress record, "Found by the end-to-end run").
 
-## 2. What the owner supplies and decides first
+## 2. What the owner decided, and what is still to be supplied
 
-1. **Approval of this plan and a window.** The backend and the workers restart once; expect
-   one to two minutes during which clients show the server as unavailable.
-2. **The two accounts that become CRM administrators** are the two active accounts with the
-   Checks role `admin` (their names are in the report to the owner and in the pre-check
-   output, not in git). Should both keep the right? It can be taken from one in the panel
-   afterwards; the last one cannot be removed.
-3. **The second factor.** Whether the administrators' second-factor policy is on, and whether
-   both accounts have it set up: `/admin/` does not set it up, the desktop sign-in does.
-4. **The Time bot**, which does not exist yet: a token from @BotFather with privacy mode
-   disabled, and the work group's ID (the bot's `/id` in the group). Time can be deployed
-   without them; the bot stays off until they are in `.env`.
-5. **Who builds the Time image** off the server (a Rust release build, about six minutes on
+Decided (section 10):
+
+1. **The plan is approved on conditions**: the Time UI adaptation finished, the tests, the
+   pre-checks on the day and fresh backups proved readable, all before step D.
+2. **Both accounts with the Checks role `admin`, `admin` and `stlee`, become and stay CRM
+   administrators.** Step B stops the run if `prechecks.sql` lists any other account. Neither
+   is demoted in the panel afterwards without the owner.
+3. **Their sign-in is not touched.** The deployment writes no password, no second-factor
+   secret, no recovery code and no session: migrations 0034 and 0035 add three columns and
+   fill them, nothing else. Step B records the second-factor state of both, section 6
+   compares it afterwards.
+4. **The Time bot stays off** (`TIME_BOT_TOKEN` and `TIME_BOT_CHAT_ID` empty) until its token
+   is reissued, privacy mode is disabled and the group's ID is verified (section 7, step 2).
+   Read as: Time and the panel may go live before the bot works. **To confirm with the
+   owner.**
+
+Still to be supplied, each by the owner or through the owner:
+
+1. **A person with a root shell on the server** to carry the plan out, and **a window**. The
+   backend and the workers restart once; expect one to two minutes during which clients show
+   the server as unavailable. The shared key is read-only and no sandbox has more than that.
+2. **The second factor of the two administrators.** Nobody has read it yet: the read-only
+   role does not see those columns. If step B shows that one of them has no second factor
+   set up, stop and ask the owner before step D: `/admin/` does not set it up, the desktop
+   sign-in does, and an administrator the policy asks for a second factor cannot use the
+   panel until it is set up. The deployment itself does not lock anyone out either way.
+3. **The bot's new token**, given to the person who carries the plan out and to nobody else,
+   never by chat: the token of `@tbstimebot` was shown in an earlier chat and counts as
+   exposed.
+4. **Who builds the Time image** off the server (a Rust release build, about six minutes on
    two cores; the server has about 2.9 GB of memory and must not do it).
-6. Later, and not part of the window: a Windows machine for the client build and installer.
+5. Later, and not part of the window: the Windows client 2.1.0 (section 7, step 5).
 
 `TIMELIST_API_TOKEN` and `TIME_HUB_KEY` are generated on the server in step D and are never
 shown, sent or committed.
@@ -88,8 +114,10 @@ Not checked at all: TLS on the real name, a real Telegram bot and group, the Win
 
 ## 4. Artefacts, made off the server
 
-On a machine with this repository at the commit to deploy (the merge of
-`work/time-hub-admin-finish`), Docker and network access:
+On a machine with this repository at the commit to deploy (`main` after the merge of
+`vorflux/time-release`, pull request 1 of `asintiko/crm-rust`; the commit the runs of
+"Release session" were made on, or a later one with the same `backend/`, `time/` and
+`deploy/`), Docker and network access:
 
     TAG=$(date +%Y%m%d)-$(git rev-parse --short HEAD)
     git rev-parse HEAD > COMMIT
@@ -134,24 +162,51 @@ the one written next to the command; section 8 says how to go back from each poi
     diff deploy/Caddyfile $REL/src/deploy/Caddyfile      # only five added lines, the @admin route
     docker compose exec -T backend bash -lc 'cd /app && alembic -c alembic.ini current'   # 20261112_0033
     sql $REL/src/deploy/time-hub/prechecks.sql           # 0033; "(none)"; the accounts by role; no stray role
-    q "SELECT id, username, is_active, totp_enabled, force_2fa FROM users WHERE lower(role) = 'admin' ORDER BY id"
+    ADMINS="SELECT id, username, role, is_active, totp_enabled, force_2fa, totp_confirmed_at IS NOT NULL AS totp_confirmed, backup_codes IS NOT NULL AS has_backup_codes, md5(coalesce(password_hash,'') || coalesce(salt,'') || coalesce(totp_secret,'') || coalesce(backup_codes::text,'')) AS sign_in_mark, locked_until, failed_attempts FROM users WHERE lower(role) = 'admin' ORDER BY id"
+    q "$ADMINS"                                          # the accounts prechecks.sql listed: admin and stlee, both active
     q "SELECT count(*) AS accounts, count(telegram_id) AS with_telegram_id FROM users"
     df -h / /var/lib/docker; free -m                     # room for a 40 MB image and a dump
 
-The accounts `prechecks.sql` lists under "0035 marks exactly these accounts" are the ones the
-owner agreed to in section 2. If the list is different, stop.
+The accounts `prechecks.sql` lists under "0035 marks exactly these accounts" are `admin` and
+`stlee`, the two the owner agreed to (section 2). If the list is different, stop.
+
+`sign_in_mark` is a fingerprint of what an account signs in with; it shows a change without
+showing a secret. It still must not leave the server: keep the answer in `$BAK` (step C),
+not in a chat, a ticket or git. If `totp_enabled` is false for either account, or
+`locked_until` is in the future, stop and take it to the owner (section 2).
 
 ### C. Backups
 
     mkdir -p $BAK && chmod 700 $BAK
     docker compose exec -T postgres pg_dump -U "$PGUSER" -d "$PGDB" -Fc > $BAK/before.dump
     docker compose exec -T postgres pg_dumpall -U "$PGUSER" --globals-only > $BAK/globals.sql
-    docker compose exec -T postgres pg_restore --list < $BAK/before.dump | wc -l      # some hundreds of lines
     cp -a .env $BAK/env.before
     cp -a deploy/Caddyfile $BAK/Caddyfile.before
     cp -a docker-compose.yml $BAK/docker-compose.yml.before
     docker inspect $(docker compose ps -q) > $BAK/containers.before.json
     docker image inspect $PREV_IMAGE --format '{{.Id}}' > $BAK/image.before
+    q "$ADMINS" > $BAK/admins.before
+    q "SELECT count(*) FROM users" > $BAK/users.count.before
+
+Proof that the dump can be read, before anything is changed:
+
+    ls -l $BAK/before.dump                               # tens of megabytes at least, not zero
+    docker compose exec -T postgres pg_restore --list < $BAK/before.dump > $BAK/before.list
+    wc -l < $BAK/before.list                             # some hundreds of lines
+    grep -c 'TABLE DATA public users' $BAK/before.list   # 1
+    grep -c 'TABLE DATA public alembic_version' $BAK/before.list    # 1
+    docker compose exec -T postgres pg_restore -f - --data-only -t alembic_version < $BAK/before.dump | grep -c 20261112_0033   # 1
+    docker compose exec -T postgres pg_restore -f - --data-only -t users < $BAK/before.dump | grep -c $'^[0-9]\+\t'   # the number in users.count.before
+    grep -c 'ROLE' $BAK/globals.sql                      # 1 or more
+    (cd $BAK && sha256sum before.dump globals.sql env.before Caddyfile.before docker-compose.yml.before > SHA256SUMS && chmod 600 *)
+
+`pg_restore -f -` writes SQL to its output and restores nothing. Any answer other than the
+one written: stop, nothing has been changed yet. The condition of the approval is a backup
+that was read back, not one that was only written.
+
+The backups stay on the server in `$BAK` (mode 700, root). They hold the whole database and
+`.env`: they are not copied into a chat, a ticket, git or a sandbox. A second copy off the
+server, if the owner wants one, goes the way the owner's other backups go.
 
 The dump is for a disaster, not for rollback: restoring it would lose every receipt taken
 after it.
@@ -235,13 +290,23 @@ the `caddy_data` volume and are not asked for again).
     curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8000/internal/time/telegram/1   # 403: refused without the key
     docker compose exec -T backend bash -lc 'cd /app && alembic -c alembic.ini current'   # 20261112_0035 (head)
     docker compose logs --since 15m backend | grep -c ' -> 500 '               # 0
+    q "$ADMINS" | diff $BAK/admins.before -                                    # no difference: sign-in of both untouched
+    q "SELECT username, global_admin, checks_access, time_role FROM users WHERE lower(role) = 'admin' ORDER BY id"
+        # admin and stlee: global_admin t, checks_access t, time_role empty
+    q "SELECT count(*) FROM users" | diff $BAK/users.count.before -            # no difference
+
+A difference in `locked_until` or `failed_attempts` alone means somebody mistyped a password
+during the window, not that the deployment changed an account; any other difference is a
+reason to stop and look before anything of section 7.
 
 By hand, by the owner or with the owner:
 
 - The installed 2.0.3 client, still signed in from before: receipts load, a new receipt
   arrives, Settings → Пользователи lists the accounts.
-- `https://<host>/admin/`: one of the administrators signs in; the list shows both
-  administrators as «Администратор CRM» and nobody with «Учёт времени».
+- `https://<host>/admin/`: **each** of the two administrators signs in, with the password and
+  the second factor they had before; the list shows both as «Администратор CRM» and nobody
+  with «Учёт времени». If one of them cannot, the other still can; section 9 is for the case
+  that neither can.
 - Excel synchronisation of one workbook, as after any release.
 
 ## 7. After the window
@@ -249,15 +314,48 @@ By hand, by the owner or with the owner:
 In this order, none of it urgent:
 
 1. In `/admin/`, keep CRM administration for the accounts that should have it.
-2. The bot: put `TIME_BOT_TOKEN` and `TIME_BOT_CHAT_ID` into `.env`, then
-   `docker compose $TIME up -d --no-deps timelist`; the log names the bot and the group.
-   Send `/id` in the group; a made-up message from somebody without an account must get 🤷.
+2. The bot `@tbstimebot`, in this order. Until the last step it accepts no mark from anyone,
+   and Time and the panel work without it.
+
+   a. The owner, in @BotFather: `/revoke` for `@tbstimebot` (the old token was shown in a chat
+      and stops working here), then `/setprivacy` → `@tbstimebot` → Disable. The new token
+      goes to the person who carries the plan out, into the server's `.env`, and nowhere
+      else: not into a chat, a prompt, a ticket or git. The owner's own copy is replaced in
+      the owner's protected file.
+   b. The owner removes the bot from the work group and adds it again: a group keeps the
+      privacy setting the bot had when it joined.
+   c. On the server, the token alone, the group still empty:
+
+          sed -i "s|^TIME_BOT_TOKEN=.*|TIME_BOT_TOKEN=<the new token>|" .env    # typed at the server, not pasted from a chat
+          docker compose $TIME up -d --no-deps timelist
+          docker logs uzbek_parser_timelist 2>&1 | tail -n 5
+
+      The log names the bot and says that no group is set: it answers `/id` and `/help` and
+      takes no marks.
+   d. Somebody sends `/id` **in the work group**. The bot answers with the group's ID, a
+      negative number. That answer is the only source of `TIME_BOT_CHAT_ID`: the number
+      `1276772106` noted earlier was refused by Telegram («chat not found») and no prefix is
+      to be guessed for it. No answer means the bot is not in that group or the token is not
+      the new one; do not go on. An answer does not yet prove that privacy mode is off: a
+      bot is shown commands either way, and step f is what shows that it reads the rest.
+   e. `sed -i "s|^TIME_BOT_CHAT_ID=.*|TIME_BOT_CHAT_ID=<the negative ID>|" .env`, the same
+      `up` again; the log names the bot and the group. One group, the verified one, no list
+      of others.
+   f. After step 3 below: a mark from an account granted Time is accepted; a made-up message
+      from somebody without an account gets 🤷; the same message in any other group or in a
+      private chat with the bot is not taken as a mark.
+
+   If the bot is blocked at any of these, say so on its own line in the report: a bot that
+   is off is not a Time service that is down.
 3. Grant «Учёт времени» to the people who need it (viewer, manager, or employee for those
    who only mark attendance) and enter their Telegram IDs, in `/admin/`.
 4. In Time, add the employees and bind each Telegram sender to an employee.
-5. The Windows client with the Hub entries: built and installed separately. Until then Time
-   has no interface for anyone, because its page lives in the client; the bot and the panel
-   do not depend on it.
+5. The Windows client 2.1.0 with the Hub entries: built and installed separately
+   (`TIME_HUB_ADMIN_PROGRESS.md`, "Release session", says what was built and what was not
+   run on Windows). It is published to the clients' update channel only after somebody has
+   run it on a Windows desktop against this server: publishing offers it to every installed
+   client. Until then Time has no interface for anyone, because its page lives in the
+   client; the bot and the panel do not depend on it.
 
 ## 8. Rollback
 
@@ -331,7 +429,8 @@ keep CRM administration. As the plan already has it, no credential is reset, nob
 nobody by the deployment. The limits on the group are read as: the Time bot stays off (`TIME_BOT_TOKEN` and `TIME_BOT_CHAT_ID`
 empty in `.env`) until the group's ID is verified and privacy mode is disabled.
 
-Still open before step C may be taken: the UI adaptation (not finished, see the progress
-record), who carries the plan out (the shared key is read-only), the window, and the answer
-to the second-factor question of section 2. The sections above are as written before the
-approval and do not yet carry these answers line by line.
+State on 2026-11-14: the UI adaptation is finished and the tests were run again on the code
+to deploy (`TIME_HUB_ADMIN_PROGRESS.md`, "Release session"); the sections above carry the
+owner's answers. Still open before step C may be taken, none of which a sandbox can close:
+who carries the plan out (the shared key is read-only), the window, the pre-checks of step B
+on the day, and what step B shows of the administrators' second factor (section 2).
