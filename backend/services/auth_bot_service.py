@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+from services.time_utils import utc_timestamp
+
 import redis
 import redis.asyncio as aioredis
 from jose import JWTError, jwt
@@ -149,7 +151,7 @@ def _get_sync_redis() -> redis.Redis:
 
 
 def _payload_ttl_seconds(payload: Dict[str, Any], fallback_seconds: int = 3600) -> int:
-    now_ts = int(datetime.utcnow().timestamp())
+    now_ts = utc_timestamp(datetime.utcnow())
     exp_ts = _to_int(payload.get("exp"))
     if exp_ts and exp_ts > now_ts:
         return max(60, exp_ts - now_ts)
@@ -244,11 +246,11 @@ async def register_active_session(
                 "created_at": now_iso,
                 "last_activity_at": now_iso,
                 "expires_at": expires_at.isoformat(),
-                "exp_ts": str(int(expires_at.timestamp())),
+                "exp_ts": str(utc_timestamp(expires_at)),
             },
         )
         await redis_client.expire(_session_key(session_id), ttl_seconds)
-        await redis_client.zadd(AUTH_SESSION_INDEX_KEY, {session_id: int(expires_at.timestamp())})
+        await redis_client.zadd(AUTH_SESSION_INDEX_KEY, {session_id: utc_timestamp(expires_at)})
         return session_id
     except Exception:
         return None
@@ -256,7 +258,7 @@ async def register_active_session(
 
 async def list_active_sessions(limit: int = 100) -> List[Dict[str, Any]]:
     redis_client = await get_redis()
-    now_ts = int(datetime.utcnow().timestamp())
+    now_ts = utc_timestamp(datetime.utcnow())
     await redis_client.zremrangebyscore(AUTH_SESSION_INDEX_KEY, "-inf", now_ts)
 
     ids = await redis_client.zrevrange(AUTH_SESSION_INDEX_KEY, 0, max(0, int(limit) - 1))
@@ -297,7 +299,7 @@ async def list_user_sessions(user_id: int) -> List[Dict[str, Any]]:
     """
     wanted = int(user_id)
     redis_client = await get_redis()
-    now_ts = int(datetime.utcnow().timestamp())
+    now_ts = utc_timestamp(datetime.utcnow())
     await redis_client.zremrangebyscore(AUTH_SESSION_INDEX_KEY, "-inf", now_ts)
     ids = await redis_client.zrevrange(AUTH_SESSION_INDEX_KEY, 0, -1)
     rows: List[Dict[str, Any]] = []
@@ -371,8 +373,8 @@ async def revoke_active_session(
     if not data:
         return False, None
 
-    exp_ts = _to_int(data.get("exp_ts")) or int((datetime.utcnow() + timedelta(hours=1)).timestamp())
-    now_ts = int(datetime.utcnow().timestamp())
+    exp_ts = _to_int(data.get("exp_ts")) or utc_timestamp(datetime.utcnow() + timedelta(hours=1))
+    now_ts = utc_timestamp(datetime.utcnow())
     ttl_seconds = max(60, exp_ts - now_ts)
     await redis_client.setex(_revoked_key(sid), ttl_seconds, "1")
     await redis_client.delete(session_key)
@@ -545,8 +547,8 @@ def create_launch_session_token(*, ip_address: str) -> str:
         "kind": "launch_session",
         "sid": _new_session_id(),
         "ip": ip_address,
-        "iat": int(now.timestamp()),
-        "exp": int(exp.timestamp()),
+        "iat": utc_timestamp(now),
+        "exp": utc_timestamp(exp),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
@@ -573,8 +575,8 @@ def create_chat_access_token(*, chat_id: int, user_id: Optional[int] = None) -> 
         "sid": _new_session_id(),
         "chat_id": int(chat_id),
         "user_id": user_id,
-        "iat": int(now.timestamp()),
-        "exp": int(exp.timestamp()),
+        "iat": utc_timestamp(now),
+        "exp": utc_timestamp(exp),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 

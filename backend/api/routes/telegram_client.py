@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from services.time_utils import naive_utc
 from database.connection import get_db_session, SessionLocal
 from database.models import (
     ChatPassword,
@@ -446,7 +447,7 @@ def tdlib_manager_dep() -> TelegramTDLibManager:
 
 def _chat_password_status(chat_pwd: ChatPassword) -> Dict[str, Any]:
     now = datetime.utcnow()
-    locked = bool(chat_pwd.locked_until and chat_pwd.locked_until > now)
+    locked = bool(chat_pwd.locked_until and naive_utc(chat_pwd.locked_until) > now)
     return {
         "locked": locked,
         "locked_until": chat_pwd.locked_until.isoformat() if locked and chat_pwd.locked_until else None,
@@ -1243,7 +1244,7 @@ async def verify_chat_password(
         return ChatPasswordVerifyResponse(verified=True, session_token=None, expires_in=None)
 
     now = datetime.utcnow()
-    if row.locked_until and row.locked_until > now:
+    if row.locked_until and naive_utc(row.locked_until) > now:
         return ChatPasswordVerifyResponse(
             verified=False,
             locked=True,
@@ -1275,7 +1276,7 @@ async def verify_chat_password(
     return ChatPasswordVerifyResponse(
         verified=False,
         attempts_left=attempts_left,
-        locked=bool(row.locked_until and row.locked_until > now),
+        locked=bool(row.locked_until and naive_utc(row.locked_until) > now),
         locked_until=row.locked_until.isoformat() if row.locked_until else None,
     )
 

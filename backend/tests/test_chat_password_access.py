@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 
 import pytest
@@ -103,6 +104,22 @@ def client(db_session, monkeypatch, tmp_path):
         app.dependency_overrides.pop(tdlib_manager_dep, None)
         app.router.lifespan_context = original_lifespan
         reset_root_access_cache()
+
+
+@pytest.mark.parametrize("offset,locked", [(10, True), (-10, False)])
+def test_chat_lock_handles_postgres_aware_timestamps(client, db_session, offset, locked):
+    from database.models import ChatPassword
+    chat_id = 5005
+    response = client.post(f"/api/tg/chats/{chat_id}/password", json={"password": "secret"})
+    assert response.status_code == 200, response.text
+    row = db_session.get(ChatPassword, chat_id)
+    row.locked_until = datetime.now(timezone.utc) + timedelta(minutes=offset)
+    status = client.get(f"/api/tg/chats/{chat_id}/password/status")
+    assert status.status_code == 200, status.text
+    assert status.json()["locked"] is locked
+    verified = client.post(f"/api/tg/chats/{chat_id}/password/verify", json={"password": "secret"})
+    assert verified.status_code == 200, verified.text
+    assert bool(verified.json().get("locked")) is locked
 
 
 def test_chat_password_protects_messages_endpoint(client):

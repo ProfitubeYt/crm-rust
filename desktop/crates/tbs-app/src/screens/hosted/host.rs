@@ -204,6 +204,7 @@ pub fn create(window: &dyn Window, spec: Spec, runtime: Handle) -> Result<(), St
         .with_devtools(cfg!(feature = "devtools"))
         .with_hotkeys_zoom(false);
     let builder = without_browser_chrome(builder)
+        .with_initialization_script_for_main_only(include_str!("opening-click.js"), true)
         .with_initialization_script_for_main_only(kind.greeting(spec.dark), true)
         .with_asynchronous_custom_protocol(kind.scheme().into(), move |_, request, responder| serve(kind, &api, &runtime, request, responder))
         .with_ipc_handler(move |request| {

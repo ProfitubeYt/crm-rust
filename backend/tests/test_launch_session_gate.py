@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 
 import pytest
@@ -104,6 +105,18 @@ def client(db_session, monkeypatch, tmp_path):
         app.dependency_overrides.pop(get_db_session, None)
         app.router.lifespan_context = original_lifespan
         reset_root_access_cache()
+
+
+@pytest.mark.parametrize("offset,locked", [(10, True), (-10, False)])
+def test_launch_lock_handles_postgres_aware_timestamps(client, db_session, offset, locked):
+    password_hash, salt = hash_password("launch-secret")
+    row = AppLaunchConfig(id=1, password_hash=password_hash, salt=salt, failed_attempts=0)
+    db_session.add(row)
+    db_session.commit()
+    row.locked_until = datetime.now(timezone.utc) + timedelta(minutes=offset)
+    status = client.get("/api/security/app/launch-status")
+    assert status.status_code == 200, status.text
+    assert status.json()["locked"] is locked
 
 
 def test_launch_session_required_for_protected_api(client, db_session):

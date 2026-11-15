@@ -1,0 +1,38 @@
+name: Time deployment image
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Backend regression suite
+        env:
+          DATABASE_URL: sqlite://
+          JWT_SECRET: local-test-only-secret-0123456789abcdef0123456789
+          TELEGRAM_API_ID: '1'
+          TELEGRAM_API_HASH: local-test-only
+        run: |
+          python -m pip install -r backend/requirements.txt pytest
+          cd backend
+          python -m pytest tests -q
+      - name: Build the pinned Time image off production
+        run: |
+          set -euo pipefail
+          docker build -t timelist:${GITHUB_SHA} time
+          mkdir -p image
+          docker save timelist:${GITHUB_SHA} | gzip > image/timelist.tar.gz
+          printf '%s\n' "$GITHUB_SHA" > image/COMMIT
+          cd image
+          sha256sum timelist.tar.gz > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: time-deployment-image
+          path: image/
+          retention-days: 7

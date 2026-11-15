@@ -597,7 +597,7 @@ function renderSide(keepFocus) {
   const cur = selectedCell();
   if (!cur) {
     side.innerHTML = `<div class="empty"><b>Выберите ячейку</b>Здесь появятся сообщения сотрудника за день, расчёт и история правок.<br><br>
-      <span class="hint">${S.readonly ? 'Стрелки — перемещение по таблице. Учётной записи открыт только просмотр.' : 'Стрелки — перемещение, Enter или ввод с клавиатуры — правка, Delete — очистить. Время можно вводить как 930, 9.30 или 9:30.'}</span></div>`;
+      <span class="hint">${S.view.lock ? 'Месяц закрыт. Стрелки — перемещение по таблице; редактирование недоступно.' : S.readonly ? 'Стрелки — перемещение по таблице. Учётной записи открыт только просмотр.' : 'Стрелки — перемещение, Enter или ввод с клавиатуры — правка, Delete — очистить. Время можно вводить как 930, 9.30 или 9:30.'}</span></div>`;
     return;
   }
   const { emp, day, cell } = cur;
@@ -752,7 +752,7 @@ function issuesDialog() {
   v.employees.forEach((e, ei) => e.cells.forEach((c, di) => (c.issues || []).forEach((i) => items.push({ e, ei, di, i }))));
   items.sort((a, b) => (a.i.severity === b.i.severity ? a.di - b.di || a.ei - b.ei : a.i.severity === 'error' ? -1 : 1));
   const body = openModal(`На проверку: ${items.length}`, `
-    <p class="hint">Автоматика расставила отметки сама, но в этих днях сомневается. Нажмите на строку — откроется день с сообщениями и кнопками быстрого исправления.</p>
+    <p class="hint">Автоматика расставила отметки сама, но в этих днях сомневается. ${v.lock || S.readonly ? 'Нажмите на строку — откроется день с сообщениями. Редактирование недоступно.' : 'Нажмите на строку — откроется день с сообщениями и кнопками быстрого исправления.'}</p>
     <div class="issues-list">${items.map((x, n) => `<button data-ro data-n="${n}"><span class="when">${v.days[x.di].dow} ${dmy(v.days[x.di].date)}</span><span class="who">${esc(x.e.nick)}</span><span class="chip ${x.i.severity === 'error' ? 'err' : 'warn'}">${esc(x.i.text)}</span></button>`).join('')}</div>`, true);
   body.onclick = (ev) => {
     const b = ev.target.closest('button[data-n]');

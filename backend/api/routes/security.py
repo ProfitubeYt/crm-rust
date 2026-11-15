@@ -20,6 +20,7 @@ from api.dependencies import (
     require_admin_user,
     require_global_admin,
 )
+from services.time_utils import naive_utc
 from database.connection import get_db_session
 from database.models import AccessAuditLog, AccessScope, AppLaunchConfig, LockedPeriod
 from services.auth_bot_service import (
@@ -890,7 +891,7 @@ async def get_launch_status(
     if row is None:
         return AppLaunchStatusResponse(password_set=False, locked=False, locked_until=None)
     now = datetime.utcnow()
-    locked = bool(row.locked_until and row.locked_until > now)
+    locked = bool(row.locked_until and naive_utc(row.locked_until) > now)
     return AppLaunchStatusResponse(
         password_set=True,
         locked=locked,
@@ -941,7 +942,7 @@ async def verify_launch_password(
         )
 
     now = datetime.utcnow()
-    if row.locked_until and row.locked_until > now:
+    if row.locked_until and naive_utc(row.locked_until) > now:
         return AppLaunchVerifyResponse(
             verified=False,
             locked=True,
@@ -995,7 +996,7 @@ async def verify_launch_password(
     return AppLaunchVerifyResponse(
         verified=False,
         attempts_left=attempts_left,
-        locked=bool(row.locked_until and row.locked_until > now),
+        locked=bool(row.locked_until and naive_utc(row.locked_until) > now),
         locked_until=row.locked_until.isoformat() if row.locked_until else None,
     )
 

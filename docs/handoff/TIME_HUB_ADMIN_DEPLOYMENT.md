@@ -64,11 +64,12 @@ Still to be supplied, each by the owner or through the owner:
 1. **A person with a root shell on the server** to carry the plan out, and **a window**. The
    backend and the workers restart once; expect one to two minutes during which clients show
    the server as unavailable. The shared key is read-only and no sandbox has more than that.
-2. **The second factor of the two administrators.** Nobody has read it yet: the read-only
-   role does not see those columns. If step B shows that one of them has no second factor
-   set up, stop and ask the owner before step D: `/admin/` does not set it up, the desktop
-   sign-in does, and an administrator the policy asks for a second factor cannot use the
-   panel until it is set up. The deployment itself does not lock anyone out either way.
+2. **Authentication decision, clarified by the owner on 2026-11-15:** use the existing
+   Telegram TBS Auth flow; do not require an authenticator application or enroll TOTP.
+   Read-only production checks found both administrators linked to Telegram, with OTP and
+   bot control enabled. Preserve their existing sign-in configuration. Telegram scope OTP,
+   Telegram QR login and account-password TOTP are distinct mechanisms in the current code;
+   these checks do not prove Telegram is a second factor on every password login.
 3. **The bot's new token**, given to the person who carries the plan out and to nobody else,
    never by chat: the token of `@tbstimebot` was shown in an earlier chat and counts as
    exposed.
@@ -172,8 +173,10 @@ The accounts `prechecks.sql` lists under "0035 marks exactly these accounts" are
 
 `sign_in_mark` is a fingerprint of what an account signs in with; it shows a change without
 showing a secret. It still must not leave the server: keep the answer in `$BAK` (step C),
-not in a chat, a ticket or git. If `totp_enabled` is false for either account, or
-`locked_until` is in the future, stop and take it to the owner (section 2).
+not in a chat, a ticket or git. A false `totp_enabled` is not a deployment blocker under
+the owner's 2026-11-15 Telegram-only decision. Do not enable TOTP or change existing
+authentication flags during deployment. If `locked_until` is in the future, stop and
+take it to the owner (section 2).
 
 ### C. Backups
 

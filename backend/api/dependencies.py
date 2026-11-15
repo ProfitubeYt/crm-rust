@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import Header, HTTPException, Depends, Request
 from starlette.requests import HTTPConnection
 
+from services.time_utils import naive_utc
 from database.connection import get_db_session
 from database.models import AppLaunchConfig, AccessScope, User
 from services.access_control_service import (
@@ -808,7 +809,7 @@ async def require_launch_session(
     if not payload:
         raise HTTPException(status_code=403, detail={"error": "launch_expired"})
     await require_session_active(payload)
-    if row.locked_until and row.locked_until > _now_naive():
+    if row.locked_until and naive_utc(row.locked_until) > _now_naive():
         raise HTTPException(status_code=423, detail={"error": "launch_locked", "locked_until": row.locked_until.isoformat()})
 
 
