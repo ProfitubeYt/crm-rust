@@ -1,5 +1,7 @@
 # crm-rust: consolidated handoff — 14 November 2026
 
+> Current status (2026-11-15): production is schema 0035; Time/admin deployed. Native Windows WebView2 and the complete installer were checked to the limits in [the deployment record](DEPLOYMENT_TIME_20261115.md). Earlier sections below are historical. See `OPEN_TASKS.md` for remaining work.
+
 Repository: https://github.com/asintiko/crm-rust . This is the complete preserved project and reachable source history through Time WIP 04101ae3b30a1fc26ba290d862cdc8ea2219a6ef, plus current handoff documents. It is NOT a claim that Time is released or production was checked today. Runtime secrets, private SSH keys, database dumps, private journals, local dependencies and credential-bearing installers are deliberately outside Git.
 
 ## Latest confirmed production work

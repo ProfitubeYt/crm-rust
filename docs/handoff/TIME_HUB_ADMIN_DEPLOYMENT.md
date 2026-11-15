@@ -1,6 +1,8 @@
 # Time workspace, Hub and CRM administration: deployment and rollback
 
-**Approved by the owner on 2026-11-12 on conditions (section 10). Nothing in it has been run on the server.** Production is
+**Executed on 2026-11-15.** Current result, actual Caddy differences, backups and limits: [deployment record](DEPLOYMENT_TIME_20261115.md). The commands below retain the pre-deployment plan as historical context; do not replay them against schema 0035.
+
+**Original plan, approved by the owner on 2026-11-12 on conditions (section 10):** Production is
 release 2.0.3 at schema `20261112_0033` (`DEPLOYMENT_2_0_3_20261112.md`); it was last read,
 read-only, on 2026-11-12 at 13:30 UTC. What was tested and how is in
 `TIME_HUB_ADMIN_PROGRESS.md`: section "Release session" for the runs of 2026-11-14 on the

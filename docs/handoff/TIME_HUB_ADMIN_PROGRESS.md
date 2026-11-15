@@ -1,5 +1,7 @@
 > Continuation handoff: this file preserves the previous session's evidence. Read TIME_RESUME_STATUS.md and docs/tasks/RESUME_TIME_HUB_ADMIN_PROMPT.md for the current merged 2.0.3 baseline and unfinished work.
 
+> Current status (2026-11-15): production is schema 0035; Time/admin deployed. Native Windows WebView2 and the complete installer were checked to the limits in [the deployment record](DEPLOYMENT_TIME_20261115.md). Earlier sections below are historical. See `OPEN_TASKS.md` for remaining work.
+
 # CRM Hub: accounts, global administration, workspaces, Time bot — progress
 
 First branch `work/time-hub-admin` from `main` `45d7e5d`; plan: `docs/handoff/TIME_HUB_ADMIN_PLAN.md`.
