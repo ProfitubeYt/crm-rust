@@ -9,12 +9,21 @@ name: Windows client
 
 on:
   workflow_dispatch:
+    inputs:
+      time_image_only:
+        description: Build only the Time server image and run backend tests (Linux)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
+  time-image:
+    if: inputs.time_image_only
+    uses: ./.github/workflows/time-image.yml
   build:
+    if: '!inputs.time_image_only'
     runs-on: windows-2022
     timeout-minutes: 90
     env:
