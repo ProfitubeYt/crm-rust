@@ -1,8 +1,10 @@
 # TBS inform CRM, native client
 
-The desktop client in Rust: iced for the interface, WebView2 only for the
-Telegram section, whose page is built from `frontend/` and embedded at compile
-time. The Electron client in `frontend/` stays until the switch.
+The desktop client in Rust, iced for the interface. Checks and the Telegram
+section are native. «Учёт времени» and «Администрирование CRM» are pages shown in
+WebView2, embedded at compile time from `../time/crates/server/assets` and
+`../backend/admin_panel`; a Telegram Mini App, being somebody else's web page, is
+shown in WebView2 as well.
 
 The program is called TBS inform CRM wherever a person reads its name: on its
 window, on the start window every launch opens with, in the setup. A workspace
@@ -20,11 +22,11 @@ The executable, the data folder, the keyring entry and the setup's file name kee
 ## Requirements
 
 Rust on the `stable-x86_64-pc-windows-gnu` toolchain, MinGW with `windres`,
-Node, Inno Setup (`iscc`). Keep `CARGO_TARGET_DIR` outside the repository.
+Inno Setup (`iscc`). Keep `CARGO_TARGET_DIR` outside the repository. No Node or
+npm step: `build.rs` embeds the page files as they are in the repository.
 
 ## Build and test
 
-    npm --prefix ../frontend run build:telegram
     cargo run -p tbs-app
     cargo test -p tbs-core
     cargo test -p tbs-app --features devtools
@@ -77,8 +79,10 @@ it is told to use Vulkan.
 
 The result is `C:\Dev\tmp\tbs-installer\TBSparcer-Native-Setup-<version>.exe`. It
 installs per user, without elevation, which an update started from inside the
-program relies on. It contains `frontend/client-access.json` with the system
-access token, so it must be handled like the Electron setup and never committed.
+program relies on. With the private `security/client-access.json` present (the
+template is `security/client-access.example.json`; git ignores the real file) the
+setup contains it and the system access token in it: such a setup serves a first
+install and must never be committed, published or uploaded as a CI artifact.
 
 Without Windows the same two files can be made on Linux, for a look at the result
 and nothing more:
@@ -89,7 +93,7 @@ and nothing more:
         '/DOutputDirectory=Z:\out' 'Z:\work\desktop\installer\tbsparcer.iss'
 
 `build.rs` finds MinGW's `x86_64-w64-mingw32-windres` there, so the executable
-has its icon and version. A setup made without `frontend/client-access.json`
+has its icon and version. A setup made without `security/client-access.json`
 only updates an installed client. Neither file has run on Windows by being
 built: do not publish such a setup. `.github/workflows/windows-client.yml`
 builds, tests, installs and starts the client on a hosted Windows runner when
@@ -97,5 +101,5 @@ started by hand, and keeps the setup and a picture of the first start. It does
 not sign in, so it shows nothing of the pages in WebView2.
 
 The client looks for updates in `asintiko/parcer20-updates` and takes only an
-asset named `TBSparcer-Native-Setup-*.exe`, so the Electron releases there do not
-reach it. The Telegram section needs the WebView2 runtime on the machine.
+asset named `TBSparcer-Native-Setup-*.exe`, so the old Electron releases there do not
+reach it. The pages and Telegram Mini Apps need the WebView2 runtime on the machine.

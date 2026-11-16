@@ -1,7 +1,7 @@
 """Revision 0033 (application provenance): columns come and go, receipts stay.
 
 The same round trip was run with the alembic command line on a disposable
-PostgreSQL; that run is recorded in docs/handoff/ENRICHMENT_PROGRESS.md.
+PostgreSQL; that run is not repeated here.
 """
 from __future__ import annotations
 
