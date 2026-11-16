@@ -60,3 +60,44 @@ pub async fn read(path: PathBuf) -> Result<Picked, String> {
     let name = path.file_name().map_or_else(|| "book.xlsx".to_owned(), |n| n.to_string_lossy().into_owned());
     Ok(Picked { name, bytes })
 }
+
+#[cfg(not(test))]
+async fn ask_which(kinds: &[(&str, &[&str])]) -> Option<PathBuf> {
+    let dialog = kinds.iter().fold(rfd::AsyncFileDialog::new(), |dialog, (name, extensions)| dialog.add_filter(*name, extensions));
+    Some(dialog.pick_file().await?.path().to_path_buf())
+}
+
+#[cfg(test)]
+async fn ask_which(_kinds: &[(&str, &[&str])]) -> Option<PathBuf> {
+    chosen()
+}
+
+/// A file of one of the kinds named, each a caption and its extensions.
+pub async fn pick_of(kinds: &[(&str, &[&str])]) -> Result<Option<Picked>, String> {
+    let Some(path) = ask_which(kinds).await else { return Ok(None) };
+    read(path).await.map(Some)
+}
+
+#[cfg(not(test))]
+async fn ask_where_any(name: &str) -> Option<PathBuf> {
+    let dialog = rfd::AsyncFileDialog::new().set_file_name(name);
+    let dialog = match std::path::Path::new(name).extension().and_then(|e| e.to_str()) {
+        Some(kind) => dialog.add_filter(kind.to_uppercase(), &[kind]),
+        None => dialog,
+    };
+    Some(dialog.save_file().await?.path().to_path_buf())
+}
+
+#[cfg(test)]
+async fn ask_where_any(_name: &str) -> Option<PathBuf> {
+    chosen()
+}
+
+/// [`save_as`] for a file that is not a workbook.
+pub async fn save_any(name: String, bytes: Vec<u8>) -> Result<Option<String>, String> {
+    let Some(path) = ask_where_any(&name).await else {
+        return Ok(None);
+    };
+    tokio::fs::write(&path, bytes).await.map_err(|e| e.to_string())?;
+    Ok(Some(path.display().to_string()))
+}
