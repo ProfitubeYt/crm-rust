@@ -1,60 +1,102 @@
-# Remaining development work — 15 November 2026
+# Open tasks
 
-Production Time/Hub/admin rollout is complete at schema 0035. Runtime source: `5c0361e`.
-Current evidence and limitations: `docs/handoff/DEPLOYMENT_TIME_20261115.md`.
+Only open work; nothing below is implemented. Server state:
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md); structure: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Priority 1: finish client rollout and provision the Time bot
+For every item: Russian interface; local development on synthetic data; no
+production change, Cloudflare provisioning or paid AI call without the owner's
+approval and separately supplied credentials; no credentials, customer data or
+access-bearing setups in git.
 
-- [x] Slim native top bar for Time/admin; Checks rail preserved.
-- [x] Backend full regression: 1354 passed, 1 skipped; native Windows: 357 app + 139 core.
-- [x] Windows release and complete installer including production access configuration built.
-- [x] Real Windows/WebView2: Time, global admin, return to Hub, sign-out/user switch,
-  and Time-only viewer. Screenshots use synthetic local accounts; no production login tested.
-- [x] Launch/chat aware timestamp lock checks fixed; host-independent auth-bot Unix times.
-- [x] Initial hosted click guard and event-sequence regression test; closed-month editing hint fixed.
-- [x] Production preflight, fully readable backup, migrations 0034/0035, preserved account
-  credentials/Telegram links, backend/workers/Time health and HTTPS admin/gateway checks.
-- [x] Time named-volume SQLite survives a container restart (see deployment record).
-- [ ] Owner acceptance: actual production login and Checks/Excel sync, intended Time grants.
-- [ ] Verify a designated Windows 2.0.3 installation upgrade/session preservation before
-  publishing to the update channel. Current installer is private and local, not published.
-- [ ] Windows-specific checks still open: populated closed month, dark theme and live
-  permission revocation while the page stays open; historical Linux checks are recorded separately.
-- [ ] Configure Time Telegram bot: new protected token, privacy disabled, verified negative
-  group ID and identity bindings. Bot remains OFF; TBS Auth stays separate and running.
-- [ ] Targeted server disk housekeeping: about 1.3 GB free. Do not delete volumes/backups blindly.
+## Priority 1 — sign-in, activation, updates, storage
 
-The owner chose Telegram TBS Auth, not authenticator enrollment. Do not require TOTP
-setup as a deployment prerequisite or claim existing scope OTP covers every password login.
+- **Authentication before the Hub** (owner-requested; first check what the current
+  sign-in already does, the scope is to be confirmed with the owner). Recorded
+  requirements: a login-first screen; after sign-in the Hub opens at once with
+  only the authorized workspaces and no second login per workspace. The
+  computer remembers the login, never a plaintext credential. Keep existing session
+  persistence, expiry, sign-out and 2FA; existing accounts keep their passwords.
+- **Single-use account activation.** A CRM administrator creates the account by
+  login and assigns workspaces. First use takes login + an expiring single-use
+  activation code, then the user sets and confirms a password. Codes are random,
+  short-lived, stored hashed, rate-limited, revocable and atomically single-use
+  (no two claimants). The server decides the flow; an unauthenticated lookup must
+  not reveal an account's password state. Administrators regenerate codes and reset
+  credentials without ever reading a password. Activation is separate from password
+  reset. Extend the existing account system; no second one, no public
+  self-registration. Grant changes and deactivation reach running clients and clear
+  cached content that is no longer allowed.
+- **GitHub updater and notifications** (owner-requested). The installed client
+  learns about new releases from GitHub and tells the user. Today the client reads
+  releases of `asintiko/parcer20-updates` and takes only
+  `TBSparcer-Native-Setup-*.exe`; the design of the new source and of the
+  notifications is still to be agreed. Keep the `tbsparcer` identity, the per-user
+  install and saved settings; never publish a setup that contains
+  `client-access.json`; verify a real 2.0.3 → new upgrade on Windows first.
+- **R2 originals.** Private Cloudflare R2 bucket for the exact original text and
+  attachments of receipts: content hashes, source identity, idempotent keys, an
+  upload outbox that survives redelivery, crashes and outages. Retrieval is
+  authorized by the caller's current workspace and data scopes and never hands out
+  bucket credentials. `raw_message` has consumers (parsing, «Операция»,
+  reprocessing): inventory them and migrate in phases; never blank it or delete a
+  local original before a verified upload and a durable reference. Originals do not
+  expire. Publish the retrieval contract for the AI work below.
+- **R2 backups.** Weekly consistent PostgreSQL dump plus Time's SQLite and a
+  generation manifest; checksums; an isolated restore test; keep the latest **two**
+  validated generations and delete an older one only after a newer one is uploaded
+  and verified. A failed run deletes nothing. Live PostgreSQL stays on the server.
+- Check current Cloudflare limits and pricing before promising that indefinite
+  retention fits a free tier. Propose bucket and credentials; the owner provisions.
 
-## Priority 2: account activation and R2 storage
+## Priority 2 — finish the 2.1.0 client rollout
 
-- [ ] Admin-created login + expiring single-use activation code -> user sets/confirms password. Existing accounts keep their password/session behavior; one login unlocks authorized Hub workspaces.
-- [ ] Private Cloudflare R2 storage for exact original text and attachments, authorized retrieval, content hashes and durable retry/outbox. Safely migrate consumers; do not blank raw_message or delete local originals before verified upload/cutover.
-- [ ] Consistent weekly backup generation, isolated restore checks and retention of the latest TWO successful generations. Failed uploads never delete the last good backups. Originals are not automatically expired. Live PostgreSQL stays on the server.
-- [ ] Verify current Cloudflare pricing/limits before claiming indefinite retention fits a free tier.
+- Owner acceptance on production: real sign-in, Checks and Excel synchronization,
+  intended Time grants (no production account was used in any test).
+- Upgrade a designated Windows 2.0.3 installation to 2.1.0, confirm the session and
+  settings survive, then decide on publishing to the update channel.
+- Windows/WebView2 checks not yet made: a populated closed month, the dark theme,
+  a permission revoked while the page is open, the bar's offline state.
+- Time Telegram bot: new protected token, privacy mode off, verified negative group
+  ID, identity bindings. The bot stays off until then; TBS Auth is separate.
+- Server disk housekeeping (about 1.3 GB free on 2026-11-15), nothing deleted blindly.
 
-Task: docs/tasks/next-ai-workstreams/PROMPT_1_ACCOUNTS_R2.md.
+## Priority 3 — shared Checks AI service and main chat
 
-## Priority 3: shared Checks AI service and main chat
+- «AI ассистент» in the Checks menu, for every Checks user within their existing
+  permissions. One backend AI service and tool registry, shared with Priority 4:
+  OpenAI-compatible, server-side credentials, streaming, cancellation, bounded
+  context and cost. Provider, model and key come later: mock provider until then.
+- Typed, parameterized domain tools only (search, aggregate, inspect evidence,
+  propose reference/annotation changes, reconcile, prepare exports), each passing
+  the existing role, scope and locked-period checks. No arbitrary SQL, shell,
+  bucket access or administrator authority for the model.
+- Data changes and bulk actions need explicit confirmation of the exact diff, bound
+  to the user, an immutable proposal, the data version and an expiry; re-checked at
+  execution; journaled with targeted undo. Viewing and filtering need none.
+- Output as typed artifacts (table, chart, sanitized SVG); model HTML/JS/SVG and
+  receipt text are untrusted input.
+- Reconciliation against originals goes through the R2 retrieval contract, reports
+  evidence and uncertainty, and never edits records by itself.
 
-- [ ] Checks menu entry, provider-neutral OpenAI-compatible backend, safe streaming/cancellation, scoped domain tools, audit and explicit approval of exact data changes/bulk actions. Model/provider/key supplied later; no live calls without provisioning.
-- [ ] Safe typed table/chart/SVG artifacts, library research and real renderer. No executable model HTML/JS or untrusted SVG resources.
-- [ ] Authorized reconciliation against original receipt storage with evidence and uncertainty; no automatic correction or arbitrary SQL/shell/bucket access.
+## Priority 4 — table AI copilot
 
-Task: docs/tasks/next-ai-workstreams/PROMPT_2_CHECKS_AI_CHAT.md.
+- Compact mini-chat in the Checks transactions screen on the **same** AI service and
+  approval path; no second engine, no key in the client.
+- Semantic actions keyed by stable receipt/column/filter identifiers that call the
+  same state transitions a person triggers. Never OS mouse/keyboard automation.
+- A separate labelled in-app pointer that highlights the real target and shows
+  success only after the state confirms it; it never moves the user's cursor. Stop
+  and manual input win; re-check rows and scope after every async answer; handle
+  DPI, virtualized rows, pinned columns and both themes.
 
-## Priority 4: table AI copilot
+## Smaller open items
 
-- [ ] Mini-chat using the SAME AI backend/proposal system, stable semantic table/filter/selection/view/export actions and contextual help.
-- [ ] Separate in-app animated pointer tied to actual state transitions, never OS cursor takeover or fake success. Stop/manual interruption, stale row/scope checks, DPI/virtualization/pinning and both themes.
-- [ ] Persistent edits/bulk operations retain shared server authorization/confirmation; test with mock provider first.
-
-Task: docs/tasks/next-ai-workstreams/PROMPT_3_TABLE_AI_COPILOT.md.
-
-## Cross-cutting release obligations
-
-- [x] Launch/chat timezone comparisons corrected and covered by active/expired lock tests; see the 2026-11-15 deployment record.
-- [ ] Document remaining export Operation semantics (inferred/source vs stored/assigned-bank fallbacks) before changing exported content.
-- [ ] Keep public source free of genuine credentials and customer receipt samples; private deployment artifacts/backups are not Git content.
-- [ ] Publish coherent commits/checkpoints, tests and limitations. No new release claim solely from historical passing tests.
+- Document the export «Операция» semantics (inferred vs stored type, assigned-bank
+  fallback) before changing exported content.
+- Review findings deferred on 2026-11-14: the hosted page's message handler does not
+  check the sender's origin; proxied bodies are buffered without a size cap (fix
+  before Time accepts uploads); with `LAUNCH_GATE_ENABLED`, `/api/auth/refresh` is
+  not exempt from the gate; count Time's five-second polling against
+  `RATE_LIMIT_PER_MINUTE` per office address.
+- Open a server-built workbook in desktop Excel and run its macros
+  ([docs/EXCEL_SYNC.md](docs/EXCEL_SYNC.md)); not done as of 2026-11-11.
