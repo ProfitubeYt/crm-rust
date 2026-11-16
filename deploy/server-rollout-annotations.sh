@@ -3,7 +3,7 @@
 # Roll out the transaction-annotations release and point the agent at an
 # OpenAI-compatible gateway (9router / Claude).
 #
-# Differs from server-rollout-ai-agent.sh in three ways that matter:
+# Differs from the earlier AI-agent rollout script (removed, in git history) in three ways that matter:
 #
 #  1. The migration runs in /app, not /app/backend. The backend image is built
 #     with context ./backend and WORKDIR /app, so `COPY . .` puts alembic.ini at
@@ -168,7 +168,7 @@ docker compose run --rm backend bash -lc 'cd /app && alembic -c alembic.ini upgr
 echo "==> restarting services"
 # No 'frontend' service here on purpose: this host serves the API only
 # (Caddy routes /api and /health to backend:8000, everything else is the API
-# banner). The UI reaches users as a new Electron desktop build.
+# banner). The UI reaches users as a new desktop build.
 docker compose up -d backend celery_worker celery_ocr_worker celery_maintenance_worker auth_bot caddy
 
 sleep 8

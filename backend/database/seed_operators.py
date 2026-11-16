@@ -12,7 +12,7 @@ from database.connection import get_db
 from database.models import OperatorMapping
 
 
-# Mapping data extracted from операторыпродавцыиприложения-2.txt
+# Mapping data extracted from backend/ops.txt
 OPERATOR_MAPPINGS = [
     # Milliy 2.0
     ("NBU 2P2", "Milliy 2.0", 10),
