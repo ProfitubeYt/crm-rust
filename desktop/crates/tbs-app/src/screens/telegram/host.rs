@@ -197,15 +197,23 @@ pub fn place_mini(area: Area) {
     });
 }
 
+/// The keyboard stays with the window until the app is pressed on, so Escape
+/// still closes it; a view that is hidden or gone hands the keyboard back.
 pub fn show_mini(visible: bool) {
     with_mini(|view| {
         let _ = view.set_visible(visible);
-        let _ = if visible { view.focus() } else { view.focus_parent() };
+        if !visible {
+            let _ = view.focus_parent();
+        }
     });
 }
 
 pub fn close_mini() {
-    MINI.with(|mini| *mini.borrow_mut() = None);
+    MINI.with(|mini| {
+        if let Some(view) = mini.borrow_mut().take() {
+            let _ = view.focus_parent();
+        }
+    });
 }
 
 #[cfg(test)]
