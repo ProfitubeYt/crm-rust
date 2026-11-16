@@ -76,6 +76,23 @@ const fluent = {
   users: "people_16_regular",
   warning: "warning_16_regular",
 
+  // The Telegram section.
+  app_window: "window_apps_16_regular",
+  attach: "attach_16_regular",
+  bot: "bot_16_regular",
+  calendar: "calendar_16_regular",
+  chat: "chat_16_regular",
+  check_square: "checkbox_checked_16_regular",
+  document: "document_text_16_regular",
+  image: "image_16_regular",
+  live: "live_16_regular",
+  megaphone: "megaphone_16_regular",
+  multiselect: "multiselect_ltr_16_regular",
+  open: "open_16_regular",
+  phone: "phone_16_regular",
+  scan: "scan_text_16_regular",
+  square: "checkbox_unchecked_16_regular",
+
   // The navigation rail and the sign-in window.
   menu: "navigation_20_regular",
   home_20: "home_20_regular",

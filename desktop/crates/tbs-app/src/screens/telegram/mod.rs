@@ -464,7 +464,10 @@ impl Telegram {
             "tg-period" => client::Msg::TogglePeriod,
             "tg-all" => client::Msg::Filter(client::Filter::All),
             "tg-app" => client::Msg::MenuApp,
-            _ => return name.strip_prefix("tg-chat:").and_then(|id| id.parse().ok()).map(|id| Msg::Chats(client::Msg::Open(id))),
+            _ => {
+                let number = |prefix: &str| name.strip_prefix(prefix).and_then(|id| id.parse::<i64>().ok());
+                return number("tg-chat:").map(client::Msg::Open).or_else(|| number("tg-process:").map(client::Msg::Process)).map(Msg::Chats);
+            }
         };
         Some(Msg::Chats(inner))
     }
