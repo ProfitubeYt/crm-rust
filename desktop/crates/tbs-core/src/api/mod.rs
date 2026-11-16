@@ -1,7 +1,7 @@
 //! HTTP access to the backend.
 //!
-//! Tokens live here and nowhere else. The embedded Telegram web view reaches
-//! the server through [`Api::proxy`], so it never holds a credential.
+//! Tokens live here and nowhere else. The workspaces that are web pages reach
+//! the server through [`Api::proxy`], so they never hold a credential.
 
 mod admin;
 mod auth;
@@ -9,6 +9,7 @@ mod excel;
 mod logs;
 mod reference;
 mod security;
+mod telegram;
 mod time;
 mod transactions;
 
@@ -18,9 +19,11 @@ pub use excel::*;
 pub use logs::*;
 pub use reference::*;
 pub use security::*;
+pub use telegram::*;
 pub use time::*;
 pub use transactions::*;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -106,7 +109,8 @@ struct Tokens {
 pub enum Body {
     None,
     Json(Value),
-    File { field: String, filename: String, bytes: Arc<Vec<u8>> },
+    /// One file of a form. Without `mime` the part goes untyped.
+    File { field: String, filename: String, mime: Option<String>, bytes: Arc<Vec<u8>> },
     Raw { content_type: Option<String>, bytes: Arc<Vec<u8>> },
 }
 
@@ -158,6 +162,8 @@ struct Inner {
     base: RwLock<String>,
     system_token: RwLock<Option<String>>,
     tokens: RwLock<Tokens>,
+    /// Passes to password-protected Telegram chats, by chat.
+    chat_access: RwLock<HashMap<i64, String>>,
     generation: AtomicU64,
     /// Which sign-in the tokens belong to. Unlike `generation` it stays put
     /// while the same session only renews its tokens.
@@ -275,6 +281,7 @@ impl Api {
             base: RwLock::new(base),
             system_token: RwLock::new(system_token),
             tokens: RwLock::new(Tokens::default()),
+            chat_access: RwLock::default(),
             generation: AtomicU64::new(0),
             epoch: AtomicU64::new(0),
             refresh_gate: Mutex::new(()),
@@ -366,6 +373,7 @@ impl Api {
             *t = Tokens::default();
             self.0.epoch.fetch_add(1, Ordering::SeqCst);
         }
+        self.0.chat_access.write().unwrap().clear();
         self.0.vault.delete(&self.vault_key());
         self.0.generation.fetch_add(1, Ordering::SeqCst);
     }
@@ -385,6 +393,18 @@ impl Api {
     pub fn current_session_id(&self) -> Option<String> {
         let token = self.0.tokens.read().unwrap().auth.clone()?;
         jwt_session_id(&token)
+    }
+
+    pub(crate) fn chat_access(&self, chat: i64) -> Option<String> {
+        self.0.chat_access.read().unwrap().get(&chat).cloned()
+    }
+
+    pub(crate) fn set_chat_access(&self, chat: i64, pass: Option<String>) {
+        let mut passes = self.0.chat_access.write().unwrap();
+        match pass {
+            Some(pass) => passes.insert(chat, pass),
+            None => passes.remove(&chat),
+        };
     }
 
     pub(crate) fn refresh_token(&self) -> Option<String> {
@@ -429,8 +449,11 @@ impl Api {
         req = match &call.body {
             Body::None => req,
             Body::Json(v) => req.json(v),
-            Body::File { field, filename, bytes } => {
-                let part = reqwest::multipart::Part::bytes(bytes.as_ref().clone()).file_name(filename.clone());
+            Body::File { field, filename, mime, bytes } => {
+                let mut part = reqwest::multipart::Part::bytes(bytes.as_ref().clone()).file_name(filename.clone());
+                if let Some(mime) = mime {
+                    part = part.mime_str(mime).map_err(|e| ApiError::Network(e.to_string()))?;
+                }
                 req.multipart(reqwest::multipart::Form::new().part(field.clone(), part))
             }
             Body::Raw { content_type, bytes } => {
@@ -590,7 +613,7 @@ impl Api {
         bytes: Vec<u8>,
     ) -> Result<T, ApiError> {
         let mut call = Call::new(Method::POST, path).query(query);
-        call.body = Body::File { field: "file".into(), filename: filename.into(), bytes: Arc::new(bytes) };
+        call.body = Body::File { field: "file".into(), filename: filename.into(), mime: None, bytes: Arc::new(bytes) };
         self.send(call).await
     }
 
