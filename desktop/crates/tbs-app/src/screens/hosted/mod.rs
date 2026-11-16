@@ -5,7 +5,7 @@
 //! each of them by the account again.
 
 mod assets;
-mod host;
+pub(crate) mod host;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
