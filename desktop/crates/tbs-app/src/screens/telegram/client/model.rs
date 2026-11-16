@@ -177,6 +177,7 @@ pub enum Msg {
     Unlocked(i64, Result<TgUnlock, String>),
     MenuButton(i64, Result<TgMenuButton, String>),
     MenuApp,
+    CopyText(i64),
     Key(i64, usize, usize),
     CopiedOff(i64, usize, usize),
     TogglePeriod,
