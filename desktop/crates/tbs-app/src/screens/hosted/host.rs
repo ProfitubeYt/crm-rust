@@ -11,14 +11,14 @@ use std::sync::{Arc, OnceLock};
 use iced::Subscription;
 use iced::futures::Stream;
 use iced::window::Window;
-use tbs_core::api::Api;
+use tbs_core::api::{Api, ApiError, Reply};
 use tokio::runtime::Handle;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-use wry::http::{HeaderValue, Request, Response};
+use wry::http::{HeaderValue, Request, Response, StatusCode};
 use wry::{NewWindowResponse, PageLoadEvent, PermissionResponse, RequestAsyncResponder, WebContext, WebView, WebViewBuilder};
 
 use super::assets::{self, Kind};
-use crate::screens::telegram::host::{Area, background, failure, reply_to_page, without_browser_chrome};
+use crate::screens::telegram::host::{Area, background, without_browser_chrome};
 
 /// A page has little to tell the shell; anything longer is not its message.
 const MESSAGE_LIMIT: usize = 4096;
@@ -137,6 +137,42 @@ fn page_headers(request: &wry::http::request::Parts) -> Vec<(String, String)> {
         .filter(|(name, _)| name.as_str().eq_ignore_ascii_case("content-type"))
         .filter_map(|(name, value)| Some((name.to_string(), value.to_str().ok()?.to_owned())))
         .collect()
+}
+
+fn respond_with(status: u16, content_type: &str, body: Vec<u8>) -> Response<Cow<'static, [u8]>> {
+    let mut response = Response::new(Cow::Owned(body));
+    *response.status_mut() = StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY);
+    if let Ok(value) = content_type.parse() {
+        response.headers_mut().insert("content-type", value);
+    }
+    response
+}
+
+fn failure(status: u16, detail: &str) -> Response<Cow<'static, [u8]>> {
+    respond_with(status, "application/json", serde_json::json!({ "detail": detail }).to_string().into_bytes())
+}
+
+/// Hands the server's answer to the page; a failure keeps the shape the page's
+/// error handling reads.
+fn reply_to_page(outcome: Result<Reply, ApiError>) -> Response<Cow<'static, [u8]>> {
+    match outcome {
+        Ok(reply) => {
+            let content_type = reply.header("content-type").unwrap_or("application/octet-stream").to_owned();
+            let disposition = reply.header("content-disposition").map(str::to_owned);
+            let mut response = respond_with(reply.status, &content_type, reply.bytes);
+            if let Some(value) = disposition.and_then(|v| v.parse().ok()) {
+                response.headers_mut().insert("content-disposition", value);
+            }
+            if let Ok(value) = "no-store".parse() {
+                response.headers_mut().insert("cache-control", value);
+            }
+            response
+        }
+        Err(ApiError::Http { status, message, .. }) => failure(status, &message),
+        Err(ApiError::SessionExpired) => failure(401, "Сессия истекла"),
+        Err(ApiError::Network(reason)) => failure(503, &reason),
+        Err(ApiError::Decode(reason)) => failure(502, &reason),
+    }
 }
 
 /// The server's answer is data for the page's scripts. Were it ever shown as
@@ -329,6 +365,37 @@ mod tests {
                 assert!(!at_home(&entry, &elsewhere), "{elsewhere}");
             }
         }
+    }
+
+    #[test]
+    fn a_server_failure_reaches_the_page_as_its_own_status() {
+        let response = reply_to_page(Err(ApiError::Http { status: 423, code: None, message: "заперто".into() }));
+        assert_eq!(response.status().as_u16(), 423);
+        let body: serde_json::Value = serde_json::from_slice(response.body()).unwrap();
+        assert_eq!(body["detail"], "заперто");
+    }
+
+    #[test]
+    fn a_lost_connection_is_a_503_with_a_reason() {
+        let response = reply_to_page(Err(ApiError::Network("нет сети".into())));
+        assert_eq!(response.status().as_u16(), 503);
+        assert_eq!(reply_to_page(Err(ApiError::SessionExpired)).status().as_u16(), 401);
+        assert_eq!(reply_to_page(Err(ApiError::Decode("x".into()))).status().as_u16(), 502);
+    }
+
+    #[test]
+    fn a_reply_keeps_what_the_page_reads_and_is_not_cached() {
+        let reply = Reply {
+            status: 200,
+            headers: vec![("content-type".into(), "image/png".into()), ("content-disposition".into(), "attachment; filename=a.png".into()), ("set-cookie".into(), "a=b".into())],
+            bytes: vec![1, 2],
+        };
+        let response = reply_to_page(Ok(reply));
+        assert_eq!(response.headers()["content-type"], "image/png");
+        assert_eq!(response.headers()["content-disposition"], "attachment; filename=a.png");
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        assert!(response.headers().get("set-cookie").is_none());
+        assert_eq!(response.body().as_ref(), &[1, 2]);
     }
 
     #[test]
