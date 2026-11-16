@@ -1,22 +1,16 @@
-# Builds the Telegram page, the release executable and the installer.
-# The installer lands outside the repository: it contains client-access.json.
+# Builds the release executable and the installer.
+# The installer lands outside the repository: with security/client-access.json
+# present it contains that private file.
 param(
     [string]$TargetDir = "C:\Dev\tmp\tbs-target",
     [string]$OutputDir = "C:\Dev\tmp\tbs-installer"
 )
 $ErrorActionPreference = "Stop"
 $desktop = Split-Path -Parent $PSScriptRoot
-$frontend = Join-Path (Split-Path -Parent $desktop) "frontend"
 
 $manifest = Get-Content (Join-Path $desktop "Cargo.toml") -Raw
 if ($manifest -notmatch '(?m)^version = "([^"]+)"') { throw "no workspace version in Cargo.toml" }
 $version = $Matches[1]
-
-Push-Location $frontend
-try {
-    npm run build:telegram
-    if ($LASTEXITCODE -ne 0) { throw "the Telegram page did not build" }
-} finally { Pop-Location }
 
 $env:CARGO_TARGET_DIR = $TargetDir
 Push-Location $desktop

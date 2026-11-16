@@ -2,7 +2,7 @@
 
 Follows the migration checks in test_excel_sync_service.py. The same round trip
 was run by hand with the alembic command line on a disposable PostgreSQL; that
-run is recorded in docs/handoff/BACKEND_PROGRESS.md and is not repeated here.
+run is not repeated here.
 """
 from __future__ import annotations
 
