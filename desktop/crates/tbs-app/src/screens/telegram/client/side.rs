@@ -273,6 +273,14 @@ impl Client {
                     self.wants.push(Want::App(AppRequest { chat, bot, url, source: TgButtonSource::Menu, text }));
                 }
             }
+            Msg::CopyText(message) => {
+                self.menu = None;
+                // A message drawn by the client cannot be selected with the mouse; this is its way out.
+                if let Some(words) = self.messages.iter().find(|candidate| candidate.id == Some(message)).and_then(|found| found.text.clone()).filter(|words| !words.is_empty()) {
+                    ctx.toast(Tone::Success, "Текст скопирован");
+                    return iced::clipboard::write(words);
+                }
+            }
             Msg::Key(message, row, col) => return self.press_key(message, row, col),
             Msg::CopiedOff(message, row, col) => {
                 if self.copied == Some((message, row, col)) {

@@ -28,7 +28,13 @@ fn menu<'a>(client: &'a Client, target: Target, at: Point, ctx: &Ctx) -> Option<
             };
             vec![hide, password]
         }
-        Target::Message(id) => vec![ui::menu_item(Icon::Scan, "В обработку", false, Msg::Process(id)), ui::menu_item(Icon::CheckSquare, "Добавить в выбор", false, Msg::Pick(id))],
+        Target::Message(id) => {
+            let mut items = vec![ui::menu_item(Icon::Scan, "В обработку", false, Msg::Process(id)), ui::menu_item(Icon::CheckSquare, "Добавить в выбор", false, Msg::Pick(id))];
+            if client.messages.iter().any(|message| message.id == Some(id) && message.text.as_deref().is_some_and(|words| !words.is_empty())) {
+                items.push(ui::menu_item(Icon::Copy, "Копировать текст", false, Msg::CopyText(id)));
+            }
+            items
+        }
     };
     let room = Size::new(MENU, items.len() as f32 * MENU_ROW + 2.0 * space::SM);
     Some(ui::floating(ui::menu_panel(Column::with_children(items), MENU), at, room, ctx.window, Msg::CloseMenu))
