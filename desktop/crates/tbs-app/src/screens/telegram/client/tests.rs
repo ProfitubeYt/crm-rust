@@ -374,6 +374,13 @@ fn messages_are_ticked_by_a_press_in_selection_mode_or_with_ctrl() {
     assert_eq!(client.menu, Some((Target::Message(1), Point::new(40.0, 60.0))));
     let _ = client.update(Msg::Pick(1), &mut ctx);
     assert!(client.menu.is_none() && client.selecting && client.selected.contains(&1));
+    // And «Копировать текст» says it did, since nothing else shows.
+    let _ = client.update(Msg::Context(Target::Message(1)), &mut ctx);
+    let _ = client.update(Msg::CopyText(1), &mut ctx);
+    assert!(client.menu.is_none());
+    assert_eq!(ctx.toasts, [(Tone::Success, "Текст скопирован".to_owned())]);
+    let _ = client.update(Msg::CopyText(99), &mut ctx);
+    assert_eq!(ctx.toasts.len(), 1);
 }
 
 #[test]

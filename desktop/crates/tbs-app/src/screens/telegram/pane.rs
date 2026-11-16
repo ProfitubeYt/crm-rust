@@ -222,7 +222,8 @@ fn bubble<'a>(client: &'a Client, chat: i64, message: &'a TgMessage) -> El<'a, M
         inside = inside.push(document(client, id, file));
     }
     if let Some(words) = message.text.as_deref().filter(|words| !words.is_empty()) {
-        inside = inside.push(text(words).size(size::BASE));
+        // A long address has no spaces to break at.
+        inside = inside.push(text(words).size(size::BASE).wrapping(text::Wrapping::WordOrGlyph));
     }
     if let Some(markup) = message.reply_markup.as_ref().filter(|markup| !markup.rows.is_empty()) {
         inside = inside.push(keyboard(client, id, markup));
