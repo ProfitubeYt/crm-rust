@@ -4,6 +4,8 @@
 //! - `TBS_AUTOLOGIN=<json with username, password>` signs in by itself.
 //! - `TBS_GOTO=<route>` opens that section.
 //! - `TBS_OPEN=<panel>` opens a panel of the table before the screenshot.
+//!   In Telegram: `tg-chat:<id>` opens that chat, `tg-select` the selection
+//!   mode, `tg-period` the period menu, `tg-all` the tab of all chats.
 //! - `TBS_SHOT=<png>` saves a screenshot once data is on screen, then quits.
 //! - `TBS_CMD=<file>` runs the lines put in that file, one per tick, through the
 //!   app's own update: `goto <route>`, `open <panel>`, `theme <dark|light>`,
@@ -61,7 +63,7 @@ fn route(name: &str) -> Option<Route> {
 }
 
 fn probe(name: &str) -> Option<Message> {
-    use crate::screens::{audit::Audit, login::Login, logs::Logs, reference::Reference, settings::Settings, transactions::Transactions};
+    use crate::screens::{audit::Audit, login::Login, logs::Logs, reference::Reference, settings::Settings, telegram::Telegram, transactions::Transactions};
     Login::probe(name)
         .map(Message::Login)
         .or_else(|| Transactions::probe(name).map(Message::Tx))
@@ -69,6 +71,7 @@ fn probe(name: &str) -> Option<Message> {
         .or_else(|| Logs::probe(name).map(Message::Logs))
         .or_else(|| Audit::probe(name).map(Message::Audit))
         .or_else(|| Settings::probe(name).map(Message::Settings))
+        .or_else(|| Telegram::probe(name).map(Message::Telegram))
 }
 
 /// Takes the first line out of the command file.
