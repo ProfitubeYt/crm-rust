@@ -1,7 +1,8 @@
 ; The native client's installer. Built by tools/build-installer.ps1.
 ;
 ; Per user, so an update started from inside the program needs no elevation.
-; It installs beside the Electron client and shares nothing with it.
+; Where the retired Electron client is still installed, it sits beside it and
+; shares nothing with it.
 
 #ifndef AppVersion
   #error Pass /DAppVersion=x.y.z
@@ -50,10 +51,11 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "{#BuildDir}\tbsparcer.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildDir}\WebView2Loader.dll"; DestDir: "{app}"; Flags: ignoreversion
-; The same file the Electron build ships. It holds the system access token, so
-; it stays out of git, and the setup built from it must be treated the same way.
-#ifexist "..\..\frontend\client-access.json"
-Source: "..\..\frontend\client-access.json"; DestDir: "{app}\security"; Flags: ignoreversion
+; The private first-install file (template: security/client-access.example.json).
+; It holds the system access token, so it stays out of git, and the setup built
+; from it must be treated the same way.
+#ifexist "..\..\security\client-access.json"
+Source: "..\..\security\client-access.json"; DestDir: "{app}\security"; Flags: ignoreversion
 #endif
 
 [InstallDelete]
