@@ -4,7 +4,7 @@ Time itself is not started here: `hub_support.TimeStub` stands in for it and
 records exactly what the gateway forwarded. What these tests establish is the
 gateway's own behaviour — who gets through, what is sent on, what never is.
 The real Time server behind the real gateway is exercised by the local
-end-to-end run described in docs/handoff/TIME_HUB_ADMIN_PROGRESS.md.
+end-to-end stack in scripts/hub/e2e.
 """
 from __future__ import annotations
 
