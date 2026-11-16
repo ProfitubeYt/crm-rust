@@ -98,6 +98,49 @@ jobs:
           Stop-Process -Id $program.Id -Force
           if ($program.MainWindowTitle -ne "TBS inform CRM") { throw "the program has no window of its own" }
 
+      # A build with the test hooks, signed in to tools/stub-server.py: made-up
+      # chats, no backend and no Telegram. It shows that the native section
+      # draws in a Windows window; it is not a check against a real server.
+      - name: The Telegram section, against the made-up server
+        working-directory: desktop
+        shell: pwsh
+        run: |
+          cargo build -p tbs-app --features devtools --locked
+          $room = "C:\tbs-room"
+          New-Item -ItemType Directory -Force $room | Out-Null
+          $stub = Start-Process python -ArgumentList "tools\stub-server.py", "--port", "8000" -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 3
+          '{"username":"anna","password":"anna-secret"}' | Set-Content "$room\login.json"
+          "open tg-chat:-1001000000001" | Set-Content "$room\cmd.txt"
+          $env:TBS_DATA_DIR = "$room\data"
+          $env:TBS_API_BASE_URL = "http://127.0.0.1:8000"
+          $env:TBS_AUTOLOGIN = "$room\login.json"
+          $env:TBS_GOTO = "telegram"
+          $env:TBS_CMD = "$room\cmd.txt"
+          $client = "$env:CARGO_TARGET_DIR\debug\tbsparcer.exe"
+          try {
+            # The program's own picture of what it drew, then it quits.
+            $env:TBS_SHOT = Join-Path $env:OUTPUT_DIR "telegram-drawn.png"
+            $run = Start-Process $client -PassThru
+            if (-not $run.WaitForExit(180000)) { Stop-Process -Id $run.Id -Force; throw "no picture of the Telegram section in three minutes" }
+            if (-not (Test-Path $env:TBS_SHOT)) { throw "the program ended without its picture ($($run.ExitCode))" }
+            # The same section left open, as the screen shows it.
+            Remove-Item Env:TBS_SHOT
+            "open tg-chat:-1001000000001" | Set-Content "$room\cmd.txt"
+            $run = Start-Process $client -PassThru
+            Start-Sleep -Seconds 40
+            $run.Refresh()
+            if ($run.HasExited) { throw "the program ended by itself with $($run.ExitCode)" }
+            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+            $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+            $picture = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+            [System.Drawing.Graphics]::FromImage($picture).CopyFromScreen($screen.Left, $screen.Top, 0, 0, $picture.Size)
+            $picture.Save((Join-Path $env:OUTPUT_DIR "telegram-screen.png"))
+            Stop-Process -Id $run.Id -Force
+          } finally {
+            Stop-Process -Id $stub.Id -Force -ErrorAction SilentlyContinue
+          }
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
