@@ -2,7 +2,7 @@
 --
 -- Changes nothing: the session is read-only and every statement is a SELECT.
 -- Meant for the SELECT-only role over the local tunnel described in
--- docs/handoff/SHARED_SSH_ACCESS.md, one connection:
+-- docs/DEPLOYMENT.md ("Who can deploy"), one connection:
 --
 --   PGPASSFILE=<private file> psql -X -w -h 127.0.0.1 -p 9990 -U hoplite_ro \
 --       -d receipt_parser_db -f deploy/time-hub/prechecks.sql
