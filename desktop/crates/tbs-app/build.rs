@@ -1,7 +1,8 @@
-//! What a plain `cargo build` cannot do by itself: embed the Telegram web page,
-//! put WebView2Loader.dll next to the executable (it is linked dynamically on
-//! the gnu target and webview2-com-sys ships it in its build output), and give
-//! the executable its icon and version for Explorer and the taskbar.
+//! What a plain `cargo build` cannot do by itself: embed the pages of the
+//! workspaces that are web pages, put WebView2Loader.dll next to the
+//! executable (it is linked dynamically on the gnu target and
+//! webview2-com-sys ships it in its build output), and give the executable
+//! its icon and version for Explorer and the taskbar.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -12,7 +13,6 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let Ok(out) = env::var("OUT_DIR") else { return };
     let out = PathBuf::from(out);
-    embed_telegram_page(&out);
     embed_hosted_pages(&out);
     copy_webview_loader(&out);
     embed_resources(&out);
@@ -103,37 +103,6 @@ END
         println!("cargo:rustc-link-arg-bins={}", object.display());
     } else {
         println!("cargo:warning=windres failed, the executable has no icon");
-    }
-}
-
-/// `npm run build:telegram` fills this folder; a build without it gets an empty
-/// table and the section says so instead of failing to compile.
-fn embed_telegram_page(out: &Path) {
-    let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
-    let root = manifest.join("../../../frontend/dist-telegram");
-    println!("cargo:rerun-if-changed={}", root.display());
-    let mut files = Vec::new();
-    collect(&root, &mut files);
-    files.sort();
-    let mut table = String::from("pub static ASSETS: &[(&str, &[u8])] = &[\n");
-    for file in &files {
-        let Ok(relative) = file.strip_prefix(&root) else { continue };
-        let name = relative.to_string_lossy().replace('\\', "/");
-        let _ = writeln!(table, "    ({name:?}, include_bytes!({:?})),", file.to_string_lossy());
-    }
-    table.push_str("];\n");
-    let _ = fs::write(out.join("telegram_assets.rs"), table);
-}
-
-fn collect(dir: &Path, files: &mut Vec<PathBuf>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect(&path, files);
-        } else {
-            files.push(path);
-        }
     }
 }
 

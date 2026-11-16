@@ -5,8 +5,8 @@ accounts gets a column of its own, and exactly the accounts that had the right
 keep it.
 
 Run here on SQLite through the same Operations API the revisions use. The
-round trip with the alembic command line on a disposable PostgreSQL is recorded
-in docs/handoff/TIME_HUB_ADMIN_PROGRESS.md.
+round trip with the alembic command line on a disposable PostgreSQL was run
+by hand and is not repeated here.
 """
 from __future__ import annotations
 
