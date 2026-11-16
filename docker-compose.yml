@@ -213,26 +213,11 @@ services:
       timeout: 10s
       retries: 3
 
-  frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile
-    container_name: uzbek_parser_frontend
-    logging: *default-logging
-    ports:
-      - "${FRONTEND_BIND_IP:-127.0.0.1}:5173:80"
-    depends_on:
-      - backend
-    environment:
-      - VITE_API_URL=http://localhost:8000
-    restart: unless-stopped
-
   caddy:
     image: caddy:2-alpine
     container_name: uzbek_parser_caddy
     logging: *default-logging
     depends_on:
-      - frontend
       - backend
     environment:
       SYSTEM_ACCESS_TOKEN: ${SYSTEM_ACCESS_TOKEN}
