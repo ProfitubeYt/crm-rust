@@ -19,6 +19,8 @@
     @admin path /admin /admin/*
     reverse_proxy @admin backend:8000
 
-    # Frontend SPA shell
-    reverse_proxy frontend:80
+    # Nothing else is served here: the interface is the desktop client.
+    # Named by exclusion because Caddy runs `respond` before `reverse_proxy`.
+    @unrouted not path /mini-app* /api/* /health /admin /admin/*
+    respond @unrouted 404
 }
