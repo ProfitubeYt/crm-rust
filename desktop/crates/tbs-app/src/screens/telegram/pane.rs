@@ -4,7 +4,7 @@ use chrono::NaiveDate;
 use iced::widget::text_editor::{Binding, KeyPress};
 use iced::widget::{Column, Row, Space, button, center, column, container, image, mouse_area, progress_bar, row, stack, svg, text, text_editor};
 use iced::keyboard::{Key, key::Named};
-use iced::{Alignment, ContentFit, Fill, Length, Shrink};
+use iced::{Alignment, ContentFit, Fill, Length, Padding, Shrink};
 use tbs_core::api::{TgChat, TgFile, TgMarkup, TgMessage};
 use tbs_core::format::plural;
 
@@ -214,7 +214,11 @@ fn work_button<'a>(state: Work, message: i64) -> El<'a, Msg> {
 fn bubble<'a>(client: &'a Client, chat: i64, message: &'a TgMessage) -> El<'a, Msg> {
     let id = message.id.unwrap_or(0);
     let state = client.work_of(chat, message);
-    let mut inside = Column::new().spacing(space::XS);
+    // The time sits at the right edge of a bubble that is only as wide as
+    // what it holds. A strut of the width of that line keeps a one-word
+    // message from being narrower than its own time.
+    let room = 36.0 + if state == Work::Done { 86.0 } else { 0.0 } + if message.is_outgoing { 16.0 } else { 0.0 };
+    let mut inside = Column::new().spacing(space::XS).push(Space::new().width(room));
     if let Some(file) = &message.photo {
         inside = inside.push(photo(client, chat, id, file));
     }
@@ -222,30 +226,28 @@ fn bubble<'a>(client: &'a Client, chat: i64, message: &'a TgMessage) -> El<'a, M
         inside = inside.push(document(client, id, file));
     }
     if let Some(words) = message.text.as_deref().filter(|words| !words.is_empty()) {
-        inside = inside.push(text(words).size(size::BASE));
+        // A long address has no spaces to break at.
+        inside = inside.push(text(words).size(size::BASE).wrapping(text::Wrapping::WordOrGlyph));
     }
     if let Some(markup) = message.reply_markup.as_ref().filter(|markup| !markup.rows.is_empty()) {
         inside = inside.push(keyboard(client, id, markup));
     }
     let mut meta = Row::new().spacing(space::XS).align_y(Alignment::Center);
-    // The time sits at the right edge, so the bubble must be at least as wide
-    // as the line it is on: a strut holds that width for a one-word message.
-    let mut room = 36.0;
     if state == Work::Done {
         meta = meta.push(ui::badge("обработано", Tone::Success));
-        room += 86.0;
     }
     meta = meta.push(ui::faint(dates::clock(message.date.as_deref())));
     if message.is_outgoing {
         meta = meta.push(ui::hint_on(ui::icon(Icon::Check, 12.0), "Отправлено"));
-        room += 16.0;
     }
-    inside = inside.push(column![Space::new().width(room), container(meta).align_right(Fill)]);
+    inside = inside.push(container(meta).align_right(Fill));
 
     let selected = client.selected.contains(&id);
     let has_file = message.photo.is_some() || message.document.is_some() || message.reply_markup.is_some();
     let width = if has_file { Length::Fixed(PHOTO + 2.0 * space::MD) } else { Shrink };
-    container(inside).padding([space::SM, space::MD]).width(width).max_width(BUBBLE).style(style::bubble(message.is_outgoing, selected)).into()
+    // The strut is a line of no height: the gap after it is the top padding.
+    let padding = Padding { top: space::SM - space::XS, right: space::MD, bottom: space::SM, left: space::MD };
+    container(inside).padding(padding).width(width).max_width(BUBBLE).style(style::bubble(message.is_outgoing, selected)).into()
 }
 
 fn message_row<'a>(client: &'a Client, chat: i64, message: &'a TgMessage) -> El<'a, Msg> {

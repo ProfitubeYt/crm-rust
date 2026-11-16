@@ -4,9 +4,10 @@
 //! - `TBS_AUTOLOGIN=<json with username, password>` signs in by itself.
 //! - `TBS_GOTO=<route>` opens that section.
 //! - `TBS_OPEN=<panel>` opens a panel of the table before the screenshot.
-//!   In Telegram: `tg-chat:<id>` opens that chat, `tg-select` the selection
-//!   mode, `tg-period` the period menu, `tg-all` the tab of all chats,
-//!   `tg-app` the mini app on the open bot's menu button.
+//!   In Telegram: `tg-chat:<id>` opens that chat, `tg-process:<id>` sends a
+//!   message of the open chat to the receipt worker, `tg-select` opens the
+//!   selection mode, `tg-period` the period menu, `tg-all` the tab of all
+//!   chats, `tg-app` the mini app on the open bot's menu button.
 //! - `TBS_SHOT=<png>` saves a screenshot once data is on screen, then quits.
 //! - `TBS_CMD=<file>` runs the lines put in that file, one per tick, through the
 //!   app's own update: `goto <route>`, `open <panel>`, `theme <dark|light>`,
