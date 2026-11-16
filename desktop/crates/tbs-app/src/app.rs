@@ -2135,7 +2135,9 @@ mod workspace_tests {
         let dir = tempfile::tempdir().unwrap();
         // On the start window, no page open: signing out removes the folders all the same.
         let mut app = resumed(&dir, account(&["time"], true));
-        let kept = hosted::folders(&app.ctx);
+        let mut kept = hosted::folders(&app.ctx);
+        // And what the Telegram page of earlier versions left behind.
+        kept.push(app.ctx.data_dir.join("webview"));
         for folder in &kept {
             std::fs::create_dir_all(folder).unwrap();
         }
