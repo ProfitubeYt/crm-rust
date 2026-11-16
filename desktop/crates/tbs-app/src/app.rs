@@ -449,7 +449,9 @@ impl App {
     fn sign_out(&mut self) -> Task<Message> {
         // Whoever signs in next finds nothing the pages kept for this account:
         // the open one is emptied, and the folders of both are removed.
-        let kept = hosted::folders(&self.ctx);
+        let mut kept = hosted::folders(&self.ctx);
+        // Earlier versions drew Telegram as a page, and its web view kept this.
+        kept.push(self.ctx.data_dir.join("webview"));
         self.ctx.user = None;
         self.account_asked += 1;
         if let Some(screen) = &mut self.hosted {
@@ -595,7 +597,7 @@ impl App {
         let mut tasks = Vec::new();
         for (tone, text) in std::mem::take(&mut self.ctx.toasts) {
             // A page that covers the app's toasts shows them itself.
-            if self.telegram.as_ref().is_some_and(|screen| screen.toast(tone, &text)) || self.hosted.as_ref().is_some_and(|screen| screen.toast(tone, &text)) {
+            if self.hosted.as_ref().is_some_and(|screen| screen.toast(tone, &text)) {
                 continue;
             }
             self.next_toast += 1;
@@ -707,7 +709,7 @@ impl App {
                 self.ctx.prefs.rail_collapsed = !self.ctx.prefs.rail_collapsed;
                 self.lay_out();
                 self.ctx.save_prefs();
-                // A page floats above the app, from the rail's edge.
+                // A mini app's frame is centred in what the rail leaves.
                 if let Some(screen) = &self.telegram {
                     screen.resized(&self.ctx);
                 }
@@ -1136,7 +1138,7 @@ impl App {
             Route::Logs => self.logs.as_ref()?.overlay(&self.ctx).map(|layer| layer.map(Message::Logs)),
             Route::Settings => self.settings.as_ref()?.overlay(&self.ctx).map(|layer| layer.map(Message::Settings)),
             Route::Audit => self.audit.as_ref()?.overlay(&self.ctx).map(|layer| layer.map(Message::Audit)),
-            _ => None,
+            Route::Telegram => self.telegram.as_ref()?.overlay(&self.ctx).map(|layer| layer.map(Message::Telegram)),
         }
     }
 

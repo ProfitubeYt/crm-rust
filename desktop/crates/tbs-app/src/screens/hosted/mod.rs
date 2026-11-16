@@ -5,7 +5,7 @@
 //! each of them by the account again.
 
 mod assets;
-mod host;
+pub(crate) mod host;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -504,7 +504,7 @@ mod tests {
             assert!(folder.starts_with(dir.path().join("web")));
             assert!(folders.iter().skip(at + 1).all(|other| other != folder), "{folder:?} is shared");
         }
-        // Nor is it the folder the Telegram page keeps.
+        // Nor is it the folder the Telegram page of earlier versions kept.
         assert!(folders.iter().all(|folder| *folder != dir.path().join("webview")));
     }
 
