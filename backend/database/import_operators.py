@@ -78,7 +78,7 @@ def import_operators_from_file(file_path: str):
 
 
 if __name__ == "__main__":
-    file_path = "операторыпродавцыиприложения-2.txt"
+    file_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ops.txt")
     if len(sys.argv) > 1:
         file_path = sys.argv[1]
 

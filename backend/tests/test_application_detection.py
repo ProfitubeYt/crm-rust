@@ -27,7 +27,7 @@ def _fresh_caches():
     invalidate_confirmed_cache()
 
 
-#: A slice of the owner's reference list (операторыпродавцыиприложения-2.txt).
+#: A slice of the owner's reference list (backend/ops.txt).
 OWNER_LINES = [
     ("NBU 2P2 U PLAT UZCARD, 99", "Milliy 2.0"),
     ("NBU P2P HUMO UZCARD>", "Milliy 2.0"),
